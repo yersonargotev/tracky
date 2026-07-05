@@ -6,8 +6,9 @@ use crate::pdf::{
     PDF_INSPECT_SCHEMA_VERSION,
 };
 use crate::storage::{
-    apply_migrations, duplicate_import_response, find_source_document_by_hash, persist_pdf_import,
-    ImportPdfResponse, IMPORT_PDF_SCHEMA_VERSION,
+    accept_candidate, apply_migrations, duplicate_import_response, find_source_document_by_hash,
+    list_review_candidates, persist_pdf_import, reject_candidate, review_error_response,
+    CandidateReviewResponse, ImportPdfResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -64,6 +65,7 @@ pub struct Cli {
 enum Commands {
     Pdf(PdfCommand),
     Import(ImportCommand),
+    Candidates(CandidatesCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -86,6 +88,53 @@ struct ImportCommand {
 #[derive(Debug, Subcommand)]
 enum ImportCommands {
     Pdf(ImportPdfArgs),
+}
+
+#[derive(Debug, Parser)]
+struct CandidatesCommand {
+    #[command(subcommand)]
+    command: CandidateCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum CandidateCommands {
+    List(CandidateListArgs),
+    Accept(CandidateActionArgs),
+    Reject(CandidateActionArgs),
+}
+
+#[derive(Debug, Parser)]
+struct CandidateListArgs {
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Import batch id to list.
+    #[arg(long, value_name = "ID")]
+    import_batch_id: Option<String>,
+
+    /// Candidate status to list: pending_review, possible_duplicate, accepted, or rejected.
+    #[arg(long, value_name = "STATUS")]
+    status: Option<String>,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateActionArgs {
+    /// Candidate transaction id.
+    #[arg(value_name = "CANDIDATE_ID")]
+    candidate_id: String,
+
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -149,6 +198,11 @@ where
             ImportCommands::Pdf(args) => {
                 import_pdf_command(args, env_lookup, inspector, &mut stdout)
             }
+        },
+        Commands::Candidates(candidates) => match candidates.command {
+            CandidateCommands::List(args) => candidate_list_command(args, &mut stdout),
+            CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
+            CandidateCommands::Reject(args) => candidate_reject_command(args, &mut stdout),
         },
     }
 }
@@ -322,6 +376,115 @@ where
     let response = persist_pdf_import(&mut connection, inspect).context("persisting pdf import")?;
     let exit_code = if response.ok { 0 } else { 1 };
     serde_json::to_writer(&mut *stdout, &response).context("writing import pdf JSON")?;
+    writeln!(stdout).context("writing trailing newline")?;
+    Ok(exit_code)
+}
+
+fn candidate_list_command<W>(args: CandidateListArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if !args.json {
+        return write_candidate_review_response(
+            stdout,
+            review_error_response(
+                "candidates list",
+                "validation_failure",
+                "json_output_required",
+                "The candidates list command currently requires --json.".to_string(),
+                "command",
+                true,
+                serde_json::json!({ "flag": "--json" }),
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    let response = match list_review_candidates(
+        &connection,
+        args.import_batch_id.as_deref(),
+        args.status.as_deref(),
+    ) {
+        Ok(candidates) => CandidateReviewResponse {
+            schema_version: crate::storage::CANDIDATE_REVIEW_SCHEMA_VERSION,
+            command: "candidates list",
+            ok: true,
+            candidate: None,
+            candidates,
+            canonical_transaction: None,
+            errors: Vec::new(),
+        },
+        Err(error) => review_error_response(
+            "candidates list",
+            "validation_failure",
+            "invalid_candidate_filter",
+            "Candidate list filter is invalid.".to_string(),
+            "command",
+            true,
+            serde_json::json!({ "cause": error.to_string() }),
+        ),
+    };
+    write_candidate_review_response(stdout, response)
+}
+
+fn candidate_accept_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if !args.json {
+        return write_candidate_review_response(
+            stdout,
+            review_error_response(
+                "candidates accept",
+                "validation_failure",
+                "json_output_required",
+                "The candidates accept command currently requires --json.".to_string(),
+                "command",
+                true,
+                serde_json::json!({ "flag": "--json" }),
+            ),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = accept_candidate(&mut connection, &args.candidate_id)?;
+    write_candidate_review_response(stdout, response)
+}
+
+fn candidate_reject_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if !args.json {
+        return write_candidate_review_response(
+            stdout,
+            review_error_response(
+                "candidates reject",
+                "validation_failure",
+                "json_output_required",
+                "The candidates reject command currently requires --json.".to_string(),
+                "command",
+                true,
+                serde_json::json!({ "flag": "--json" }),
+            ),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = reject_candidate(&mut connection, &args.candidate_id)?;
+    write_candidate_review_response(stdout, response)
+}
+
+fn open_review_database(db: &Path) -> Result<Connection> {
+    let connection = Connection::open(db)
+        .with_context(|| format!("opening SQLite database {}", db.display()))?;
+    apply_migrations(&connection).context("applying SQLite migrations")?;
+    Ok(connection)
+}
+
+fn write_candidate_review_response<W: Write>(
+    stdout: &mut W,
+    response: CandidateReviewResponse,
+) -> Result<i32> {
+    let exit_code = if response.ok { 0 } else { 1 };
+    serde_json::to_writer(&mut *stdout, &response).context("writing candidate review JSON")?;
     writeln!(stdout).context("writing trailing newline")?;
     Ok(exit_code)
 }

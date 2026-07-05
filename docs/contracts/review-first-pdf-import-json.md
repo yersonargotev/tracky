@@ -350,3 +350,15 @@ The contract must not report:
 - `accepted` and `rejected` are candidate review states for future review commands, not states that `import pdf` should assign during first import.
 - Possible duplicates are flagged, not auto-merged.
 - Canonical transaction creation requires an explicit future review/accept action that preserves provenance.
+
+## Candidate review CLI JSON contract
+
+Issue 0007 adds the first explicit review actions. These commands are separate from `pdf inspect` and `import pdf`; they operate only on rows already persisted in SQLite.
+
+| Command | Writes storage? | Creates canonical transactions? |
+| --- | --- | --- |
+| `tracky candidates list --db <PATH> --json` | No | Never |
+| `tracky candidates accept <CANDIDATE_ID> --db <PATH> --json` | Yes | Yes, exactly one canonical transaction for an eligible candidate |
+| `tracky candidates reject <CANDIDATE_ID> --db <PATH> --json` | Yes | Never |
+
+All three commands return `schema_version: "tracky.candidate-review.v1"` and machine-readable JSON. `accept` only accepts candidates in `pending_review` or `possible_duplicate` state. It sets the candidate to `accepted`, creates a canonical transaction, links the candidate and provenance to that canonical transaction, and keeps the original candidate/provenance audit trail. `reject` sets the candidate to `rejected` without deleting provenance, fingerprints, or duplicate markers. Re-accepting an accepted candidate returns a stable `candidate_already_accepted` error.
