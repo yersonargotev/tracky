@@ -9,6 +9,7 @@ use std::path::Path;
 pub const PDF_INSPECT_SCHEMA_VERSION: &str = "tracky.pdf-inspect.v1";
 const PDF_OXIDE_EXTRACTOR: &str = "pdf_oxide";
 const PARSER_VERSION: &str = "1";
+const COP_CURRENCY: &str = "COP";
 
 #[derive(Debug, Clone)]
 pub struct InspectPdfOptions<'a> {
@@ -486,7 +487,7 @@ fn page_extraction_error(code: &'static str, page: usize, cause: String) -> Trac
         path: format!("extractor_status.pages[{page}]"),
         recoverable: true,
         details: serde_json::json!({
-            "extractor": "pdf_oxide",
+            "extractor": PDF_OXIDE_EXTRACTOR,
             "page_number": page,
             "cause": cause,
         }),
@@ -881,7 +882,7 @@ pub fn money_tokens(text: &str) -> Vec<ParsedMoney> {
         .map(|hit| ParsedMoney {
             text: hit.as_str().to_string(),
             value_minor_units: parse_money_minor_units(hit.as_str()),
-            currency: "COP",
+            currency: COP_CURRENCY,
         })
         .collect()
 }
@@ -1037,7 +1038,7 @@ where
 fn account_hint(institution: &Institution) -> AccountHint {
     AccountHint {
         label: institution.account_label(),
-        currency: "COP",
+        currency: COP_CURRENCY,
         masked_identifier: None,
     }
 }

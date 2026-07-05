@@ -237,17 +237,20 @@ fn password_for(file: &Path, no_prompt: bool) -> Result<String> {
         .map(|s| s.to_ascii_uppercase());
 
     let mut keys = Vec::new();
-    if let Some(month) = month {
+    if let Some(institution) = institution {
+        if let Some(month) = month {
+            keys.push(format!(
+                "TRACKY_{}_{}_PDF_PASSWORD",
+                institution.to_ascii_uppercase(),
+                month
+            ));
+        }
         keys.push(format!(
-            "TRACKY_{}_{}_PDF_PASSWORD",
-            institution.to_ascii_uppercase(),
-            month
+            "TRACKY_{}_PDF_PASSWORD",
+            institution.to_ascii_uppercase()
         ));
     }
-    keys.push(format!(
-        "TRACKY_{}_PDF_PASSWORD",
-        institution.to_ascii_uppercase()
-    ));
+    keys.push("TRACKY_PDF_PASSWORD".to_string());
 
     for key in &keys {
         if let Ok(value) = env::var(key) {
@@ -276,14 +279,17 @@ fn password_for(file: &Path, no_prompt: bool) -> Result<String> {
 fn inspect_document(file: &Path, password: &str) -> Result<DocumentReport> {
     let bytes = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
     let sha256_prefix = hex_prefix(&bytes);
-    let institution = institution_for(file).to_string();
-    let password_source = format!("env_or_prompt:{}", institution.to_ascii_uppercase());
+    let institution = institution_for(file);
+    let institution_label = institution.unwrap_or("unknown").to_string();
+    let password_source = institution
+        .map(|institution| format!("env_or_prompt:{}", institution.to_ascii_uppercase()))
+        .unwrap_or_else(|| "env_or_prompt:GENERIC".to_string());
 
-    let parsing = run_pdf_oxide_parser(file, password, &institution);
+    let parsing = run_pdf_oxide_parser(file, password, institution);
 
     Ok(DocumentReport {
         file: display_path(file),
-        institution,
+        institution: institution_label,
         password_source,
         sha256_prefix,
         results: vec![run_pdf_oxide(file, password), run_pdfium(file, password)],
@@ -291,19 +297,25 @@ fn inspect_document(file: &Path, password: &str) -> Result<DocumentReport> {
     })
 }
 
-fn run_pdf_oxide_parser(file: &Path, password: &str, institution: &str) -> ParsingDiagnostic {
+fn run_pdf_oxide_parser(
+    file: &Path,
+    password: &str,
+    institution: Option<&str>,
+) -> ParsingDiagnostic {
     match inspect_pdf_core(
         file,
         InspectPdfOptions {
             document_credential: Some(password),
             credential_source: CredentialSource::Unknown,
-            institution_hint: Some(institution.to_string()),
+            institution_hint: institution.map(ToString::to_string),
         },
     ) {
         Ok(response) => parsing_diagnostic_from_core(response),
         Err(error) => ParsingDiagnostic {
             extractor: "pdf_oxide",
-            parser: format!("{institution}.statement.v1"),
+            parser: institution
+                .map(|institution| format!("{institution}.statement.v1"))
+                .unwrap_or_else(|| "unknown.statement.v1".to_string()),
             status: "error".to_string(),
             candidate_count: 0,
             candidates: Vec::new(),
@@ -673,16 +685,19 @@ fn summarize(documents: &[DocumentReport]) -> Summary {
     Summary { by_extractor }
 }
 
-fn institution_for(file: &Path) -> &str {
+fn institution_for(file: &Path) -> Option<&'static str> {
     let stem = file
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    if stem.to_ascii_lowercase().starts_with("rappi") {
-        "rappi"
-    } else {
-        "nequi"
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if stem.starts_with("nequi") {
+        return Some("nequi");
     }
+    if stem.starts_with("rappi") {
+        return Some("rappi");
+    }
+    None
 }
 
 fn display_path(path: &Path) -> String {
