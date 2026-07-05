@@ -233,19 +233,74 @@ struct MoneyToken {
     x: f32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Institution {
+    Nequi,
+    Rappi,
+    Unknown(String),
+}
+
+impl Institution {
+    fn from_hint(hint: impl Into<String>) -> Self {
+        match hint.into().to_ascii_lowercase().as_str() {
+            "nequi" => Self::Nequi,
+            "rappi" => Self::Rappi,
+            other => Self::Unknown(other.to_string()),
+        }
+    }
+
+    fn from_path(path: &Path) -> Self {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if stem.starts_with("rappi") {
+            Self::Rappi
+        } else {
+            Self::Nequi
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Nequi => "nequi",
+            Self::Rappi => "rappi",
+            Self::Unknown(hint) => hint.as_str(),
+        }
+    }
+
+    fn parser_id(&self) -> String {
+        format!("{}.statement.v1", self.as_str())
+    }
+
+    fn account_label(&self) -> String {
+        match self {
+            Self::Nequi => "Nequi wallet".to_string(),
+            Self::Rappi => "Rappi card".to_string(),
+            Self::Unknown(hint) => format!("{hint} account"),
+        }
+    }
+
+    fn is_supported(&self) -> bool {
+        matches!(self, Self::Nequi | Self::Rappi)
+    }
+}
+
 pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfInspectResponse> {
     let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let content_sha256 = hex_sha256(&bytes);
     let institution = options
         .institution_hint
-        .unwrap_or_else(|| institution_for(path).to_string());
+        .map(Institution::from_hint)
+        .unwrap_or_else(|| Institution::from_path(path));
     let source_document = SourceDocument {
         id: source_document_id(&content_sha256),
         input_name: input_name(path),
         content_sha256,
         mime_type: "application/pdf",
         byte_size: bytes.len() as u64,
-        institution_hint: institution.clone(),
+        institution_hint: institution.as_str().to_string(),
         account_hint: account_hint(&institution),
         document_duplicate_status: DocumentDuplicateStatus {
             status: "unknown",
@@ -278,14 +333,7 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
             };
             let mut errors = extracted.errors;
             if matches!(extractor_status.status, ExtractorState::Failed) {
-                let parser_status = ParserStatus {
-                    status: ParserState::NotRun,
-                    parser_id: parser_id_for(&institution),
-                    parser_version: "1",
-                    candidates_found: 0,
-                    candidates_valid: 0,
-                    warnings: vec!["parser skipped because pdf_oxide extraction failed".to_string()],
-                };
+                let parser_status = parser_not_run_status(&institution);
                 (extractor_status, parser_status, Vec::new(), errors)
             } else {
                 let (parser_status, candidates, parser_errors) =
@@ -317,14 +365,7 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
                 credential_source: options.credential_source,
                 warnings: vec![message.to_string()],
             };
-            let parser_status = ParserStatus {
-                status: ParserState::NotRun,
-                parser_id: parser_id_for(&institution),
-                parser_version: "1",
-                candidates_found: 0,
-                candidates_valid: 0,
-                warnings: vec!["parser skipped because pdf_oxide extraction failed".to_string()],
-            };
+            let parser_status = parser_not_run_status(&institution);
             (
                 extractor_status,
                 parser_status,
@@ -368,12 +409,10 @@ fn extract_pdf_oxide_lines(file: &Path, credential: &str) -> Result<ExtractedDoc
     let mut errors = Vec::new();
     let mut pages_extracted = 0;
     for page in 0..pages_seen {
-        let mut page_failed = false;
         if let Err(error) = doc
             .extract_text(page)
             .with_context(|| format!("pdf_oxide text extraction failed on page {}", page + 1))
         {
-            page_failed = true;
             errors.push(page_extraction_error(
                 "pdf_text_extraction_failed",
                 page + 1,
@@ -399,7 +438,6 @@ fn extract_pdf_oxide_lines(file: &Path, credential: &str) -> Result<ExtractedDoc
                 }));
             }
             Err(error) => {
-                page_failed = true;
                 errors.push(page_extraction_error(
                     "pdf_layout_extraction_failed",
                     page + 1,
@@ -407,7 +445,6 @@ fn extract_pdf_oxide_lines(file: &Path, credential: &str) -> Result<ExtractedDoc
                 ));
             }
         }
-        let _ = page_failed;
     }
     Ok(ExtractedDocument {
         pages_seen,
@@ -437,16 +474,17 @@ pub fn parse_lines_for_inspection(
     source_document: &SourceDocument,
     lines: &[ExtractedLine],
 ) -> (ParserStatus, Vec<CandidateTransaction>, Vec<TrackyError>) {
-    parse_lines_for_contract(source_document, &source_document.institution_hint, lines)
+    let institution = Institution::from_hint(&source_document.institution_hint);
+    parse_lines_for_contract(source_document, &institution, lines)
 }
 
 fn parse_lines_for_contract(
     source_document: &SourceDocument,
-    institution: &str,
+    institution: &Institution,
     lines: &[ExtractedLine],
 ) -> (ParserStatus, Vec<CandidateTransaction>, Vec<TrackyError>) {
-    let parser_id = parser_id_for(institution);
-    if !matches!(institution, "nequi" | "rappi") {
+    let parser_id = institution.parser_id();
+    if !institution.is_supported() {
         return (
             ParserStatus {
                 status: ParserState::UnsupportedDocument,
@@ -455,7 +493,8 @@ fn parse_lines_for_contract(
                 candidates_found: 0,
                 candidates_valid: 0,
                 warnings: vec![format!(
-                    "no deterministic parser matched institution '{institution}'"
+                    "no deterministic parser matched institution '{}'",
+                    institution.as_str()
                 )],
             },
             Vec::new(),
@@ -465,15 +504,16 @@ fn parse_lines_for_contract(
                 message: "No deterministic parser matched the document source.".to_string(),
                 path: "parser_status".to_string(),
                 recoverable: true,
-                details: serde_json::json!({ "institution_hint": institution }),
+                details: serde_json::json!({ "institution_hint": institution.as_str() }),
             }],
         );
     }
 
     let rows = visual_rows(lines);
     let movements = match institution {
-        "rappi" => parse_rappi_rows(&rows),
-        _ => parse_nequi_rows(&rows),
+        Institution::Rappi => parse_rappi_rows(&rows),
+        Institution::Nequi => parse_nequi_rows(&rows),
+        Institution::Unknown(_) => unreachable!("unsupported institution returned earlier"),
     };
     let candidates = movements
         .into_iter()
@@ -513,6 +553,17 @@ fn parse_lines_for_contract(
     )
 }
 
+fn parser_not_run_status(institution: &Institution) -> ParserStatus {
+    ParserStatus {
+        status: ParserState::NotRun,
+        parser_id: institution.parser_id(),
+        parser_version: "1",
+        candidates_found: 0,
+        candidates_valid: 0,
+        warnings: vec!["parser skipped because pdf_oxide extraction failed".to_string()],
+    }
+}
+
 fn candidate_from_movement(
     source_document: &SourceDocument,
     parser_id: &str,
@@ -544,7 +595,7 @@ fn candidate_from_movement(
             reason: None,
         },
         institution_hint: source_document.institution_hint.clone(),
-        account_hint: account_hint(&source_document.institution_hint),
+        account_hint: account_hint(&Institution::from_hint(&source_document.institution_hint)),
         posted_date: movement.posted_date,
         description: movement.description_sample,
         amount_minor,
@@ -960,35 +1011,11 @@ where
     })
 }
 
-fn parser_id_for(institution: &str) -> String {
-    match institution {
-        "rappi" => "rappi.statement.v1".to_string(),
-        "nequi" => "nequi.statement.v1".to_string(),
-        other => format!("{other}.statement.v1"),
-    }
-}
-
-fn account_hint(institution: &str) -> AccountHint {
+fn account_hint(institution: &Institution) -> AccountHint {
     AccountHint {
-        label: match institution {
-            "rappi" => "Rappi card".to_string(),
-            "nequi" => "Nequi wallet".to_string(),
-            other => format!("{other} account"),
-        },
+        label: institution.account_label(),
         currency: "COP",
         masked_identifier: None,
-    }
-}
-
-fn institution_for(file: &Path) -> &str {
-    let stem = file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default();
-    if stem.to_ascii_lowercase().starts_with("rappi") {
-        "rappi"
-    } else {
-        "nequi"
     }
 }
 
@@ -1055,7 +1082,7 @@ mod tests {
             mime_type: "application/pdf",
             byte_size: 123,
             institution_hint: institution.to_string(),
-            account_hint: account_hint(institution),
+            account_hint: account_hint(&Institution::from_hint(institution)),
             document_duplicate_status: DocumentDuplicateStatus {
                 status: "unknown",
                 matched_source_document_id: None,
