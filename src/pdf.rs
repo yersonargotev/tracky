@@ -218,6 +218,7 @@ pub struct TrackyError {
 pub enum TrackyErrorCategory {
     ExtractorFailure,
     ParserFailure,
+    ValidationFailure,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -228,11 +229,15 @@ pub enum TrackyErrorCode {
     PdfLayoutExtractionFailed,
     UnsupportedDocument,
     MovementRowsNotFound,
+    MissingDocumentCredential,
+    JsonOutputRequired,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum TrackyErrorPath {
+    Command,
     ExtractorStatus,
+    ExtractorCredentialSource,
     ExtractorStatusPage { page: usize },
     ParserStatus,
 }
@@ -249,7 +254,11 @@ impl Serialize for TrackyErrorPath {
 impl std::fmt::Display for TrackyErrorPath {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Command => formatter.write_str("command"),
             Self::ExtractorStatus => formatter.write_str("extractor_status"),
+            Self::ExtractorCredentialSource => {
+                formatter.write_str("extractor_status.credential_source")
+            }
             Self::ExtractorStatusPage { page } => {
                 write!(formatter, "extractor_status.pages[{page}]")
             }

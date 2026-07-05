@@ -3,6 +3,7 @@ name = "tracky"
 version = "0.1.0"
 edition = "2021"
 publish = false
+default-run = "tracky"
 
 [dependencies]
 anyhow = "1.0"
