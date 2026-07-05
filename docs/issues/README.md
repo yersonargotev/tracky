@@ -10,6 +10,7 @@ These local Markdown issues are ordered for the review-first PDF import mileston
 6. `0006-flag-possible-duplicate-candidates.md` — transaction-level duplicate signals.
 7. `0007-add-candidate-review-cli.md` — accept/reject path to canonical transactions.
 8. `0008-document-agent-workflow-and-next-slices.md` — usage docs and next slices.
+9. `0009-add-user-facing-command-reference.md` — repository-level command reference for the review-first CLI path.
 
 Implementation should proceed in dependency order unless a later issue's blockers have already been satisfied by another change.
 

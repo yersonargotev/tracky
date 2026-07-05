@@ -136,7 +136,7 @@ The current milestone is CLI/JSON-first. Do not document or assume these as avai
 
 After the CLI path is documented and usable, likely follow-up slices are:
 
-1. Add a small command/reference section to user-facing docs once a README exists.
+1. Keep the user-facing command reference in [`README.md`](../../README.md) aligned with this workflow and the JSON contract.
 2. Improve candidate review ergonomics without changing the review-first contract, such as safer batch summaries or clearer duplicate comparison JSON.
 3. Add broader parsers or fixture coverage using redacted row shapes only, not real PDFs.
 4. Expand institution/account resolution conservatively at review time, keeping unresolved hints explicit.
