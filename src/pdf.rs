@@ -7,6 +7,8 @@ use std::fs;
 use std::path::Path;
 
 pub const PDF_INSPECT_SCHEMA_VERSION: &str = "tracky.pdf-inspect.v1";
+const PDF_OXIDE_EXTRACTOR: &str = "pdf_oxide";
+const PARSER_VERSION: &str = "1";
 
 #[derive(Debug, Clone)]
 pub struct InspectPdfOptions<'a> {
@@ -118,7 +120,7 @@ pub struct CandidateTransaction {
     pub id: String,
     pub import_batch_id: Option<String>,
     pub source_document_id: String,
-    pub status: &'static str,
+    pub status: CandidateStatus,
     pub duplicate_status: DuplicateStatus,
     pub institution_hint: String,
     pub account_hint: AccountHint,
@@ -127,7 +129,7 @@ pub struct CandidateTransaction {
     pub amount_minor: i64,
     pub currency: &'static str,
     pub balance_minor: Option<i64>,
-    pub direction_hint: &'static str,
+    pub direction_hint: DirectionHint,
     pub confidence: f32,
     pub provenance: Provenance,
     pub validation_warnings: Vec<String>,
@@ -135,11 +137,30 @@ pub struct CandidateTransaction {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct DuplicateStatus {
-    pub status: &'static str,
+    pub status: DuplicateStatusState,
     pub fingerprint: String,
     pub matched_candidate_ids: Vec<String>,
     pub matched_canonical_transaction_ids: Vec<String>,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateStatus {
+    PendingReview,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DuplicateStatusState {
+    NotChecked,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectionHint {
+    Inflow,
+    Outflow,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -255,11 +276,13 @@ impl Institution {
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if stem.starts_with("rappi") {
-            Self::Rappi
-        } else {
-            Self::Nequi
+        if stem.starts_with("nequi") {
+            return Self::Nequi;
         }
+        if stem.starts_with("rappi") {
+            return Self::Rappi;
+        }
+        Self::Unknown(stem)
     }
 
     fn as_str(&self) -> &str {
@@ -320,7 +343,7 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
                 } else {
                     ExtractorState::Partial
                 },
-                extractor: "pdf_oxide",
+                extractor: PDF_OXIDE_EXTRACTOR,
                 pages_seen: extracted.pages_seen,
                 pages_extracted: extracted.pages_extracted,
                 requires_document_credential: extracted.requires_document_credential,
@@ -351,14 +374,14 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
                 path: "extractor_status".to_string(),
                 recoverable: true,
                 details: serde_json::json!({
-                    "extractor": "pdf_oxide",
+                    "extractor": PDF_OXIDE_EXTRACTOR,
                     "credential_required": true,
                     "cause": error.to_string(),
                 }),
             };
             let extractor_status = ExtractorStatus {
                 status: ExtractorState::Failed,
-                extractor: "pdf_oxide",
+                extractor: PDF_OXIDE_EXTRACTOR,
                 pages_seen: 0,
                 pages_extracted: 0,
                 requires_document_credential: true,
@@ -489,7 +512,7 @@ fn parse_lines_for_contract(
             ParserStatus {
                 status: ParserState::UnsupportedDocument,
                 parser_id,
-                parser_version: "1",
+                parser_version: PARSER_VERSION,
                 candidates_found: 0,
                 candidates_valid: 0,
                 warnings: vec![format!(
@@ -543,7 +566,7 @@ fn parse_lines_for_contract(
         ParserStatus {
             status,
             parser_id,
-            parser_version: "1",
+            parser_version: PARSER_VERSION,
             candidates_found: candidates.len(),
             candidates_valid: candidates.len(),
             warnings: Vec::new(),
@@ -557,7 +580,7 @@ fn parser_not_run_status(institution: &Institution) -> ParserStatus {
     ParserStatus {
         status: ParserState::NotRun,
         parser_id: institution.parser_id(),
-        parser_version: "1",
+        parser_version: PARSER_VERSION,
         candidates_found: 0,
         candidates_valid: 0,
         warnings: vec!["parser skipped because pdf_oxide extraction failed".to_string()],
@@ -572,9 +595,9 @@ fn candidate_from_movement(
 ) -> Option<CandidateTransaction> {
     let amount_minor = movement.amount.value_minor_units?;
     let direction_hint = if amount_minor < 0 {
-        "outflow"
+        DirectionHint::Outflow
     } else {
-        "inflow"
+        DirectionHint::Inflow
     };
     let fingerprint = normalized_fingerprint(source_document, &movement, amount_minor);
     let candidate_id = format!(
@@ -586,9 +609,9 @@ fn candidate_from_movement(
         id: candidate_id,
         import_batch_id: None,
         source_document_id: source_document.id.clone(),
-        status: "pending_review",
+        status: CandidateStatus::PendingReview,
         duplicate_status: DuplicateStatus {
-            status: "not_checked",
+            status: DuplicateStatusState::NotChecked,
             fingerprint,
             matched_candidate_ids: Vec::new(),
             matched_canonical_transaction_ids: Vec::new(),
@@ -609,12 +632,12 @@ fn candidate_from_movement(
             row_index: movement.row_index,
             bbox: movement.row_bbox,
             extractor: ExtractorRef {
-                name: "pdf_oxide",
+                name: PDF_OXIDE_EXTRACTOR,
                 version: None,
             },
             parser: ParserRef {
                 id: parser_id.to_string(),
-                version: "1",
+                version: PARSER_VERSION,
             },
             evidence: Evidence {
                 redaction: "redacted",
@@ -1138,5 +1161,22 @@ mod tests {
         assert!(!redacted.contains("jane@example.com"));
         assert!(!redacted.contains("123456789"));
         assert!(!redacted.contains("JOHN DOE"));
+    }
+
+    #[test]
+    fn unknown_file_name_does_not_default_to_nequi_parser() {
+        assert_eq!(
+            Institution::from_path(Path::new("statement-redacted.pdf")),
+            Institution::Unknown("statement-redacted".to_string())
+        );
+
+        let (status, candidates, errors) = parse_lines_for_inspection(
+            &source("unknown"),
+            &[line(1, "15/05/2026 $ 1.000,00", 40.0, 700.0)],
+        );
+
+        assert_eq!(status.status, ParserState::UnsupportedDocument);
+        assert!(candidates.is_empty());
+        assert_eq!(errors[0].code, "unsupported_document");
     }
 }
