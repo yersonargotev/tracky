@@ -38,7 +38,7 @@ pub enum CredentialSource {
     Unknown,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct PdfInspectResponse {
     pub schema_version: &'static str,
     pub command: &'static str,
@@ -50,7 +50,7 @@ pub struct PdfInspectResponse {
     pub errors: Vec<TrackyError>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SourceDocument {
     pub id: String,
     pub input_name: String,
@@ -62,21 +62,21 @@ pub struct SourceDocument {
     pub document_duplicate_status: DocumentDuplicateStatus,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AccountHint {
     pub label: String,
     pub currency: &'static str,
     pub masked_identifier: Option<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DocumentDuplicateStatus {
     pub status: DocumentDuplicateState,
     pub matched_source_document_id: Option<String>,
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DocumentDuplicateState {
     New,
@@ -84,7 +84,7 @@ pub enum DocumentDuplicateState {
     Unknown,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ExtractorStatus {
     pub status: ExtractorState,
     pub extractor: &'static str,
@@ -95,7 +95,7 @@ pub struct ExtractorStatus {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ExtractorState {
     NotRun,
@@ -104,7 +104,7 @@ pub enum ExtractorState {
     Failed,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ParserStatus {
     pub status: ParserState,
     pub parser_id: String,
@@ -114,7 +114,7 @@ pub struct ParserStatus {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum ParserState {
     NotRun,
@@ -124,7 +124,7 @@ pub enum ParserState {
     UnsupportedDocument,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CandidateTransaction {
     pub id: String,
     pub import_batch_id: Option<String>,
@@ -144,7 +144,7 @@ pub struct CandidateTransaction {
     pub validation_warnings: Vec<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct DuplicateStatus {
     pub status: DuplicateStatusState,
     pub fingerprint: String,
@@ -153,26 +153,26 @@ pub struct DuplicateStatus {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateStatus {
     PendingReview,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DuplicateStatusState {
     NotChecked,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DirectionHint {
     Inflow,
     Outflow,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Provenance {
     pub source_document_id: String,
     pub page_number: usize,
@@ -184,26 +184,26 @@ pub struct Provenance {
     pub confidence: f32,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ExtractorRef {
     pub name: &'static str,
     pub version: Option<&'static str>,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ParserRef {
     pub id: String,
     pub version: &'static str,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Evidence {
     pub redaction: &'static str,
     pub text: String,
     pub raw_storage_policy: &'static str,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TrackyError {
     pub category: TrackyErrorCategory,
     pub code: TrackyErrorCode,
@@ -213,7 +213,7 @@ pub struct TrackyError {
     pub details: serde_json::Value,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackyErrorCategory {
     ExtractorFailure,
@@ -221,7 +221,7 @@ pub enum TrackyErrorCategory {
     ValidationFailure,
 }
 
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackyErrorCode {
     PdfOpenFailed,
@@ -231,15 +231,17 @@ pub enum TrackyErrorCode {
     MovementRowsNotFound,
     MissingDocumentCredential,
     JsonOutputRequired,
+    DuplicateSourceDocument,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TrackyErrorPath {
     Command,
     ExtractorStatus,
     ExtractorCredentialSource,
     ExtractorStatusPage { page: usize },
     ParserStatus,
+    SourceDocumentDuplicateStatus,
 }
 
 impl Serialize for TrackyErrorPath {
@@ -263,6 +265,9 @@ impl std::fmt::Display for TrackyErrorPath {
                 write!(formatter, "extractor_status.pages[{page}]")
             }
             Self::ParserStatus => formatter.write_str("parser_status"),
+            Self::SourceDocumentDuplicateStatus => {
+                formatter.write_str("source_document.document_duplicate_status")
+            }
         }
     }
 }
@@ -1124,12 +1129,12 @@ fn input_name(path: &Path) -> String {
         .to_string()
 }
 
-fn hex_sha256(bytes: &[u8]) -> String {
+pub fn hex_sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn source_document_id(content_sha256: &str) -> String {
+pub fn source_document_id(content_sha256: &str) -> String {
     format!("srcdoc_{}", &content_sha256[..26.min(content_sha256.len())])
 }
 

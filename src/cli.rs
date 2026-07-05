@@ -1,16 +1,57 @@
 use crate::pdf::{
-    inspect_pdf, supported_institution_hint_from_path, AccountHint, CredentialSource,
-    DocumentDuplicateState, DocumentDuplicateStatus, ExtractorState, ExtractorStatus,
-    InspectPdfOptions, ParserState, ParserStatus, PdfInspectResponse, SourceDocument, TrackyError,
-    TrackyErrorCategory, TrackyErrorCode, TrackyErrorPath, PDF_INSPECT_SCHEMA_VERSION,
+    hex_sha256, inspect_pdf, source_document_id, supported_institution_hint_from_path, AccountHint,
+    CredentialSource, DocumentDuplicateState, DocumentDuplicateStatus, ExtractorState,
+    ExtractorStatus, InspectPdfOptions, ParserState, ParserStatus, PdfInspectResponse,
+    SourceDocument, TrackyError, TrackyErrorCategory, TrackyErrorCode, TrackyErrorPath,
+    PDF_INSPECT_SCHEMA_VERSION,
+};
+use crate::storage::{
+    apply_migrations, duplicate_import_response, find_source_document_by_hash, persist_pdf_import,
+    ImportPdfResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use sha2::{Digest, Sha256};
+use rusqlite::Connection;
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonCommand {
+    PdfInspect,
+    ImportPdf,
+}
+
+impl JsonCommand {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PdfInspect => "pdf inspect",
+            Self::ImportPdf => "import pdf",
+        }
+    }
+
+    fn schema_version(self) -> &'static str {
+        match self {
+            Self::PdfInspect => PDF_INSPECT_SCHEMA_VERSION,
+            Self::ImportPdf => IMPORT_PDF_SCHEMA_VERSION,
+        }
+    }
+
+    fn parser_not_run_warning(self) -> &'static str {
+        match self {
+            Self::PdfInspect => "parser skipped because pdf inspect did not complete extraction",
+            Self::ImportPdf => "parser skipped because import pdf did not complete extraction",
+        }
+    }
+
+    fn writing_error_context(self) -> &'static str {
+        match self {
+            Self::PdfInspect => "writing pdf inspect error JSON",
+            Self::ImportPdf => "writing import pdf error JSON",
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "tracky", about = "Local-first finance tracker")]
@@ -22,6 +63,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Pdf(PdfCommand),
+    Import(ImportCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -33,6 +75,36 @@ struct PdfCommand {
 #[derive(Debug, Subcommand)]
 enum PdfCommands {
     Inspect(PdfInspectArgs),
+}
+
+#[derive(Debug, Parser)]
+struct ImportCommand {
+    #[command(subcommand)]
+    command: ImportCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum ImportCommands {
+    Pdf(ImportPdfArgs),
+}
+
+#[derive(Debug, Parser)]
+struct ImportPdfArgs {
+    /// PDF document to import.
+    #[arg(value_name = "PDF")]
+    pdf: PathBuf,
+
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Name of the environment variable containing the runtime-only PDF password.
+    #[arg(long, value_name = "ENV_VAR")]
+    password_env: Option<String>,
+
+    /// Emit the stable review-first JSON contract.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -73,6 +145,11 @@ where
         Commands::Pdf(pdf) => match pdf.command {
             PdfCommands::Inspect(args) => inspect_command(args, env_lookup, inspector, &mut stdout),
         },
+        Commands::Import(import) => match import.command {
+            ImportCommands::Pdf(args) => {
+                import_pdf_command(args, env_lookup, inspector, &mut stdout)
+            }
+        },
     }
 }
 
@@ -88,8 +165,9 @@ where
     W: Write,
 {
     if !args.json {
-        return write_error_response(
+        return write_command_error_response(
             stdout,
+            JsonCommand::PdfInspect,
             &args.pdf,
             CredentialSource::None,
             TrackyError {
@@ -103,33 +181,15 @@ where
         );
     }
 
-    let password = match args.password_env.as_deref() {
-        Some(key) => match env_lookup(key).filter(|value| !value.is_empty()) {
-            Some(value) => Some(value),
-            None => {
-                return write_error_response(
-                    stdout,
-                    &args.pdf,
-                    CredentialSource::Env,
-                    TrackyError {
-                        category: TrackyErrorCategory::ValidationFailure,
-                        code: TrackyErrorCode::MissingDocumentCredential,
-                        message: "The requested password environment variable was not set."
-                            .to_string(),
-                        path: TrackyErrorPath::ExtractorCredentialSource,
-                        recoverable: true,
-                        details: serde_json::json!({ "env_var": key }),
-                    },
-                )
-            }
-        },
-        None => None,
-    };
-
-    let credential_source = if password.is_some() {
-        CredentialSource::Env
-    } else {
-        CredentialSource::None
+    let Some((password, credential_source)) = runtime_password(
+        args.password_env.as_deref(),
+        &env_lookup,
+        stdout,
+        &args.pdf,
+        JsonCommand::PdfInspect,
+    )?
+    else {
+        return Ok(1);
     };
     let options = InspectPdfOptions {
         document_credential: password.as_deref(),
@@ -144,8 +204,9 @@ where
             writeln!(stdout).context("writing trailing newline")?;
             Ok(exit_code)
         }
-        Err(error) => write_error_response(
+        Err(error) => write_command_error_response(
             stdout,
+            JsonCommand::PdfInspect,
             &args.pdf,
             credential_source,
             TrackyError {
@@ -161,12 +222,238 @@ where
     }
 }
 
-fn write_error_response<W: Write>(
+fn import_pdf_command<EnvLookup, Inspector, W>(
+    args: ImportPdfArgs,
+    env_lookup: EnvLookup,
+    inspector: Inspector,
     stdout: &mut W,
+) -> Result<i32>
+where
+    EnvLookup: Fn(&str) -> Option<String>,
+    Inspector: FnOnce(&Path, InspectPdfOptions<'_>) -> Result<PdfInspectResponse>,
+    W: Write,
+{
+    if !args.json {
+        return write_command_error_response(
+            stdout,
+            JsonCommand::ImportPdf,
+            &args.pdf,
+            CredentialSource::None,
+            TrackyError {
+                category: TrackyErrorCategory::ValidationFailure,
+                code: TrackyErrorCode::JsonOutputRequired,
+                message: "The import pdf command currently requires --json.".to_string(),
+                path: TrackyErrorPath::Command,
+                recoverable: true,
+                details: serde_json::json!({ "flag": "--json" }),
+            },
+        );
+    }
+
+    let Some((password, credential_source)) = runtime_password(
+        args.password_env.as_deref(),
+        &env_lookup,
+        stdout,
+        &args.pdf,
+        JsonCommand::ImportPdf,
+    )?
+    else {
+        return Ok(1);
+    };
+
+    let mut connection = Connection::open(&args.db)
+        .with_context(|| format!("opening SQLite database {}", args.db.display()))?;
+    apply_migrations(&connection).context("applying SQLite migrations")?;
+
+    if let Some(duplicate_response) = duplicate_response_if_imported(&connection, &args.pdf)? {
+        serde_json::to_writer(&mut *stdout, &duplicate_response)
+            .context("writing import pdf duplicate JSON")?;
+        writeln!(stdout).context("writing trailing newline")?;
+        return Ok(1);
+    }
+
+    let options = InspectPdfOptions {
+        document_credential: password.as_deref(),
+        credential_source,
+        institution_hint: None,
+    };
+    let inspect = match inspector(&args.pdf, options) {
+        Ok(response) => response,
+        Err(error) => {
+            return write_command_error_response(
+                stdout,
+                JsonCommand::ImportPdf,
+                &args.pdf,
+                credential_source,
+                TrackyError {
+                    category: TrackyErrorCategory::ExtractorFailure,
+                    code: TrackyErrorCode::PdfOpenFailed,
+                    message:
+                        "PDF extraction failed before candidate transactions could be produced."
+                            .to_string(),
+                    path: TrackyErrorPath::ExtractorStatus,
+                    recoverable: true,
+                    details: serde_json::json!({ "cause": error.to_string() }),
+                },
+            )
+        }
+    };
+    let response = persist_pdf_import(&mut connection, inspect).context("persisting pdf import")?;
+    let exit_code = if response.ok { 0 } else { 1 };
+    serde_json::to_writer(&mut *stdout, &response).context("writing import pdf JSON")?;
+    writeln!(stdout).context("writing trailing newline")?;
+    Ok(exit_code)
+}
+
+fn runtime_password<EnvLookup, W>(
+    password_env: Option<&str>,
+    env_lookup: &EnvLookup,
+    stdout: &mut W,
+    pdf: &Path,
+    command: JsonCommand,
+) -> Result<Option<(Option<String>, CredentialSource)>>
+where
+    EnvLookup: Fn(&str) -> Option<String>,
+    W: Write,
+{
+    match password_env {
+        Some(key) => match env_lookup(key).filter(|value| !value.is_empty()) {
+            Some(value) => Ok(Some((Some(value), CredentialSource::Env))),
+            None => {
+                write_command_error_response(
+                    stdout,
+                    command,
+                    pdf,
+                    CredentialSource::Env,
+                    TrackyError {
+                        category: TrackyErrorCategory::ValidationFailure,
+                        code: TrackyErrorCode::MissingDocumentCredential,
+                        message: "The requested password environment variable was not set."
+                            .to_string(),
+                        path: TrackyErrorPath::ExtractorCredentialSource,
+                        recoverable: true,
+                        details: serde_json::json!({ "env_var": key, "command": command.label() }),
+                    },
+                )?;
+                Ok(None)
+            }
+        },
+        None => Ok(Some((None, CredentialSource::None))),
+    }
+}
+
+fn duplicate_response_if_imported(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<crate::storage::ImportPdfResponse>> {
+    let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let content_sha256 = hex_sha256(&bytes);
+    let Some(existing_id) = find_source_document_by_hash(connection, &content_sha256)? else {
+        return Ok(None);
+    };
+    let institution_hint = institution_hint_for_path(path);
+    let parser_id = format!("{institution_hint}.statement.v1");
+    Ok(Some(duplicate_import_response(
+        SourceDocument {
+            id: source_document_id(&content_sha256),
+            input_name: path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            content_sha256,
+            mime_type: "application/pdf",
+            byte_size: bytes.len() as u64,
+            institution_hint,
+            account_hint: AccountHint {
+                label: "duplicate source account".to_string(),
+                currency: "COP",
+                masked_identifier: None,
+            },
+            document_duplicate_status: DocumentDuplicateStatus {
+                status: DocumentDuplicateState::Unknown,
+                matched_source_document_id: None,
+                reason: None,
+            },
+        },
+        existing_id,
+        ExtractorStatus {
+            status: ExtractorState::NotRun,
+            extractor: "pdf_oxide",
+            pages_seen: 0,
+            pages_extracted: 0,
+            requires_document_credential: false,
+            credential_source: CredentialSource::None,
+            warnings: vec!["duplicate source document detected before extraction".to_string()],
+        },
+        ParserStatus {
+            status: ParserState::NotRun,
+            parser_id,
+            parser_version: "1",
+            candidates_found: 0,
+            candidates_valid: 0,
+            warnings: vec![
+                "parser skipped because source document was already imported".to_string(),
+            ],
+        },
+    )))
+}
+
+struct ErrorEnvelopeParts {
+    source_document: SourceDocument,
+    extractor_status: ExtractorStatus,
+    parser_status: ParserStatus,
+    errors: Vec<TrackyError>,
+}
+
+fn write_command_error_response<W: Write>(
+    stdout: &mut W,
+    command: JsonCommand,
     path: &Path,
     credential_source: CredentialSource,
     error: TrackyError,
 ) -> Result<i32> {
+    let parts = error_envelope_parts(path, credential_source, error, command);
+    match command {
+        JsonCommand::PdfInspect => serde_json::to_writer(
+            &mut *stdout,
+            &PdfInspectResponse {
+                schema_version: command.schema_version(),
+                command: command.label(),
+                ok: false,
+                source_document: parts.source_document,
+                extractor_status: parts.extractor_status,
+                parser_status: parts.parser_status,
+                candidates: Vec::new(),
+                errors: parts.errors,
+            },
+        ),
+        JsonCommand::ImportPdf => serde_json::to_writer(
+            &mut *stdout,
+            &ImportPdfResponse {
+                schema_version: command.schema_version(),
+                command: command.label(),
+                ok: false,
+                import_batch: None,
+                source_document: parts.source_document,
+                extractor_status: parts.extractor_status,
+                parser_status: parts.parser_status,
+                candidates: Vec::new(),
+                errors: parts.errors,
+            },
+        ),
+    }
+    .with_context(|| command.writing_error_context())?;
+    writeln!(stdout).context("writing trailing newline")?;
+    Ok(1)
+}
+
+fn error_envelope_parts(
+    path: &Path,
+    credential_source: CredentialSource,
+    error: TrackyError,
+    command: JsonCommand,
+) -> ErrorEnvelopeParts {
     let institution_hint = institution_hint_for_path(path);
     let parser_id = format!("{institution_hint}.statement.v1");
     let extractor_state = if error.code == TrackyErrorCode::PdfOpenFailed {
@@ -174,10 +461,7 @@ fn write_error_response<W: Write>(
     } else {
         ExtractorState::NotRun
     };
-    let response = PdfInspectResponse {
-        schema_version: PDF_INSPECT_SCHEMA_VERSION,
-        command: "pdf inspect",
-        ok: false,
+    ErrorEnvelopeParts {
         source_document: source_document_for_error(path, &institution_hint),
         extractor_status: ExtractorStatus {
             status: extractor_state,
@@ -194,16 +478,10 @@ fn write_error_response<W: Write>(
             parser_version: "1",
             candidates_found: 0,
             candidates_valid: 0,
-            warnings: vec![
-                "parser skipped because pdf inspect did not complete extraction".to_string(),
-            ],
+            warnings: vec![command.parser_not_run_warning().to_string()],
         },
-        candidates: Vec::new(),
         errors: vec![error],
-    };
-    serde_json::to_writer(&mut *stdout, &response).context("writing pdf inspect error JSON")?;
-    writeln!(stdout).context("writing trailing newline")?;
-    Ok(1)
+    }
 }
 
 fn source_document_for_error(path: &Path, institution_hint: &str) -> SourceDocument {
@@ -251,11 +529,6 @@ fn institution_hint_for_path(path: &Path) -> String {
                 .unwrap_or("unknown")
                 .to_ascii_lowercase()
         })
-}
-
-fn hex_sha256(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -416,5 +689,56 @@ mod tests {
         assert_eq!(json["errors"][0]["category"], "extractor_failure");
         assert_eq!(json["errors"][0]["code"], "pdf_open_failed");
         assert_eq!(json["errors"][0]["path"], "extractor_status");
+    }
+    #[test]
+    fn import_pdf_json_persists_to_requested_db_without_printing_secret() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pdf_path = dir.path().join("nequi-redacted.pdf");
+        let db_path = dir.path().join("tracky.sqlite");
+        std::fs::write(&pdf_path, b"redacted fake pdf bytes").expect("write fake pdf");
+        let pdf_arg = pdf_path.to_string_lossy().to_string();
+        let db_arg = db_path.to_string_lossy().to_string();
+        let cli = parse(&[
+            "tracky",
+            "import",
+            "pdf",
+            &pdf_arg,
+            "--db",
+            &db_arg,
+            "--password-env",
+            "TRACKY_TEST_PDF_PASSWORD",
+            "--json",
+        ]);
+        let mut output = Vec::new();
+        let exit = run_with(
+            cli,
+            |key| (key == "TRACKY_TEST_PDF_PASSWORD").then(|| "super-secret".to_string()),
+            |_path, options| {
+                assert_eq!(options.document_credential, Some("super-secret"));
+                Ok(successful_response(options.credential_source))
+            },
+            &mut output,
+        )
+        .expect("runs import CLI seam");
+
+        assert_eq!(exit, 0);
+        let json: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+        assert_eq!(json["schema_version"], "tracky.import-pdf.v1");
+        assert_eq!(json["command"], "import pdf");
+        assert_eq!(json["ok"], true);
+        assert!(json.get("import_batch").is_some());
+        assert!(!String::from_utf8(output).unwrap().contains("super-secret"));
+
+        let connection = rusqlite::Connection::open(db_path).expect("open db");
+        let canonical_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM canonical_transactions", [], |row| {
+                row.get(0)
+            })
+            .expect("count canonical");
+        let batch_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM import_batches", [], |row| row.get(0))
+            .expect("count batches");
+        assert_eq!(canonical_count, 0);
+        assert_eq!(batch_count, 1);
     }
 }
