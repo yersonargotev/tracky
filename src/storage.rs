@@ -1,6 +1,7 @@
 use crate::pdf::{
     CandidateStatus, CandidateTransaction, DirectionHint, DocumentDuplicateState,
-    DocumentDuplicateStatus, DuplicateStatusState, PdfInspectResponse, SourceDocument, TrackyError,
+    DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState, PdfInspectResponse,
+    SourceDocument, TrackyError,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -12,7 +13,30 @@ pub const IMPORT_PDF_SCHEMA_VERSION: &str = "tracky.import-pdf.v1";
 
 /// Apply Tracky's SQLite migrations needed for the review-first import store.
 pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch(REVIEW_FIRST_SCHEMA)
+    connection.execute_batch(REVIEW_FIRST_SCHEMA)?;
+    add_column_if_missing(
+        connection,
+        "import_batches",
+        "duplicate_count",
+        "ALTER TABLE import_batches ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_count >= 0)",
+    )
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> rusqlite::Result<()> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(());
+        }
+    }
+    connection.execute(alter_sql, [])?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -24,6 +48,7 @@ pub struct ImportBatch {
     pub status: ImportBatchStatus,
     pub candidate_count: usize,
     pub error_count: usize,
+    pub duplicate_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -105,13 +130,23 @@ pub fn persist_pdf_import(
         status,
         candidate_count: inspect.candidates.len(),
         error_count: inspect.errors.len(),
+        duplicate_count: 0,
     };
     let mut candidates = inspect.candidates;
+    mark_candidate_duplicates(connection, &mut candidates)?;
+    let duplicate_count = candidates
+        .iter()
+        .filter(|candidate| is_duplicate_status(&candidate.duplicate_status.status))
+        .count();
     for candidate in &mut candidates {
         candidate.import_batch_id = Some(batch.id.clone());
         candidate.source_document_id = source_document.id.clone();
         candidate.provenance.source_document_id = source_document.id.clone();
     }
+    let batch = ImportBatch {
+        duplicate_count,
+        ..batch
+    };
 
     let tx = connection
         .transaction()
@@ -122,6 +157,9 @@ pub fn persist_pdf_import(
         insert_candidate(&tx, candidate, &source_document, &batch.id)?;
         insert_provenance(&tx, candidate, &source_document, &batch.id)?;
         insert_fingerprint(&tx, candidate)?;
+    }
+    for candidate in &candidates {
+        insert_duplicate_markers(&tx, candidate)?;
     }
     tx.commit().context("committing pdf import")?;
 
@@ -216,8 +254,8 @@ fn insert_import_batch(
     connection.execute(
         "INSERT INTO import_batches (
             id, source_document_id, started_at, completed_at, status,
-            candidate_count, error_count, error_details_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            candidate_count, error_count, duplicate_count, error_details_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             batch.id,
             batch.source_document_id,
@@ -226,10 +264,240 @@ fn insert_import_batch(
             import_batch_status_value(&batch.status),
             batch.candidate_count as i64,
             batch.error_count as i64,
+            batch.duplicate_count as i64,
             serde_json::to_string(errors).context("serializing import errors")?,
         ],
     )?;
     Ok(())
+}
+
+fn mark_candidate_duplicates(
+    connection: &Connection,
+    candidates: &mut [CandidateTransaction],
+) -> Result<()> {
+    let exact_matches = in_batch_exact_matches(candidates);
+    let near_matches = in_batch_near_matches(candidates);
+    for candidate in candidates {
+        let duplicate_status =
+            duplicate_status_for_candidate(connection, candidate, &exact_matches, &near_matches)?;
+        if should_mark_candidate_possible_duplicate(candidate, &duplicate_status.status) {
+            candidate.status = CandidateStatus::PossibleDuplicate;
+        }
+        candidate.duplicate_status = duplicate_status;
+    }
+    Ok(())
+}
+
+fn in_batch_exact_matches(
+    candidates: &[CandidateTransaction],
+) -> std::collections::HashMap<String, Vec<String>> {
+    let mut by_fingerprint: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for candidate in candidates {
+        by_fingerprint
+            .entry(candidate.duplicate_status.fingerprint.clone())
+            .or_default()
+            .push(candidate.id.clone());
+    }
+    by_fingerprint
+}
+
+fn in_batch_near_matches(
+    candidates: &[CandidateTransaction],
+) -> std::collections::HashMap<DuplicateNearKey, Vec<String>> {
+    let mut by_near_key: std::collections::HashMap<DuplicateNearKey, Vec<String>> =
+        std::collections::HashMap::new();
+    for candidate in candidates {
+        by_near_key
+            .entry(DuplicateNearKey::from(candidate))
+            .or_default()
+            .push(candidate.id.clone());
+    }
+    by_near_key
+}
+
+fn duplicate_status_for_candidate(
+    connection: &Connection,
+    candidate: &CandidateTransaction,
+    exact_matches: &std::collections::HashMap<String, Vec<String>>,
+    near_matches: &std::collections::HashMap<DuplicateNearKey, Vec<String>>,
+) -> Result<DuplicateStatus> {
+    let mut matched_candidate_ids = Vec::new();
+    let mut matched_canonical_transaction_ids = Vec::new();
+    if let Some(candidate_ids) = exact_matches.get(&candidate.duplicate_status.fingerprint) {
+        matched_candidate_ids.extend(
+            candidate_ids
+                .iter()
+                .filter(|candidate_id| *candidate_id != &candidate.id)
+                .cloned(),
+        );
+    }
+    let existing_matches =
+        existing_fingerprint_matches(connection, &candidate.duplicate_status.fingerprint)?;
+    matched_candidate_ids.extend(existing_matches.matched_candidate_ids);
+    matched_canonical_transaction_ids.extend(existing_matches.matched_canonical_transaction_ids);
+
+    let mut status =
+        if matched_candidate_ids.is_empty() && matched_canonical_transaction_ids.is_empty() {
+            DuplicateStatusState::Unique
+        } else {
+            DuplicateStatusState::ExactDuplicate
+        };
+
+    if status == DuplicateStatusState::Unique {
+        if let Some(candidate_ids) = near_matches.get(&DuplicateNearKey::from(candidate)) {
+            matched_candidate_ids.extend(
+                candidate_ids
+                    .iter()
+                    .filter(|candidate_id| *candidate_id != &candidate.id)
+                    .cloned(),
+            );
+        }
+        let near_existing_matches = existing_near_matches(connection, candidate)?;
+        matched_candidate_ids.extend(near_existing_matches.matched_candidate_ids);
+        matched_canonical_transaction_ids
+            .extend(near_existing_matches.matched_canonical_transaction_ids);
+        if !matched_candidate_ids.is_empty() || !matched_canonical_transaction_ids.is_empty() {
+            status = DuplicateStatusState::PossibleDuplicate;
+        }
+    }
+
+    let reason = match status {
+        DuplicateStatusState::ExactDuplicate => {
+            Some("normalized_transaction_fingerprint_matched".to_string())
+        }
+        DuplicateStatusState::PossibleDuplicate => {
+            Some("normalized_transaction_fields_matched".to_string())
+        }
+        DuplicateStatusState::NotChecked | DuplicateStatusState::Unique => None,
+    };
+
+    Ok(DuplicateStatus {
+        status,
+        fingerprint: candidate.duplicate_status.fingerprint.clone(),
+        matched_candidate_ids,
+        matched_canonical_transaction_ids,
+        reason,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DuplicateNearKey {
+    account_key: String,
+    posted_date: String,
+    amount_minor: i64,
+    currency: String,
+}
+
+impl From<&CandidateTransaction> for DuplicateNearKey {
+    fn from(candidate: &CandidateTransaction) -> Self {
+        Self {
+            account_key: duplicate_account_key(candidate),
+            posted_date: candidate.posted_date.clone(),
+            amount_minor: candidate.amount_minor,
+            currency: candidate.currency.to_string(),
+        }
+    }
+}
+
+struct ExistingFingerprintMatches {
+    matched_candidate_ids: Vec<String>,
+    matched_canonical_transaction_ids: Vec<String>,
+}
+
+fn existing_fingerprint_matches(
+    connection: &Connection,
+    fingerprint: &str,
+) -> Result<ExistingFingerprintMatches> {
+    let mut statement = connection.prepare(
+        "SELECT candidate_transaction_id, canonical_transaction_id
+         FROM transaction_fingerprints
+         WHERE fingerprint = ?1",
+    )?;
+    let rows = statement.query_map(params![fingerprint], |row| {
+        Ok((
+            row.get::<_, Option<String>>(0)?,
+            row.get::<_, Option<String>>(1)?,
+        ))
+    })?;
+    let mut matched_candidate_ids = Vec::new();
+    let mut matched_canonical_transaction_ids = Vec::new();
+    for row in rows {
+        let (candidate_id, canonical_id) = row?;
+        if let Some(candidate_id) = candidate_id {
+            matched_candidate_ids.push(candidate_id);
+        }
+        if let Some(canonical_id) = canonical_id {
+            matched_canonical_transaction_ids.push(canonical_id);
+        }
+    }
+    Ok(ExistingFingerprintMatches {
+        matched_candidate_ids,
+        matched_canonical_transaction_ids,
+    })
+}
+
+fn existing_near_matches(
+    connection: &Connection,
+    candidate: &CandidateTransaction,
+) -> Result<ExistingFingerprintMatches> {
+    let mut statement = connection.prepare(
+        "SELECT candidate_transaction_id, canonical_transaction_id
+         FROM transaction_fingerprints
+         WHERE normalized_account_key = ?1
+           AND normalized_posted_date = ?2
+           AND normalized_amount_minor = ?3
+           AND normalized_currency = ?4
+           AND fingerprint != ?5",
+    )?;
+    let rows = statement.query_map(
+        params![
+            duplicate_account_key(candidate),
+            candidate.posted_date,
+            candidate.amount_minor,
+            candidate.currency,
+            candidate.duplicate_status.fingerprint,
+        ],
+        |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        },
+    )?;
+    let mut matched_candidate_ids = Vec::new();
+    let mut matched_canonical_transaction_ids = Vec::new();
+    for row in rows {
+        let (candidate_id, canonical_id) = row?;
+        if let Some(candidate_id) = candidate_id {
+            matched_candidate_ids.push(candidate_id);
+        }
+        if let Some(canonical_id) = canonical_id {
+            matched_canonical_transaction_ids.push(canonical_id);
+        }
+    }
+    Ok(ExistingFingerprintMatches {
+        matched_candidate_ids,
+        matched_canonical_transaction_ids,
+    })
+}
+
+fn is_duplicate_status(status: &DuplicateStatusState) -> bool {
+    matches!(
+        status,
+        DuplicateStatusState::PossibleDuplicate | DuplicateStatusState::ExactDuplicate
+    )
+}
+
+fn should_mark_candidate_possible_duplicate(
+    candidate: &CandidateTransaction,
+    duplicate_status: &DuplicateStatusState,
+) -> bool {
+    is_duplicate_status(duplicate_status)
+        && !matches!(
+            candidate.status,
+            CandidateStatus::Accepted | CandidateStatus::Rejected
+        )
 }
 
 fn insert_candidate(
@@ -310,6 +578,43 @@ fn insert_provenance(
     Ok(())
 }
 
+fn insert_duplicate_markers(
+    connection: &Connection,
+    candidate: &CandidateTransaction,
+) -> Result<()> {
+    for matched_candidate_id in &candidate.duplicate_status.matched_candidate_ids {
+        connection.execute(
+            "INSERT INTO transaction_duplicate_markers (
+                id, candidate_transaction_id, matched_candidate_transaction_id,
+                duplicate_status, reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                duplicate_marker_id(&candidate.id, matched_candidate_id),
+                candidate.id,
+                matched_candidate_id,
+                duplicate_status_value(&candidate.duplicate_status.status),
+                candidate.duplicate_status.reason,
+            ],
+        )?;
+    }
+    for matched_canonical_id in &candidate.duplicate_status.matched_canonical_transaction_ids {
+        connection.execute(
+            "INSERT INTO transaction_duplicate_markers (
+                id, candidate_transaction_id, matched_canonical_transaction_id,
+                duplicate_status, reason
+             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                duplicate_marker_id(&candidate.id, matched_canonical_id),
+                candidate.id,
+                matched_canonical_id,
+                duplicate_status_value(&candidate.duplicate_status.status),
+                candidate.duplicate_status.reason,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 fn insert_fingerprint(connection: &Connection, candidate: &CandidateTransaction) -> Result<()> {
     connection.execute(
         "INSERT OR IGNORE INTO transaction_fingerprints (
@@ -322,7 +627,7 @@ fn insert_fingerprint(connection: &Connection, candidate: &CandidateTransaction)
             candidate.duplicate_status.fingerprint,
             candidate.id,
             duplicate_status_value(&candidate.duplicate_status.status),
-            candidate.account_hint.label.to_ascii_lowercase(),
+            duplicate_account_key(candidate),
             candidate.posted_date,
             candidate.amount_minor,
             candidate.currency,
@@ -338,6 +643,25 @@ fn import_batch_id(content_sha256: &str) -> String {
 
 fn provenance_id(candidate_id: &str) -> String {
     format!("prov_{}", candidate_id.trim_start_matches("cand_"))
+}
+
+fn duplicate_marker_id(candidate_id: &str, matched_id: &str) -> String {
+    let digest = Sha256::digest(format!("{candidate_id}|{matched_id}").as_bytes());
+    format!(
+        "dup_{}",
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn duplicate_account_key(candidate: &CandidateTransaction) -> String {
+    format!(
+        "{}|{}",
+        candidate.institution_hint.to_ascii_lowercase(),
+        candidate.account_hint.label.to_ascii_lowercase()
+    )
 }
 
 fn fingerprint_row_id(candidate_id: &str) -> String {
@@ -362,12 +686,18 @@ fn import_batch_status_value(status: &ImportBatchStatus) -> &'static str {
 fn candidate_status_value(status: &CandidateStatus) -> &'static str {
     match status {
         CandidateStatus::PendingReview => "pending_review",
+        CandidateStatus::PossibleDuplicate => "possible_duplicate",
+        CandidateStatus::Accepted => "accepted",
+        CandidateStatus::Rejected => "rejected",
     }
 }
 
 fn duplicate_status_value(status: &DuplicateStatusState) -> &'static str {
     match status {
         DuplicateStatusState::NotChecked => "not_checked",
+        DuplicateStatusState::Unique => "unique",
+        DuplicateStatusState::PossibleDuplicate => "possible_duplicate",
+        DuplicateStatusState::ExactDuplicate => "exact_duplicate",
     }
 }
 

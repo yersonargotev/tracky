@@ -122,7 +122,8 @@ An `ImportBatch` groups candidates created by one `import pdf` run so the user c
   "completed_at": "2026-07-04T23:50:03Z",
   "status": "completed",
   "candidate_count": 12,
-  "error_count": 0
+  "error_count": 0,
+  "duplicate_count": 2
 }
 ```
 
@@ -133,6 +134,8 @@ An `ImportBatch` groups candidates created by one `import pdf` run so the user c
 | `completed` | Extraction and parsing finished and candidates were created. |
 | `completed_with_errors` | Some candidates or evidence were produced, but stable errors also occurred. |
 | `failed` | No candidates were created because extraction, parsing, validation, or duplicate-document checks failed. |
+
+`duplicate_count` counts candidate transactions in the batch whose `duplicate_status.status` is `possible_duplicate` or `exact_duplicate`.
 
 ### CandidateTransaction
 
@@ -145,7 +148,7 @@ A `CandidateTransaction` is a **transacción candidata**. It is reviewable data 
   "source_document_id": "srcdoc_01JZ0000000000000000000000",
   "status": "pending_review",
   "duplicate_status": {
-    "status": "not_checked",
+    "status": "unique",
     "fingerprint": "normalized-account-date-amount-description-hash",
     "matched_candidate_ids": [],
     "matched_canonical_transaction_ids": [],

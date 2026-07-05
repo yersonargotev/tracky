@@ -157,12 +157,18 @@ pub struct DuplicateStatus {
 #[serde(rename_all = "snake_case")]
 pub enum CandidateStatus {
     PendingReview,
+    PossibleDuplicate,
+    Accepted,
+    Rejected,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum DuplicateStatusState {
     NotChecked,
+    Unique,
+    PossibleDuplicate,
+    ExactDuplicate,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -679,7 +685,7 @@ fn candidate_from_movement(
     } else {
         DirectionHint::Inflow
     };
-    let fingerprint = normalized_fingerprint(source_document, &movement, amount_minor);
+    let fingerprint = normalized_fingerprint(source_document, parser_id, &movement, amount_minor);
     let candidate_id = format!(
         "cand_{}_{:04}",
         &source_document.id.replace("srcdoc_", ""),
@@ -1140,15 +1146,18 @@ pub fn source_document_id(content_sha256: &str) -> String {
 
 fn normalized_fingerprint(
     source_document: &SourceDocument,
+    parser_id: &str,
     movement: &ParsedMovement,
     amount_minor: i64,
 ) -> String {
     let input = format!(
-        "{}|{}|{}|{}|{}",
-        source_document.institution_hint,
-        source_document.account_hint.label,
+        "{}|{}|{}|{}|{}|{}|{}",
+        source_document.institution_hint.to_ascii_lowercase(),
+        source_document.account_hint.label.to_ascii_lowercase(),
+        parser_id.to_ascii_lowercase(),
         movement.posted_date,
         amount_minor,
+        movement.amount.currency.to_ascii_uppercase(),
         movement.description_sample.to_lowercase()
     );
     let digest = Sha256::digest(input.as_bytes());

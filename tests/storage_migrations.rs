@@ -43,6 +43,39 @@ fn migrations_create_review_first_tables() {
 }
 
 #[test]
+fn migrations_add_duplicate_count_to_existing_import_batches() {
+    let (_dir, connection) = temporary_database();
+    connection
+        .execute_batch(
+            "CREATE TABLE import_batches (
+                id TEXT PRIMARY KEY,
+                source_document_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                status TEXT NOT NULL CHECK (status IN ('completed', 'completed_with_errors', 'failed')),
+                candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (candidate_count >= 0),
+                error_count INTEGER NOT NULL DEFAULT 0 CHECK (error_count >= 0),
+                error_details_json TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT INTO import_batches (
+                id, source_document_id, started_at, status, candidate_count, error_count
+            ) VALUES ('batch_legacy', 'srcdoc_legacy', '2026-07-05T00:00:00Z', 'completed', 1, 0);",
+        )
+        .expect("seed legacy import_batches table");
+
+    apply_migrations(&connection).expect("apply migrations");
+
+    let duplicate_count: i64 = connection
+        .query_row(
+            "SELECT duplicate_count FROM import_batches WHERE id = 'batch_legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read backfilled duplicate_count");
+    assert_eq!(duplicate_count, 0);
+}
+
+#[test]
 fn can_insert_and_read_core_review_first_records_without_canonical_promotion() {
     let (_dir, connection) = temporary_database();
     apply_migrations(&connection).expect("apply migrations");

@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS import_batches (
     status TEXT NOT NULL CHECK (status IN ('completed', 'completed_with_errors', 'failed')),
     candidate_count INTEGER NOT NULL DEFAULT 0 CHECK (candidate_count >= 0),
     error_count INTEGER NOT NULL DEFAULT 0 CHECK (error_count >= 0),
+    duplicate_count INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_count >= 0),
     error_details_json TEXT NOT NULL DEFAULT '[]'
 );
 
