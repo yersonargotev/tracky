@@ -3,7 +3,8 @@ use tracky::pdf::{
     AccountHint, CandidateStatus, CandidateTransaction, CredentialSource, DirectionHint,
     DocumentDuplicateState, DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState,
     Evidence, ExtractorRef, ExtractorState, ExtractorStatus, ParserRef, ParserState, ParserStatus,
-    PdfInspectResponse, Provenance, SourceDocument, TrackyError, PDF_INSPECT_SCHEMA_VERSION,
+    PdfInspectResponse, Provenance, SemanticHint, SourceDocument, TrackyError,
+    PDF_INSPECT_SCHEMA_VERSION,
 };
 use tracky::storage::{apply_migrations, persist_pdf_import};
 
@@ -57,6 +58,7 @@ fn inspect_response_with_fingerprint(hash: &str, fingerprint: &str) -> PdfInspec
         currency: "COP",
         balance_minor: Some(12500000),
         direction_hint: DirectionHint::Outflow,
+        semantic_hint: SemanticHint::BankMovement,
         confidence: 0.91,
         provenance: Provenance {
             source_document_id: source_document.id.clone(),
@@ -179,14 +181,14 @@ fn successful_import_persists_review_first_records() {
         .expect("read counts");
     assert_eq!(counts, (1, 1, 1, 1, 1, 0));
 
-    let persisted: (String, String, String, String, String) = connection
+    let persisted: (String, String, String, String, String, String) = connection
         .query_row(
-            "SELECT c.status, c.duplicate_status, b.status, p.raw_storage_policy, p.evidence_text_redacted
+            "SELECT c.status, c.duplicate_status, c.semantic_hint, b.status, p.raw_storage_policy, p.evidence_text_redacted
              FROM candidate_transactions c
              JOIN import_batches b ON b.id = c.import_batch_id
              JOIN provenance p ON p.candidate_transaction_id = c.id",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
         )
         .expect("read persisted statuses");
     assert_eq!(
@@ -194,6 +196,7 @@ fn successful_import_persists_review_first_records() {
         (
             "pending_review".to_string(),
             "unique".to_string(),
+            "bank_movement".to_string(),
             "completed".to_string(),
             "redacted_only".to_string(),
             "2026-05-31 REDACTED_COUNTERPARTY <amount>".to_string(),

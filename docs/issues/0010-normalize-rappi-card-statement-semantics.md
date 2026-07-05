@@ -15,12 +15,12 @@ This slice should preserve review-first behavior: the parser may improve signs, 
 
 ## Acceptance criteria
 
-- [ ] RappiCard purchase rows are emitted with a review-safe semantic hint that distinguishes card charges from income.
-- [ ] RappiCard payment rows such as `PAGOS POR PSE` are emitted with a review-safe semantic hint that distinguishes card payments from purchases.
-- [ ] Existing Nequi amount/balance behavior remains unchanged.
-- [ ] JSON output remains backward-compatible where possible and documents any new field or enum used for card semantics.
-- [ ] Tests cover at least one Rappi purchase row, one Rappi PSE payment row, and one Rappi installment/recurring row using redacted row fixtures only.
-- [ ] `import pdf` still creates no canonical transactions.
+- [x] RappiCard purchase rows are emitted with a review-safe semantic hint that distinguishes card charges from income.
+- [x] RappiCard payment rows such as `PAGOS POR PSE` are emitted with a review-safe semantic hint that distinguishes card payments from purchases.
+- [x] Existing Nequi amount/balance behavior remains unchanged.
+- [x] JSON output remains backward-compatible where possible and documents any new field or enum used for card semantics.
+- [x] Tests cover at least one Rappi purchase row, one Rappi PSE payment row, and one Rappi installment/recurring row using redacted row fixtures only.
+- [x] `import pdf` still creates no canonical transactions.
 
 ## Blocked by
 

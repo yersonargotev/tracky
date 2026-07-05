@@ -139,6 +139,7 @@ pub struct CandidateTransaction {
     pub currency: &'static str,
     pub balance_minor: Option<i64>,
     pub direction_hint: DirectionHint,
+    pub semantic_hint: SemanticHint,
     pub confidence: f32,
     pub provenance: Provenance,
     pub validation_warnings: Vec<String>,
@@ -176,6 +177,14 @@ pub enum DuplicateStatusState {
 pub enum DirectionHint {
     Inflow,
     Outflow,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticHint {
+    BankMovement,
+    CardCharge,
+    CardPayment,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -311,6 +320,7 @@ struct ParsedMovement {
     description_sample: String,
     amount: ParsedMoney,
     balance: Option<ParsedMoney>,
+    semantic_hint: SemanticHint,
     confidence: f32,
     evidence_text: String,
 }
@@ -680,11 +690,7 @@ fn candidate_from_movement(
     movement: ParsedMovement,
 ) -> Option<CandidateTransaction> {
     let amount_minor = movement.amount.value_minor_units?;
-    let direction_hint = if amount_minor < 0 {
-        DirectionHint::Outflow
-    } else {
-        DirectionHint::Inflow
-    };
+    let direction_hint = direction_hint_for_movement(amount_minor, &movement.semantic_hint);
     let fingerprint = normalized_fingerprint(source_document, parser_id, &movement, amount_minor);
     let candidate_id = format!(
         "cand_{}_{:04}",
@@ -711,6 +717,7 @@ fn candidate_from_movement(
         currency: movement.amount.currency,
         balance_minor: movement.balance.and_then(|money| money.value_minor_units),
         direction_hint,
+        semantic_hint: movement.semantic_hint,
         confidence: movement.confidence,
         provenance: Provenance {
             source_document_id: source_document.id.clone(),
@@ -734,6 +741,19 @@ fn candidate_from_movement(
         },
         validation_warnings: Vec::new(),
     })
+}
+
+fn direction_hint_for_movement(amount_minor: i64, semantic_hint: &SemanticHint) -> DirectionHint {
+    match semantic_hint {
+        SemanticHint::CardCharge => DirectionHint::Outflow,
+        SemanticHint::BankMovement | SemanticHint::CardPayment => {
+            if amount_minor < 0 {
+                DirectionHint::Outflow
+            } else {
+                DirectionHint::Inflow
+            }
+        }
+    }
 }
 
 fn visual_rows(lines: &[ExtractedLine]) -> Vec<VisualRow> {
@@ -825,6 +845,7 @@ fn parse_nequi_rows(rows: &[VisualRow]) -> Vec<ParsedMovement> {
                 description_sample: redact_description_sample(&description),
                 amount: money[0].clone(),
                 balance: money.get(1).cloned(),
+                semantic_hint: SemanticHint::BankMovement,
                 confidence,
                 evidence_text: redact_row_for_evidence(&row_text),
             })
@@ -865,6 +886,7 @@ fn parse_rappi_rows(rows: &[VisualRow]) -> Vec<ParsedMovement> {
                 description.push_str(&near);
             }
             let amount = select_rappi_amount(&money);
+            let semantic_hint = rappi_semantic_hint(&description);
             Some(ParsedMovement {
                 page: row.page,
                 row_index: row.row_index,
@@ -873,6 +895,7 @@ fn parse_rappi_rows(rows: &[VisualRow]) -> Vec<ParsedMovement> {
                 description_sample: redact_description_sample(&description),
                 amount,
                 balance: None,
+                semantic_hint,
                 confidence: if description.trim().is_empty() {
                     0.72
                 } else {
@@ -882,6 +905,15 @@ fn parse_rappi_rows(rows: &[VisualRow]) -> Vec<ParsedMovement> {
             })
         })
         .collect()
+}
+
+fn rappi_semantic_hint(description: &str) -> SemanticHint {
+    let normalized = normalize_spaces(description).to_ascii_uppercase();
+    if normalized.contains("PAGOS POR PSE") || normalized.contains("PAGO PSE") {
+        SemanticHint::CardPayment
+    } else {
+        SemanticHint::CardCharge
+    }
 }
 
 fn select_rappi_amount(money: &[MoneyToken]) -> ParsedMoney {
@@ -1236,6 +1268,51 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].amount_minor, 3_250_000);
         assert_eq!(candidates[0].balance_minor, None);
+    }
+
+    #[test]
+    fn rappi_purchase_rows_are_card_charges_not_income() {
+        let lines = vec![
+            line(1, "2026-06-01", 40.0, 500.0),
+            line(1, "COMERCIO REDACTADO", 150.0, 500.0),
+            line(1, "$ 32.500,00", 300.0, 500.0),
+        ];
+        let (_, candidates, errors) = parse_lines_for_inspection(&source("rappi"), &lines);
+        assert!(errors.is_empty());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].semantic_hint, SemanticHint::CardCharge);
+        assert_eq!(candidates[0].direction_hint, DirectionHint::Outflow);
+        assert_eq!(candidates[0].amount_minor, 3_250_000);
+    }
+
+    #[test]
+    fn rappi_pse_payment_rows_are_card_payments() {
+        let lines = vec![
+            line(1, "2026-06-02", 40.0, 500.0),
+            line(1, "PAGOS POR PSE", 150.0, 500.0),
+            line(1, "$ -120.000,00", 300.0, 500.0),
+        ];
+        let (_, candidates, errors) = parse_lines_for_inspection(&source("rappi"), &lines);
+        assert!(errors.is_empty());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].semantic_hint, SemanticHint::CardPayment);
+        assert_eq!(candidates[0].direction_hint, DirectionHint::Outflow);
+        assert_eq!(candidates[0].amount_minor, -12_000_000);
+    }
+
+    #[test]
+    fn rappi_installment_or_recurring_rows_remain_card_charges() {
+        let lines = vec![
+            line(1, "2026-06-03", 40.0, 500.0),
+            line(1, "SUSCRIPCION REDACTADA CUOTA 01/12", 150.0, 500.0),
+            line(1, "$ 49.900,00", 300.0, 500.0),
+        ];
+        let (_, candidates, errors) = parse_lines_for_inspection(&source("rappi"), &lines);
+        assert!(errors.is_empty());
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].semantic_hint, SemanticHint::CardCharge);
+        assert_eq!(candidates[0].direction_hint, DirectionHint::Outflow);
+        assert_eq!(candidates[0].amount_minor, 4_990_000);
     }
 
     #[test]

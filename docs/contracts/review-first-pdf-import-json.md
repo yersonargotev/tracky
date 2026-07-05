@@ -166,6 +166,7 @@ A `CandidateTransaction` is a **transacción candidata**. It is reviewable data 
   "currency": "COP",
   "balance_minor": 12500000,
   "direction_hint": "outflow",
+  "semantic_hint": "bank_movement",
   "confidence": 0.91,
   "provenance": { "...": "Provenance" },
   "validation_warnings": []
@@ -180,6 +181,16 @@ A `CandidateTransaction` is a **transacción candidata**. It is reviewable data 
 | `possible_duplicate` | Candidate resembles another candidate or canonical transaction and needs duplicate resolution. |
 | `accepted` | Candidate has been accepted by a future review command; acceptance may create or link a canonical transaction outside this import command. |
 | `rejected` | Candidate has been rejected by a future review command and should not become canonical. |
+
+`direction_hint` remains a coarse sign/direction hint (`inflow` or `outflow`). For RappiCard statements, use `semantic_hint` to avoid interpreting card rows as ordinary income or expenses from sign alone.
+
+`semantic_hint` values:
+
+| Value | Meaning |
+| --- | --- |
+| `bank_movement` | Regular bank/wallet movement whose amount sign can be reviewed with the existing direction hint. |
+| `card_charge` | Credit-card purchase, subscription, fee, interest, installment, restaurant, or supermarket row. These are expense-like card charges even when the raw statement amount is positive. |
+| `card_payment` | Credit-card payment/liability reduction such as `PAGOS POR PSE`; it is distinct from purchases and should not be treated as ordinary income. |
 
 `duplicate_status.status` values:
 

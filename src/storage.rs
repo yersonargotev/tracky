@@ -1,7 +1,7 @@
 use crate::pdf::{
     CandidateStatus, CandidateTransaction, DirectionHint, DocumentDuplicateState,
     DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState, PdfInspectResponse,
-    SourceDocument, TrackyError,
+    SemanticHint, SourceDocument, TrackyError,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -39,6 +39,7 @@ pub struct ReviewCandidate {
     pub currency: String,
     pub balance_minor: Option<i64>,
     pub direction_hint: Option<String>,
+    pub semantic_hint: Option<String>,
     pub confidence: f64,
     pub provenance: ReviewProvenance,
     pub validation_warnings: Vec<String>,
@@ -110,6 +111,12 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         "import_batches",
         "duplicate_count",
         "ALTER TABLE import_batches ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_count >= 0)",
+    )?;
+    add_column_if_missing(
+        connection,
+        "candidate_transactions",
+        "semantic_hint",
+        "ALTER TABLE candidate_transactions ADD COLUMN semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment'))",
     )
 }
 
@@ -622,9 +629,9 @@ fn insert_candidate(
             id, import_batch_id, source_document_id, institution_hint,
             account_label_hint, account_currency_hint, account_masked_identifier_hint,
             posted_date, description, amount_minor, currency, balance_minor,
-            direction_hint, confidence, status, duplicate_status, fingerprint,
+            direction_hint, semantic_hint, confidence, status, duplicate_status, fingerprint,
             validation_warnings_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             candidate.id,
             batch_id,
@@ -639,6 +646,7 @@ fn insert_candidate(
             candidate.currency,
             candidate.balance_minor,
             direction_hint_value(&candidate.direction_hint),
+            semantic_hint_value(&candidate.semantic_hint),
             candidate.confidence as f64,
             candidate_status_value(&candidate.status),
             duplicate_status_value(&candidate.duplicate_status.status),
@@ -828,6 +836,14 @@ fn direction_hint_value(direction_hint: &DirectionHint) -> &'static str {
     match direction_hint {
         DirectionHint::Inflow => "inflow",
         DirectionHint::Outflow => "outflow",
+    }
+}
+
+fn semantic_hint_value(semantic_hint: &SemanticHint) -> &'static str {
+    match semantic_hint {
+        SemanticHint::BankMovement => "bank_movement",
+        SemanticHint::CardCharge => "card_charge",
+        SemanticHint::CardPayment => "card_payment",
     }
 }
 
@@ -1113,7 +1129,7 @@ fn review_candidate_select_sql() -> String {
         c.duplicate_status, c.fingerprint, c.institution_hint,
         c.account_label_hint, c.account_currency_hint, c.account_masked_identifier_hint,
         c.posted_date, c.description, c.amount_minor, c.currency, c.balance_minor,
-        c.direction_hint, c.confidence, c.validation_warnings_json, c.canonical_transaction_id,
+        c.direction_hint, c.semantic_hint, c.confidence, c.validation_warnings_json, c.canonical_transaction_id,
         p.candidate_transaction_id, p.source_document_id, p.import_batch_id, p.page_number, p.row_index,
         p.evidence_redaction, p.evidence_text_redacted, p.raw_storage_policy,
         p.extractor_name, p.extractor_version, p.parser_id, p.parser_version,
@@ -1124,7 +1140,7 @@ fn review_candidate_select_sql() -> String {
 }
 
 fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewCandidate> {
-    let validation_warnings_json: String = row.get(17)?;
+    let validation_warnings_json: String = row.get(18)?;
     let validation_warnings = serde_json::from_str(&validation_warnings_json).unwrap_or_default();
     Ok(ReviewCandidate {
         id: row.get(0)?,
@@ -1150,25 +1166,26 @@ fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Review
         currency: row.get(13)?,
         balance_minor: row.get(14)?,
         direction_hint: row.get(15)?,
-        confidence: row.get(16)?,
+        semantic_hint: row.get(16)?,
+        confidence: row.get(17)?,
         provenance: ReviewProvenance {
-            candidate_transaction_id: row.get(19)?,
-            source_document_id: row.get(20)?,
-            import_batch_id: row.get(21)?,
-            page_number: row.get(22)?,
-            row_index: row.get(23)?,
-            evidence_redaction: row.get(24)?,
-            evidence_text_redacted: row.get(25)?,
-            raw_storage_policy: row.get(26)?,
-            extractor_name: row.get(27)?,
-            extractor_version: row.get(28)?,
-            parser_id: row.get(29)?,
-            parser_version: row.get(30)?,
-            confidence: row.get(31)?,
-            canonical_transaction_id: row.get(32)?,
+            candidate_transaction_id: row.get(20)?,
+            source_document_id: row.get(21)?,
+            import_batch_id: row.get(22)?,
+            page_number: row.get(23)?,
+            row_index: row.get(24)?,
+            evidence_redaction: row.get(25)?,
+            evidence_text_redacted: row.get(26)?,
+            raw_storage_policy: row.get(27)?,
+            extractor_name: row.get(28)?,
+            extractor_version: row.get(29)?,
+            parser_id: row.get(30)?,
+            parser_version: row.get(31)?,
+            confidence: row.get(32)?,
+            canonical_transaction_id: row.get(33)?,
         },
         validation_warnings,
-        canonical_transaction_id: row.get(18)?,
+        canonical_transaction_id: row.get(19)?,
     })
 }
 

@@ -76,6 +76,48 @@ fn migrations_add_duplicate_count_to_existing_import_batches() {
 }
 
 #[test]
+fn migrations_add_semantic_hint_to_existing_candidate_transactions() {
+    let (_dir, connection) = temporary_database();
+    connection
+        .execute_batch(
+            "CREATE TABLE candidate_transactions (
+                id TEXT PRIMARY KEY,
+                import_batch_id TEXT NOT NULL,
+                source_document_id TEXT NOT NULL,
+                posted_date TEXT NOT NULL,
+                description TEXT NOT NULL,
+                amount_minor INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                direction_hint TEXT CHECK (direction_hint IN ('inflow', 'outflow')),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                status TEXT NOT NULL CHECK (status IN ('pending_review', 'possible_duplicate', 'accepted', 'rejected')),
+                duplicate_status TEXT NOT NULL DEFAULT 'not_checked' CHECK (duplicate_status IN ('not_checked', 'unique', 'possible_duplicate', 'exact_duplicate')),
+                fingerprint TEXT,
+                validation_warnings_json TEXT NOT NULL DEFAULT '[]'
+            );
+            INSERT INTO candidate_transactions (
+                id, import_batch_id, source_document_id, posted_date, description,
+                amount_minor, currency, direction_hint, confidence, status, duplicate_status
+            ) VALUES (
+                'cand_legacy', 'batch_legacy', 'srcdoc_legacy', '2026-07-05', 'Redacted',
+                1000, 'COP', 'inflow', 0.9, 'pending_review', 'not_checked'
+            );",
+        )
+        .expect("seed legacy candidate_transactions table");
+
+    apply_migrations(&connection).expect("apply migrations");
+
+    let semantic_hint: Option<String> = connection
+        .query_row(
+            "SELECT semantic_hint FROM candidate_transactions WHERE id = 'cand_legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read nullable semantic_hint");
+    assert_eq!(semantic_hint, None);
+}
+
+#[test]
 fn can_insert_and_read_core_review_first_records_without_canonical_promotion() {
     let (_dir, connection) = temporary_database();
     apply_migrations(&connection).expect("apply migrations");

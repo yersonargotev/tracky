@@ -39,7 +39,7 @@ Agent-oriented checks:
 
 ```bash
 jq '.ok, .schema_version, .extractor_status.status, .parser_status.status' /tmp/tracky-inspect.json
-jq '.candidates[] | {id, status, duplicate_status, posted_date, amount_minor, currency, provenance}' /tmp/tracky-inspect.json
+jq '.candidates[] | {id, status, duplicate_status, posted_date, amount_minor, currency, direction_hint, semantic_hint, provenance}' /tmp/tracky-inspect.json
 ```
 
 Treat `candidates[]` from inspect as previews only. They are useful for validation and review planning, but they are not stored records and do not affect canonical finance data.
@@ -109,6 +109,14 @@ Candidate statuses:
 | `possible_duplicate` | Candidate resembles another candidate or canonical transaction. | Do not auto-accept; compare provenance, fingerprint, date, amount, account, and description. |
 | `accepted` | Candidate was explicitly accepted. | Treat as reviewed; do not accept again. |
 | `rejected` | Candidate was explicitly rejected. | Preserve for audit; do not delete as cleanup. |
+
+Semantic hints:
+
+| Hint | Meaning | Agent action |
+| --- | --- | --- |
+| `bank_movement` | Regular bank/wallet movement. | Review with amount, direction, provenance, and future income/category rules. |
+| `card_charge` | RappiCard purchase/subscription/fee/interest/installment; expense-like card activity even if the raw amount is positive. | Do not treat as income; review later as card expense/category work. |
+| `card_payment` | RappiCard payment/liability reduction such as `PAGOS POR PSE`. | Keep distinct from purchases; future transfer/card-payment resolution should link it to the paying owned account. |
 
 Duplicate statuses:
 
