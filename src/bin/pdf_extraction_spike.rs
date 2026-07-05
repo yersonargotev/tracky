@@ -62,6 +62,7 @@ struct DocumentReport {
     password_source: String,
     sha256_prefix: String,
     results: Vec<ExtractorResult>,
+    parsing: ParsingDiagnostic,
 }
 
 #[derive(Debug, Serialize)]
@@ -115,11 +116,62 @@ struct SampleLine {
     bbox: Option<BBox>,
 }
 
+#[derive(Debug, Serialize)]
+struct ParsingDiagnostic {
+    extractor: &'static str,
+    parser: String,
+    status: String,
+    candidate_count: usize,
+    candidates: Vec<MovementCandidate>,
+    row_samples: Vec<ParsedRowSample>,
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MovementCandidate {
+    page: usize,
+    row_bbox: Option<BBox>,
+    date: String,
+    description_sample: String,
+    amount: ParsedMoney,
+    balance: Option<ParsedMoney>,
+    confidence: f32,
+    evidence_text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ParsedMoney {
+    text: String,
+    value_minor_units: Option<i64>,
+    currency: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ParsedRowSample {
+    kind: &'static str,
+    page: usize,
+    text: String,
+    bbox: Option<BBox>,
+}
+
+#[derive(Debug, Clone)]
+struct VisualRow {
+    page: usize,
+    cells: Vec<ExtractedLine>,
+    bbox: Option<BBox>,
+}
+
 #[derive(Debug, Clone)]
 struct ExtractedLine {
     page: usize,
     text: String,
     bbox: Option<BBox>,
+}
+
+#[derive(Debug, Clone)]
+struct MoneyToken {
+    money: ParsedMoney,
+    x: f32,
 }
 
 fn main() -> Result<()> {
@@ -237,45 +289,519 @@ fn inspect_document(file: &Path, password: &str) -> Result<DocumentReport> {
     let institution = institution_for(file).to_string();
     let password_source = format!("env_or_prompt:{}", institution.to_ascii_uppercase());
 
+    let parsing = run_pdf_oxide_parser(file, password, &institution);
+
     Ok(DocumentReport {
         file: display_path(file),
         institution,
         password_source,
         sha256_prefix,
         results: vec![run_pdf_oxide(file, password), run_pdfium(file, password)],
+        parsing,
     })
+}
+
+fn run_pdf_oxide_parser(file: &Path, password: &str, institution: &str) -> ParsingDiagnostic {
+    match extract_pdf_oxide_lines(file, password) {
+        Ok(lines) => parse_movements(institution, &lines),
+        Err(error) => ParsingDiagnostic {
+            extractor: "pdf_oxide",
+            parser: format!("{institution}_movement_rows_v0"),
+            status: "error".to_string(),
+            candidate_count: 0,
+            candidates: Vec::new(),
+            row_samples: Vec::new(),
+            notes: vec![format!("pdf_oxide parser extraction failed: {error}")],
+        },
+    }
+}
+
+fn extract_pdf_oxide_lines(file: &Path, password: &str) -> Result<Vec<ExtractedLine>> {
+    let doc = open_authenticated_pdf_oxide(file, password)?;
+    extract_pdf_oxide_document_lines(&doc)
+}
+
+fn open_authenticated_pdf_oxide(file: &Path, password: &str) -> Result<OxideDocument> {
+    let doc = OxideDocument::open(file)?;
+    let authenticated = doc.authenticate(password.as_bytes())?;
+    if !authenticated {
+        return Err(anyhow!("pdf_oxide authentication returned false"));
+    }
+    Ok(doc)
+}
+
+fn extract_pdf_oxide_document_lines(doc: &OxideDocument) -> Result<Vec<ExtractedLine>> {
+    let mut lines = Vec::new();
+    for page in 0..doc.page_count()? {
+        let page_lines = doc
+            .extract_text_lines(page)
+            .with_context(|| format!("pdf_oxide line extraction failed on page {}", page + 1))?;
+        for line in page_lines {
+            lines.push(ExtractedLine {
+                page: page + 1,
+                text: normalize_spaces(&line.text),
+                bbox: Some(BBox {
+                    x: line.bbox.x,
+                    y: line.bbox.y,
+                    width: line.bbox.width,
+                    height: line.bbox.height,
+                }),
+            });
+        }
+    }
+    Ok(lines)
+}
+
+fn parse_movements(institution: &str, lines: &[ExtractedLine]) -> ParsingDiagnostic {
+    let rows = visual_rows(lines);
+    let candidates = match institution {
+        "rappi" => parse_rappi_rows(&rows),
+        _ => parse_nequi_rows(&rows),
+    };
+    let row_samples = diagnostic_row_samples(institution, &rows, &candidates);
+    let notes = match institution {
+        "rappi" => vec![
+            "Diagnostic only: detects dated Rappi transaction-table rows from pdf_oxide bboxes; not canonical import.".to_string(),
+            "Descriptions are redacted samples and may omit wrapped continuation text.".to_string(),
+            "Rappi statements do not expose a per-row running balance in the transaction table, so balance is normally null.".to_string(),
+        ],
+        _ => vec![
+            "Diagnostic only: detects Nequi rows under Fecha del movimiento / Descripción / Valor / Saldo headers; not canonical import.".to_string(),
+            "Some pdf_oxide cells combine amount and balance; parser splits money tokens by regex.".to_string(),
+            "Descriptions are redacted samples for agent inspection.".to_string(),
+        ],
+    };
+    ParsingDiagnostic {
+        extractor: "pdf_oxide",
+        parser: format!("{institution}_movement_rows_v0"),
+        status: "diagnostic_candidates".to_string(),
+        candidate_count: candidates.len(),
+        candidates,
+        row_samples,
+        notes,
+    }
+}
+
+fn visual_rows(lines: &[ExtractedLine]) -> Vec<VisualRow> {
+    let mut sorted = lines
+        .iter()
+        .filter(|line| !line.text.trim().is_empty())
+        .cloned()
+        .collect::<Vec<_>>();
+    sorted.sort_by(|a, b| {
+        a.page.cmp(&b.page).then_with(|| {
+            let ay = a.bbox.map(|bbox| bbox.y).unwrap_or_default();
+            let by = b.bbox.map(|bbox| bbox.y).unwrap_or_default();
+            by.partial_cmp(&ay)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let ax = a.bbox.map(|bbox| bbox.x).unwrap_or_default();
+                    let bx = b.bbox.map(|bbox| bbox.x).unwrap_or_default();
+                    ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+    });
+
+    let mut rows: Vec<VisualRow> = Vec::new();
+    for line in sorted {
+        let line_y = line.bbox.map(|bbox| bbox.y).unwrap_or_default();
+        let line_h = line.bbox.map(|bbox| bbox.height).unwrap_or(4.0).max(4.0);
+        if let Some(row) = rows.iter_mut().rev().find(|row| {
+            row.page == line.page
+                && row
+                    .bbox
+                    .is_some_and(|bbox| (bbox.y - line_y).abs() <= line_h.max(bbox.height) * 0.75)
+        }) {
+            row.cells.push(line);
+            row.cells.sort_by(|a, b| {
+                bbox_x(a)
+                    .partial_cmp(&bbox_x(b))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            row.bbox = union_bbox(row.cells.iter().filter_map(|cell| cell.bbox));
+        } else {
+            rows.push(VisualRow {
+                page: line.page,
+                bbox: line.bbox,
+                cells: vec![line],
+            });
+        }
+    }
+    rows
+}
+
+fn parse_nequi_rows(rows: &[VisualRow]) -> Vec<MovementCandidate> {
+    let date_re = Regex::new(r"\b\d{1,2}/\d{1,2}/\d{4}\b").unwrap();
+    rows.iter()
+        .filter_map(|row| {
+            let row_text = row_text(row);
+            let date = date_re.find(&row_text)?.as_str().to_string();
+            if row_text.to_lowercase().contains("fecha del movimiento") {
+                return None;
+            }
+            let money = money_tokens(&row_text);
+            if money.is_empty() {
+                return None;
+            }
+            let description = row
+                .cells
+                .iter()
+                .filter(|cell| bbox_x(cell) >= 145.0 && bbox_x(cell) < 365.0)
+                .map(|cell| cell.text.as_str())
+                .filter(|text| !date_re.is_match(text) && money_tokens(text).is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let description = if description.trim().is_empty() {
+                description_from_row(&row_text, &date)
+            } else {
+                description
+            };
+            let confidence = if money.len() >= 2 && !description.trim().is_empty() {
+                0.92
+            } else {
+                0.78
+            };
+            Some(MovementCandidate {
+                page: row.page,
+                row_bbox: row.bbox,
+                date,
+                description_sample: redact_description_sample(&description),
+                amount: money[0].clone(),
+                balance: money.get(1).cloned(),
+                confidence,
+                evidence_text: redact_row_for_evidence(&row_text),
+            })
+        })
+        .collect()
+}
+
+fn parse_rappi_rows(rows: &[VisualRow]) -> Vec<MovementCandidate> {
+    let date_re = Regex::new(r"\b\d{4}-\d{2}-\d{2}\b").unwrap();
+    rows.iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            let row_text = row_text(row);
+            let date_match = date_re.find(&row_text)?;
+            let money = money_tokens_with_x(row);
+            if money.is_empty() || row_text.to_lowercase().contains("detalle de transacciones") {
+                return None;
+            }
+            let mut description = description_from_row(&row_text, date_match.as_str());
+            for near in nearby_description_rows(rows, index) {
+                if !description.is_empty() {
+                    description.push(' ');
+                }
+                description.push_str(&near);
+            }
+            let amount = select_rappi_amount(&money);
+            Some(MovementCandidate {
+                page: row.page,
+                row_bbox: row.bbox,
+                date: date_match.as_str().to_string(),
+                description_sample: redact_description_sample(&description),
+                amount,
+                balance: None,
+                confidence: if description.trim().is_empty() {
+                    0.72
+                } else {
+                    0.86
+                },
+                evidence_text: redact_row_for_evidence(&row_text),
+            })
+        })
+        .collect()
+}
+
+fn select_rappi_amount(money: &[MoneyToken]) -> ParsedMoney {
+    // Rappi rows can contain purchase value, foreign-currency original value, fees,
+    // and/or taxes. Use visual order from pdf_oxide cells and prefer the first
+    // non-zero monetary value; zero-valued cells are usually ancillary columns.
+    money
+        .iter()
+        .filter(|token| token.money.value_minor_units != Some(0))
+        .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        .or_else(|| {
+            money
+                .iter()
+                .min_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal))
+        })
+        .map(|token| token.money.clone())
+        .expect("caller ensures at least one money token")
+}
+
+fn money_tokens_with_x(row: &VisualRow) -> Vec<MoneyToken> {
+    row.cells
+        .iter()
+        .flat_map(|cell| {
+            let x = bbox_x(cell);
+            money_tokens(&cell.text)
+                .into_iter()
+                .map(move |money| MoneyToken { money, x })
+        })
+        .collect()
+}
+
+fn diagnostic_row_samples(
+    institution: &str,
+    rows: &[VisualRow],
+    candidates: &[MovementCandidate],
+) -> Vec<ParsedRowSample> {
+    let candidate_keys = candidates
+        .iter()
+        .filter_map(|candidate| candidate.row_bbox.map(|bbox| (candidate.page, bbox.y)))
+        .collect::<Vec<_>>();
+    let mut samples = Vec::new();
+
+    for row in rows
+        .iter()
+        .filter(|row| is_header_row(institution, row))
+        .take(4)
+    {
+        samples.push(row_sample("header", row));
+    }
+
+    for row in rows
+        .iter()
+        .filter(|row| is_raw_table_row(institution, row))
+        .take(6)
+    {
+        samples.push(row_sample("raw_table", row));
+    }
+
+    for row in rows
+        .iter()
+        .filter(|row| is_near_miss_row(institution, row, &candidate_keys))
+        .take(6)
+    {
+        samples.push(row_sample("near_miss", row));
+    }
+
+    for candidate in candidates.iter().take(8) {
+        samples.push(ParsedRowSample {
+            kind: "candidate",
+            page: candidate.page,
+            text: candidate.evidence_text.clone(),
+            bbox: candidate.row_bbox,
+        });
+    }
+
+    samples
+}
+
+fn row_sample(kind: &'static str, row: &VisualRow) -> ParsedRowSample {
+    ParsedRowSample {
+        kind,
+        page: row.page,
+        text: redact_row_for_evidence(&row_text(row)),
+        bbox: row.bbox,
+    }
+}
+
+fn is_header_row(institution: &str, row: &VisualRow) -> bool {
+    let lower = row_text(row).to_lowercase();
+    match institution {
+        "rappi" => {
+            lower.contains("detalle de transacciones")
+                || (lower.contains("fecha") && lower.contains("descrip"))
+        }
+        _ => {
+            lower.contains("fecha del movimiento")
+                || (lower.contains("descrip") && lower.contains("saldo"))
+        }
+    }
+}
+
+fn is_raw_table_row(institution: &str, row: &VisualRow) -> bool {
+    let text = row_text(row);
+    match institution {
+        "rappi" => Regex::new(r"\b\d{4}-\d{2}-\d{2}\b")
+            .unwrap()
+            .is_match(&text),
+        _ => Regex::new(r"\b\d{1,2}/\d{1,2}/\d{4}\b")
+            .unwrap()
+            .is_match(&text),
+    }
+}
+
+fn is_near_miss_row(institution: &str, row: &VisualRow, candidate_keys: &[(usize, f32)]) -> bool {
+    if row.bbox.is_some_and(|bbox| {
+        candidate_keys
+            .iter()
+            .any(|(page, y)| *page == row.page && (*y - bbox.y).abs() < 0.1)
+    }) {
+        return false;
+    }
+    let text = row_text(row);
+    if is_header_row(institution, row) {
+        return false;
+    }
+    !money_tokens(&text).is_empty()
+        || Regex::new(r"\b(?:\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})\b")
+            .unwrap()
+            .is_match(&text)
+}
+
+fn nearby_description_rows(rows: &[VisualRow], index: usize) -> Vec<String> {
+    let Some(row_bbox) = rows[index].bbox else {
+        return Vec::new();
+    };
+    let mut parts = Vec::new();
+    let date_re = Regex::new(r"\d{4}-\d{2}-\d{2}").unwrap();
+    for offset in [-1isize, 1] {
+        let near_index = index as isize + offset;
+        if near_index < 0 || near_index as usize >= rows.len() {
+            continue;
+        }
+        let near = &rows[near_index as usize];
+        let Some(near_bbox) = near.bbox else {
+            continue;
+        };
+        if near.page != rows[index].page || (near_bbox.y - row_bbox.y).abs() > 8.0 {
+            continue;
+        }
+        let text = row_text(near);
+        if date_re.is_match(&text) || !money_tokens(&text).is_empty() {
+            continue;
+        }
+        let desc = near
+            .cells
+            .iter()
+            .filter(|cell| bbox_x(cell) >= 140.0 && bbox_x(cell) < 235.0)
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !desc.trim().is_empty() {
+            parts.push(desc);
+        }
+    }
+    parts
+}
+
+fn row_text(row: &VisualRow) -> String {
+    normalize_spaces(
+        &row.cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+fn bbox_x(line: &ExtractedLine) -> f32 {
+    line.bbox.map(|bbox| bbox.x).unwrap_or_default()
+}
+
+fn money_tokens(text: &str) -> Vec<ParsedMoney> {
+    let money_re = Regex::new(r"\$\s*-?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{1,2})?").unwrap();
+    money_re
+        .find_iter(text)
+        .map(|hit| ParsedMoney {
+            text: hit.as_str().to_string(),
+            value_minor_units: parse_money_minor_units(hit.as_str()),
+            currency: "COP",
+        })
+        .collect()
+}
+
+fn parse_money_minor_units(text: &str) -> Option<i64> {
+    let negative = text.contains('-');
+    let cleaned = text
+        .chars()
+        .filter(|ch| ch.is_ascii_digit() || *ch == '.' || *ch == ',')
+        .collect::<String>();
+    if cleaned.is_empty() {
+        return None;
+    }
+    let last_dot = cleaned.rfind('.');
+    let last_comma = cleaned.rfind(',');
+    let decimal_index = match (last_dot, last_comma) {
+        (Some(dot), Some(comma)) => Some(dot.max(comma)),
+        (Some(index), None) | (None, Some(index)) => {
+            let decimals = cleaned.len().saturating_sub(index + 1);
+            if decimals <= 2 {
+                Some(index)
+            } else {
+                None
+            }
+        }
+        (None, None) => None,
+    };
+    let (whole, decimals) = if let Some(index) = decimal_index {
+        (&cleaned[..index], &cleaned[index + 1..])
+    } else {
+        (cleaned.as_str(), "")
+    };
+    let whole_digits = whole
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    let mut decimal_digits = decimals
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    while decimal_digits.len() < 2 {
+        decimal_digits.push('0');
+    }
+    decimal_digits.truncate(2);
+    let whole_minor = whole_digits.parse::<i64>().ok()?.checked_mul(100)?;
+    let decimal_minor = if decimal_digits.is_empty() {
+        0
+    } else {
+        decimal_digits.parse::<i64>().ok()?
+    };
+    let value = whole_minor.checked_add(decimal_minor)?;
+    Some(if negative { -value } else { value })
+}
+
+fn description_from_row(row_text: &str, date: &str) -> String {
+    let mut text = row_text.replace(date, " ");
+    for money in money_tokens(row_text) {
+        text = text.replace(&money.text, " ");
+    }
+    for token in [
+        "Virtual", "Fisica", "Física", "-", "N/A", "1 de 1", "0,0000%", "0,00%", "0%",
+    ] {
+        text = text.replace(token, " ");
+    }
+    normalize_spaces(&text)
+}
+
+fn redact_description_sample(text: &str) -> String {
+    let mut sample = redact_counterparties(&redact_line(text));
+    if sample.split_whitespace().count() > 8 {
+        sample = sample
+            .split_whitespace()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(" ");
+        sample.push_str(" …");
+    }
+    sample
+}
+
+fn redact_row_for_evidence(text: &str) -> String {
+    let text = redact_line(text);
+    redact_description_sample(&text)
 }
 
 fn run_pdf_oxide(file: &Path, password: &str) -> ExtractorResult {
     let started = Instant::now();
     let result = (|| -> Result<(bool, bool, usize, String, Vec<ExtractedLine>)> {
-        let doc = OxideDocument::open(file)?;
+        let doc = open_authenticated_pdf_oxide(file, password)?;
         let encrypted = doc.is_encrypted();
-        let authenticated = doc.authenticate(password.as_bytes())?;
+        let authenticated = true;
         let pages = doc.page_count()?;
         let mut text = String::new();
-        let mut lines = Vec::new();
         for page in 0..pages {
-            let page_text = doc.extract_text(page).unwrap_or_default();
+            let page_text = doc.extract_text(page).with_context(|| {
+                format!("pdf_oxide text extraction failed on page {}", page + 1)
+            })?;
             if !text.is_empty() {
                 text.push('\n');
             }
             text.push_str(&page_text);
-            if let Ok(page_lines) = doc.extract_text_lines(page) {
-                for line in page_lines {
-                    lines.push(ExtractedLine {
-                        page: page + 1,
-                        text: line.text,
-                        bbox: Some(BBox {
-                            x: line.bbox.x,
-                            y: line.bbox.y,
-                            width: line.bbox.width,
-                            height: line.bbox.height,
-                        }),
-                    });
-                }
-            }
         }
+        let lines = extract_pdf_oxide_document_lines(&doc)?;
         Ok((encrypted, authenticated, pages, text, lines))
     })();
 
@@ -475,16 +1001,40 @@ fn sample_lines(lines: &[ExtractedLine]) -> Vec<SampleLine> {
         .collect()
 }
 
+fn redact_counterparties(text: &str) -> String {
+    let counterparties = [
+        Regex::new(r"(?i)(BRE-B:\s*)[^$]+$ ").unwrap(),
+        Regex::new(r"(?i)(BRE-B:\s*)[^$]+").unwrap(),
+        Regex::new(r"(?i)(\bA:\s*)[^$]+").unwrap(),
+        Regex::new(r"(?i)(recibido de\s+)[^$]+").unwrap(),
+        Regex::new(r"(?i)(\bPara\s+)[^$]+").unwrap(),
+        Regex::new(r"(\bDe\s+)[^$]+").unwrap(),
+    ];
+    let mut redacted = text.to_string();
+    for re in counterparties {
+        redacted = re.replace_all(&redacted, "$1<counterparty>").to_string();
+    }
+    redacted
+}
+
 fn redact_line(text: &str) -> String {
     let email_re = Regex::new(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b").unwrap();
-    let money_re =
-        Regex::new(r"(?:\$|COP)?\s*-?\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{2})?|(?:\$|COP)\s*-?\d+")
-            .unwrap();
+    let money_re = Regex::new(
+        r"(?:(?:\$|COP)\s*)-?\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?|\b-?\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?\b",
+    )
+    .unwrap();
     let long_number_re = Regex::new(r"\b\d{5,}\b").unwrap();
     let text = email_re.replace_all(text, "<email>");
     let text = money_re.replace_all(&text, "<amount>");
     let text = long_number_re.replace_all(&text, "<number>");
-    normalize_spaces(&text)
+    let address_re = Regex::new(r"(?i)\bDirecci[oó]n\b.*$").unwrap();
+    let card_re = Regex::new(r"(?i)(N[uú]mero de tarjeta\s+\w+)\s+\d{4}\b").unwrap();
+    let holder_re =
+        Regex::new(r"(?i)(Detalle de transacciones:\s*)[^()]+(\s*\(Titular\))").unwrap();
+    let text = address_re.replace_all(&text, "Dirección <address>");
+    let text = card_re.replace_all(&text, "$1 <card-last4>");
+    let text = holder_re.replace_all(&text, "$1<cardholder>$2");
+    normalize_spaces(&redact_counterparties(&text))
 }
 
 fn normalize_spaces(text: &str) -> String {

@@ -66,7 +66,8 @@ Behavior:
 - Supports month-specific overrides like `TRACKY_NEQUI_ABRIL_PDF_PASSWORD` before falling back to the institution-level key.
 - Prompts interactively if no env var exists, unless `--no-prompt` is passed.
 - Writes machine-readable JSON with per-file extractor status, counts, usefulness flags, bbox evidence, and redacted sample lines.
-- Redacts emails, long numbers, and amounts from sample lines. It does not write passwords.
+- Treats page-level `pdf_oxide` text/line extraction errors as extractor errors instead of silently returning partial page data.
+- Redacts emails, cardholder/header names, long numbers, counterparties, addresses, card suffixes, and amounts from sample lines. It does not write passwords.
 
 ## Results
 
@@ -147,3 +148,29 @@ Expected shape:
 - Do not create canonical transactions from PDFs yet.
 - Do not store PDF passwords.
 - Do not add MCP until the JSON CLI contract is useful.
+
+## Diagnostic Movement Parser Prototype
+
+Added a first deterministic parser prototype on top of `pdf_oxide` line/bbox output. It is still part of the local spike runner, not the canonical import pipeline.
+
+Command:
+
+```bash
+cargo run --bin pdf-extraction-spike -- --pretty --no-prompt --output target/spike/pdf-parser-diagnostic.json
+```
+
+The JSON now includes `documents[].parsing` with:
+
+- `extractor: "pdf_oxide"`
+- institution-specific parser ids like `nequi_movement_rows_v0` and `rappi_movement_rows_v0`
+- `candidate_count`
+- `candidates[]` with page, row bbox, date, redacted description sample, amount, optional balance, confidence, and redacted row evidence
+- `row_samples[]` for compact agent inspection, with `kind` values for `header`, `raw_table`, `near_miss`, and `candidate` rows so agents can inspect structure beyond successfully parsed candidates
+- notes that the data is diagnostic/review-first only
+
+Observed layout rules from the real protected samples:
+
+- Nequi: `pdf_oxide` emits stable visual rows under `Fecha del movimiento`, `Descripción`, `Valor`, and `Saldo`; some rows combine amount and balance in one text line, so the parser splits money tokens by regex.
+- Rappi: `pdf_oxide` emits smaller table cells; transaction rows have ISO dates and multiple monetary cells. The parser now chooses the visually leftmost non-zero money cell as the movement amount, because zero-valued cells are usually ancillary columns; descriptions may wrap to nearby cells. The Rappi statement table does not expose a per-row running balance, so `balance` is normally `null`.
+
+Non-goals remain unchanged: these candidates are not canonical transactions, do not create the SQLite schema, and do not bypass review.
