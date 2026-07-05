@@ -250,17 +250,6 @@ where
         );
     }
 
-    let Some((password, credential_source)) = runtime_password(
-        args.password_env.as_deref(),
-        &env_lookup,
-        stdout,
-        &args.pdf,
-        JsonCommand::ImportPdf,
-    )?
-    else {
-        return Ok(1);
-    };
-
     let mut connection = Connection::open(&args.db)
         .with_context(|| format!("opening SQLite database {}", args.db.display()))?;
     apply_migrations(&connection).context("applying SQLite migrations")?;
@@ -271,6 +260,17 @@ where
         writeln!(stdout).context("writing trailing newline")?;
         return Ok(1);
     }
+
+    let Some((password, credential_source)) = runtime_password(
+        args.password_env.as_deref(),
+        &env_lookup,
+        stdout,
+        &args.pdf,
+        JsonCommand::ImportPdf,
+    )?
+    else {
+        return Ok(1);
+    };
 
     let options = InspectPdfOptions {
         document_credential: password.as_deref(),
@@ -740,5 +740,69 @@ mod tests {
             .expect("count batches");
         assert_eq!(canonical_count, 0);
         assert_eq!(batch_count, 1);
+    }
+    #[test]
+    fn import_pdf_duplicate_precheck_runs_before_missing_password_env() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pdf_path = dir.path().join("nequi-redacted.pdf");
+        let db_path = dir.path().join("tracky.sqlite");
+        let pdf_bytes = b"redacted duplicate fake pdf bytes";
+        std::fs::write(&pdf_path, pdf_bytes).expect("write fake pdf");
+        let content_sha256 = crate::pdf::hex_sha256(pdf_bytes);
+        let connection = rusqlite::Connection::open(&db_path).expect("open db");
+        crate::storage::apply_migrations(&connection).expect("apply migrations");
+        connection
+            .execute(
+                "INSERT INTO source_documents (id, input_name, content_sha256, mime_type, byte_size, institution_hint)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    "srcdoc_existing",
+                    "nequi-redacted.pdf",
+                    content_sha256,
+                    "application/pdf",
+                    pdf_bytes.len() as i64,
+                    "nequi"
+                ],
+            )
+            .expect("seed duplicate source document");
+        drop(connection);
+
+        let pdf_arg = pdf_path.to_string_lossy().to_string();
+        let db_arg = db_path.to_string_lossy().to_string();
+        let cli = parse(&[
+            "tracky",
+            "import",
+            "pdf",
+            &pdf_arg,
+            "--db",
+            &db_arg,
+            "--password-env",
+            "MISSING_PASSWORD",
+            "--json",
+        ]);
+        let mut output = Vec::new();
+        let exit = run_with(
+            cli,
+            |_| None,
+            |_path, _options| panic!("inspector should not run for duplicate source document"),
+            &mut output,
+        )
+        .expect("runs import CLI seam");
+
+        assert_eq!(exit, 1);
+        let json: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+        assert_eq!(json["schema_version"], "tracky.import-pdf.v1");
+        assert_eq!(json["command"], "import pdf");
+        assert_eq!(json["ok"], false);
+        assert!(json.get("import_batch").is_none());
+        assert_eq!(
+            json["source_document"]["document_duplicate_status"]["status"],
+            "duplicate_source_document"
+        );
+        assert_eq!(json["errors"][0]["code"], "duplicate_source_document");
+        assert_eq!(
+            json["errors"][0]["details"]["reason"],
+            "source_document_already_imported"
+        );
     }
 }
