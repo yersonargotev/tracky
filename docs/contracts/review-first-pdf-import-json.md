@@ -66,6 +66,17 @@ For exact duplicate source documents, `ok` should be `false` unless a future exp
 
 ## Domain objects
 
+The headings in this section name stable JSON schema aliases. They map to Tracky's Spanish domain vocabulary from `CONTEXT.md`:
+
+| JSON alias | Domain term |
+| --- | --- |
+| `CandidateTransaction` | **transacción candidata** |
+| `SourceDocument` | **documento fuente** |
+| `ImportBatch` | **lote de importación** |
+| `Provenance` | **provenance** |
+
+The Spanish terms remain the product/domain language; the English aliases are used only where the JSON contract needs implementation-friendly type names.
+
 ### SourceDocument
 
 A `SourceDocument` represents the **documento fuente** such as a protected statement PDF. It identifies the file and reports document-level duplicate status without storing a **credencial de documento**.
