@@ -395,7 +395,7 @@ impl From<&CandidateTransaction> for DuplicateNearKey {
             account_key: duplicate_account_key(candidate),
             posted_date: candidate.posted_date.clone(),
             amount_minor: candidate.amount_minor,
-            currency: candidate.currency.to_string(),
+            currency: normalized_currency(candidate.currency),
         }
     }
 }
@@ -442,20 +442,40 @@ fn existing_near_matches(
     candidate: &CandidateTransaction,
 ) -> Result<ExistingFingerprintMatches> {
     let mut statement = connection.prepare(
-        "SELECT candidate_transaction_id, canonical_transaction_id
-         FROM transaction_fingerprints
-         WHERE normalized_account_key = ?1
-           AND normalized_posted_date = ?2
-           AND normalized_amount_minor = ?3
-           AND normalized_currency = ?4
-           AND fingerprint != ?5",
+        "SELECT tf.candidate_transaction_id, tf.canonical_transaction_id
+         FROM transaction_fingerprints tf
+         LEFT JOIN candidate_transactions c ON c.id = tf.candidate_transaction_id
+         LEFT JOIN source_documents sd ON sd.id = c.source_document_id
+         LEFT JOIN canonical_transactions ct ON ct.id = tf.canonical_transaction_id
+         LEFT JOIN accounts candidate_account ON candidate_account.id = c.account_id
+         LEFT JOIN institutions candidate_account_institution ON candidate_account_institution.id = candidate_account.institution_id
+         LEFT JOIN accounts canonical_account ON canonical_account.id = ct.account_id
+         LEFT JOIN institutions canonical_account_institution ON canonical_account_institution.id = canonical_account.institution_id
+         WHERE (
+             tf.normalized_account_key = ?1
+             OR (
+                 tf.normalized_account_key = ?2
+                 AND (
+                     LOWER(c.institution_hint) = ?3
+                     OR LOWER(sd.institution_hint) = ?3
+                     OR LOWER(candidate_account_institution.name) = ?3
+                     OR LOWER(canonical_account_institution.name) = ?3
+                 )
+             )
+         )
+           AND tf.normalized_posted_date = ?4
+           AND tf.normalized_amount_minor = ?5
+           AND UPPER(tf.normalized_currency) = ?6
+           AND tf.fingerprint != ?7",
     )?;
     let rows = statement.query_map(
         params![
             duplicate_account_key(candidate),
+            legacy_duplicate_account_key(candidate),
+            normalized_institution_key(&candidate.institution_hint),
             candidate.posted_date,
             candidate.amount_minor,
-            candidate.currency,
+            normalized_currency(candidate.currency),
             candidate.duplicate_status.fingerprint,
         ],
         |row| {
@@ -630,7 +650,7 @@ fn insert_fingerprint(connection: &Connection, candidate: &CandidateTransaction)
             duplicate_account_key(candidate),
             candidate.posted_date,
             candidate.amount_minor,
-            candidate.currency,
+            normalized_currency(candidate.currency),
             candidate.description.to_ascii_lowercase(),
         ],
     )?;
@@ -662,6 +682,18 @@ fn duplicate_account_key(candidate: &CandidateTransaction) -> String {
         candidate.institution_hint.to_ascii_lowercase(),
         candidate.account_hint.label.to_ascii_lowercase()
     )
+}
+
+fn legacy_duplicate_account_key(candidate: &CandidateTransaction) -> String {
+    candidate.account_hint.label.to_ascii_lowercase()
+}
+
+fn normalized_institution_key(institution: &str) -> String {
+    institution.to_ascii_lowercase()
+}
+
+fn normalized_currency(currency: &str) -> String {
+    currency.to_ascii_uppercase()
 }
 
 fn fingerprint_row_id(candidate_id: &str) -> String {

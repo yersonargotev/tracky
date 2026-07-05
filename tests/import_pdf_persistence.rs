@@ -327,6 +327,148 @@ fn near_match_detection_is_scoped_by_institution() {
 }
 
 #[test]
+fn near_match_finds_legacy_fingerprint_keys_with_case_normalized_currency() {
+    let (_dir, mut connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+    connection
+        .execute(
+            "INSERT INTO institutions (id, name) VALUES (?1, ?2)",
+            rusqlite::params!["inst_nequi", "nequi"],
+        )
+        .expect("seed institution");
+    connection
+        .execute(
+            "INSERT INTO accounts (id, institution_id, label, currency)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["acct_nequi", "inst_nequi", "Nequi wallet", "COP"],
+        )
+        .expect("seed account");
+    connection
+        .execute(
+            "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "txn_legacy",
+                "acct_nequi",
+                "2026-05-31",
+                "Redacted merchant legacy",
+                -4590000_i64,
+                "COP"
+            ],
+        )
+        .expect("seed legacy canonical transaction");
+    connection
+        .execute(
+            "INSERT INTO transaction_fingerprints (
+                id, fingerprint, canonical_transaction_id, duplicate_status,
+                normalized_account_key, normalized_posted_date, normalized_amount_minor,
+                normalized_currency, normalized_description
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "fp_legacy_canonical",
+                "legacy_fingerprint_shape",
+                "txn_legacy",
+                "unique",
+                "nequi wallet",
+                "2026-05-31",
+                -4590000_i64,
+                "cop",
+                "redacted merchant legacy"
+            ],
+        )
+        .expect("seed legacy fingerprint");
+
+    let response = persist_pdf_import(
+        &mut connection,
+        inspect_response_with_fingerprint(
+            "8888888888888888888888888888888888888888888888888888888888888888",
+            "new_fingerprint_shape",
+        ),
+    )
+    .expect("persist import");
+
+    assert_eq!(response.import_batch.as_ref().unwrap().duplicate_count, 1);
+    assert_eq!(
+        response.candidates[0].duplicate_status.status,
+        DuplicateStatusState::PossibleDuplicate
+    );
+    assert_eq!(
+        response.candidates[0]
+            .duplicate_status
+            .matched_canonical_transaction_ids,
+        vec!["txn_legacy".to_string()]
+    );
+}
+
+#[test]
+fn legacy_label_only_near_match_is_scoped_by_institution_metadata() {
+    let (_dir, mut connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+    connection
+        .execute(
+            "INSERT INTO institutions (id, name) VALUES (?1, ?2)",
+            rusqlite::params!["inst_rappi", "rappi"],
+        )
+        .expect("seed institution");
+    connection
+        .execute(
+            "INSERT INTO accounts (id, institution_id, label, currency)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["acct_rappi", "inst_rappi", "Nequi wallet", "COP"],
+        )
+        .expect("seed account");
+    connection
+        .execute(
+            "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "txn_legacy_rappi",
+                "acct_rappi",
+                "2026-05-31",
+                "Redacted merchant legacy",
+                -4590000_i64,
+                "COP"
+            ],
+        )
+        .expect("seed cross-institution canonical transaction");
+    connection
+        .execute(
+            "INSERT INTO transaction_fingerprints (
+                id, fingerprint, canonical_transaction_id, duplicate_status,
+                normalized_account_key, normalized_posted_date, normalized_amount_minor,
+                normalized_currency, normalized_description
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "fp_legacy_rappi",
+                "legacy_rappi_fingerprint_shape",
+                "txn_legacy_rappi",
+                "unique",
+                "nequi wallet",
+                "2026-05-31",
+                -4590000_i64,
+                "cop",
+                "redacted merchant legacy"
+            ],
+        )
+        .expect("seed cross-institution legacy fingerprint");
+
+    let response = persist_pdf_import(
+        &mut connection,
+        inspect_response_with_fingerprint(
+            "9999999999999999999999999999999999999999999999999999999999999999",
+            "new_nequi_fingerprint_shape",
+        ),
+    )
+    .expect("persist import");
+
+    assert_eq!(response.import_batch.as_ref().unwrap().duplicate_count, 0);
+    assert_eq!(
+        response.candidates[0].duplicate_status.status,
+        DuplicateStatusState::Unique
+    );
+}
+
+#[test]
 fn duplicate_detection_does_not_override_reviewed_candidate_status() {
     let (_dir, mut connection) = temporary_database();
     apply_migrations(&connection).expect("apply migrations");
