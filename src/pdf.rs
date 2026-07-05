@@ -80,7 +80,7 @@ pub struct DocumentDuplicateStatus {
 #[serde(rename_all = "snake_case")]
 pub enum DocumentDuplicateState {
     New,
-    Duplicate,
+    DuplicateSourceDocument,
     Unknown,
 }
 
@@ -1265,6 +1265,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(DocumentDuplicateState::Unknown).unwrap(),
             "unknown"
+        );
+        assert_eq!(
+            serde_json::to_value(DocumentDuplicateState::DuplicateSourceDocument).unwrap(),
+            "duplicate_source_document"
         );
     }
 }
