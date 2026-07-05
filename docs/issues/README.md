@@ -12,3 +12,5 @@ These local Markdown issues are ordered for the review-first PDF import mileston
 8. `0008-document-agent-workflow-and-next-slices.md` — usage docs and next slices.
 
 Implementation should proceed in dependency order unless a later issue's blockers have already been satisfied by another change.
+
+The agent-facing workflow for the implemented PDF inspect/import/review path is documented in `docs/agents/pdf-import-workflow.md`.
