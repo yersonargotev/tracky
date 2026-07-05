@@ -254,11 +254,32 @@ where
         .with_context(|| format!("opening SQLite database {}", args.db.display()))?;
     apply_migrations(&connection).context("applying SQLite migrations")?;
 
-    if let Some(duplicate_response) = duplicate_response_if_imported(&connection, &args.pdf)? {
-        serde_json::to_writer(&mut *stdout, &duplicate_response)
-            .context("writing import pdf duplicate JSON")?;
-        writeln!(stdout).context("writing trailing newline")?;
-        return Ok(1);
+    match duplicate_response_if_imported(&connection, &args.pdf) {
+        Ok(Some(duplicate_response)) => {
+            serde_json::to_writer(&mut *stdout, &duplicate_response)
+                .context("writing import pdf duplicate JSON")?;
+            writeln!(stdout).context("writing trailing newline")?;
+            return Ok(1);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return write_command_error_response(
+                stdout,
+                JsonCommand::ImportPdf,
+                &args.pdf,
+                CredentialSource::None,
+                TrackyError {
+                    category: TrackyErrorCategory::ExtractorFailure,
+                    code: TrackyErrorCode::PdfOpenFailed,
+                    message:
+                        "PDF extraction failed before candidate transactions could be produced."
+                            .to_string(),
+                    path: TrackyErrorPath::ExtractorStatus,
+                    recoverable: true,
+                    details: serde_json::json!({ "cause": error.to_string() }),
+                },
+            )
+        }
     }
 
     let Some((password, credential_source)) = runtime_password(
@@ -804,5 +825,35 @@ mod tests {
             json["errors"][0]["details"]["reason"],
             "source_document_already_imported"
         );
+    }
+    #[test]
+    fn import_pdf_unreadable_path_returns_stable_json_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pdf_path = dir.path().join("does-not-exist.pdf");
+        let db_path = dir.path().join("tracky.sqlite");
+        let pdf_arg = pdf_path.to_string_lossy().to_string();
+        let db_arg = db_path.to_string_lossy().to_string();
+        let cli = parse(&[
+            "tracky", "import", "pdf", &pdf_arg, "--db", &db_arg, "--json",
+        ]);
+        let mut output = Vec::new();
+        let exit = run_with(
+            cli,
+            |_| None,
+            |_path, _options| panic!("inspector should not run when source cannot be read"),
+            &mut output,
+        )
+        .expect("runs import CLI seam");
+
+        assert_eq!(exit, 1);
+        let json: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+        assert_eq!(json["schema_version"], "tracky.import-pdf.v1");
+        assert_eq!(json["command"], "import pdf");
+        assert_eq!(json["ok"], false);
+        assert_eq!(json["extractor_status"]["status"], "failed");
+        assert_eq!(json["parser_status"]["status"], "not_run");
+        assert_eq!(json["errors"][0]["category"], "extractor_failure");
+        assert_eq!(json["errors"][0]["code"], "pdf_open_failed");
+        assert_eq!(json["errors"][0]["path"], "extractor_status");
     }
 }
