@@ -12,7 +12,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tracky::pdf::{
-    inspect_pdf as inspect_pdf_core, redact_line, CredentialSource, InspectPdfOptions,
+    inspect_pdf as inspect_pdf_core, redact_line, supported_institution_hint_from_path,
+    CredentialSource, InspectPdfOptions,
 };
 
 #[derive(Parser, Debug)]
@@ -229,7 +230,7 @@ fn default_assets() -> Result<Vec<PathBuf>> {
 }
 
 fn password_for(file: &Path, no_prompt: bool) -> Result<String> {
-    let institution = institution_for(file);
+    let institution = supported_institution_hint_from_path(file);
     let month = file
         .file_stem()
         .and_then(|s| s.to_str())
@@ -279,7 +280,7 @@ fn password_for(file: &Path, no_prompt: bool) -> Result<String> {
 fn inspect_document(file: &Path, password: &str) -> Result<DocumentReport> {
     let bytes = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
     let sha256_prefix = hex_prefix(&bytes);
-    let institution = institution_for(file);
+    let institution = supported_institution_hint_from_path(file);
     let institution_label = institution.unwrap_or("unknown").to_string();
     let password_source = institution
         .map(|institution| format!("env_or_prompt:{}", institution.to_ascii_uppercase()))
@@ -683,21 +684,6 @@ fn summarize(documents: &[DocumentReport]) -> Summary {
         }
     }
     Summary { by_extractor }
-}
-
-fn institution_for(file: &Path) -> Option<&'static str> {
-    let stem = file
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if stem.starts_with("nequi") {
-        return Some("nequi");
-    }
-    if stem.starts_with("rappi") {
-        return Some("rappi");
-    }
-    None
 }
 
 fn display_path(path: &Path) -> String {

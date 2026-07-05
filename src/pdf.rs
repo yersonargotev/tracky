@@ -71,9 +71,17 @@ pub struct AccountHint {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct DocumentDuplicateStatus {
-    pub status: &'static str,
+    pub status: DocumentDuplicateState,
     pub matched_source_document_id: Option<String>,
     pub reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentDuplicateState {
+    New,
+    Duplicate,
+    Unknown,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -197,12 +205,57 @@ pub struct Evidence {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct TrackyError {
-    pub category: &'static str,
-    pub code: &'static str,
+    pub category: TrackyErrorCategory,
+    pub code: TrackyErrorCode,
     pub message: String,
-    pub path: String,
+    pub path: TrackyErrorPath,
     pub recoverable: bool,
     pub details: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackyErrorCategory {
+    ExtractorFailure,
+    ParserFailure,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackyErrorCode {
+    PdfOpenFailed,
+    PdfTextExtractionFailed,
+    PdfLayoutExtractionFailed,
+    UnsupportedDocument,
+    MovementRowsNotFound,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum TrackyErrorPath {
+    ExtractorStatus,
+    ExtractorStatusPage { page: usize },
+    ParserStatus,
+}
+
+impl Serialize for TrackyErrorPath {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl std::fmt::Display for TrackyErrorPath {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExtractorStatus => formatter.write_str("extractor_status"),
+            Self::ExtractorStatusPage { page } => {
+                write!(formatter, "extractor_status.pages[{page}]")
+            }
+            Self::ParserStatus => formatter.write_str("parser_status"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -262,6 +315,21 @@ enum Institution {
     Unknown(String),
 }
 
+pub fn supported_institution_hint_from_path(path: &Path) -> Option<&'static str> {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if stem.starts_with("nequi") {
+        return Some("nequi");
+    }
+    if stem.starts_with("rappi") {
+        return Some("rappi");
+    }
+    None
+}
+
 impl Institution {
     fn from_hint(hint: impl Into<String>) -> Self {
         match hint.into().to_ascii_lowercase().as_str() {
@@ -272,17 +340,14 @@ impl Institution {
     }
 
     fn from_path(path: &Path) -> Self {
+        if let Some(hint) = supported_institution_hint_from_path(path) {
+            return Self::from_hint(hint);
+        }
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_ascii_lowercase();
-        if stem.starts_with("nequi") {
-            return Self::Nequi;
-        }
-        if stem.starts_with("rappi") {
-            return Self::Rappi;
-        }
         Self::Unknown(stem)
     }
 
@@ -327,7 +392,7 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
         institution_hint: institution.as_str().to_string(),
         account_hint: account_hint(&institution),
         document_duplicate_status: DocumentDuplicateStatus {
-            status: "unknown",
+            status: DocumentDuplicateState::Unknown,
             matched_source_document_id: None,
             reason: Some("read-only pdf inspect does not perform duplicate lookup".to_string()),
         },
@@ -369,10 +434,10 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
         Err(error) => {
             let message = "PDF extraction failed before candidate transactions could be produced.";
             let extractor_error = TrackyError {
-                category: "extractor_failure",
-                code: "pdf_open_failed",
+                category: TrackyErrorCategory::ExtractorFailure,
+                code: TrackyErrorCode::PdfOpenFailed,
                 message: message.to_string(),
-                path: "extractor_status".to_string(),
+                path: TrackyErrorPath::ExtractorStatus,
                 recoverable: true,
                 details: serde_json::json!({
                     "extractor": PDF_OXIDE_EXTRACTOR,
@@ -438,7 +503,7 @@ fn extract_pdf_oxide_lines(file: &Path, credential: &str) -> Result<ExtractedDoc
             .with_context(|| format!("pdf_oxide text extraction failed on page {}", page + 1))
         {
             errors.push(page_extraction_error(
-                "pdf_text_extraction_failed",
+                TrackyErrorCode::PdfTextExtractionFailed,
                 page + 1,
                 error.to_string(),
             ));
@@ -463,7 +528,7 @@ fn extract_pdf_oxide_lines(file: &Path, credential: &str) -> Result<ExtractedDoc
             }
             Err(error) => {
                 errors.push(page_extraction_error(
-                    "pdf_layout_extraction_failed",
+                    TrackyErrorCode::PdfLayoutExtractionFailed,
                     page + 1,
                     error.to_string(),
                 ));
@@ -479,12 +544,12 @@ fn extract_pdf_oxide_lines(file: &Path, credential: &str) -> Result<ExtractedDoc
     })
 }
 
-fn page_extraction_error(code: &'static str, page: usize, cause: String) -> TrackyError {
+fn page_extraction_error(code: TrackyErrorCode, page: usize, cause: String) -> TrackyError {
     TrackyError {
-        category: "extractor_failure",
+        category: TrackyErrorCategory::ExtractorFailure,
         code,
         message: format!("pdf_oxide extraction failed on page {page}"),
-        path: format!("extractor_status.pages[{page}]"),
+        path: TrackyErrorPath::ExtractorStatusPage { page },
         recoverable: true,
         details: serde_json::json!({
             "extractor": PDF_OXIDE_EXTRACTOR,
@@ -523,10 +588,10 @@ fn parse_lines_for_contract(
             },
             Vec::new(),
             vec![TrackyError {
-                category: "parser_failure",
-                code: "unsupported_document",
+                category: TrackyErrorCategory::ParserFailure,
+                code: TrackyErrorCode::UnsupportedDocument,
                 message: "No deterministic parser matched the document source.".to_string(),
-                path: "parser_status".to_string(),
+                path: TrackyErrorPath::ParserStatus,
                 recoverable: true,
                 details: serde_json::json!({ "institution_hint": institution.as_str() }),
             }],
@@ -549,10 +614,10 @@ fn parse_lines_for_contract(
     let mut errors = Vec::new();
     let status = if candidates.is_empty() {
         errors.push(TrackyError {
-            category: "parser_failure",
-            code: "movement_rows_not_found",
+            category: TrackyErrorCategory::ParserFailure,
+            code: TrackyErrorCode::MovementRowsNotFound,
             message: "No movement rows were parsed into transacciones candidatas.".to_string(),
-            path: "parser_status".to_string(),
+            path: TrackyErrorPath::ParserStatus,
             recoverable: true,
             details: serde_json::json!({
                 "parser_id": parser_id,
@@ -1108,7 +1173,7 @@ mod tests {
             institution_hint: institution.to_string(),
             account_hint: account_hint(&Institution::from_hint(institution)),
             document_duplicate_status: DocumentDuplicateStatus {
-                status: "unknown",
+                status: DocumentDuplicateState::Unknown,
                 matched_source_document_id: None,
                 reason: None,
             },
@@ -1178,6 +1243,28 @@ mod tests {
 
         assert_eq!(status.status, ParserState::UnsupportedDocument);
         assert!(candidates.is_empty());
-        assert_eq!(errors[0].code, "unsupported_document");
+        assert_eq!(errors[0].code, TrackyErrorCode::UnsupportedDocument);
+    }
+
+    #[test]
+    fn typed_statuses_and_errors_preserve_contract_strings() {
+        let error = TrackyError {
+            category: TrackyErrorCategory::ExtractorFailure,
+            code: TrackyErrorCode::PdfTextExtractionFailed,
+            message: "redacted".to_string(),
+            path: TrackyErrorPath::ExtractorStatusPage { page: 2 },
+            recoverable: true,
+            details: serde_json::json!({}),
+        };
+
+        let json = serde_json::to_value(error).expect("serializes typed error");
+
+        assert_eq!(json["category"], "extractor_failure");
+        assert_eq!(json["code"], "pdf_text_extraction_failed");
+        assert_eq!(json["path"], "extractor_status.pages[2]");
+        assert_eq!(
+            serde_json::to_value(DocumentDuplicateState::Unknown).unwrap(),
+            "unknown"
+        );
     }
 }
