@@ -29,7 +29,7 @@ pub struct ReviewCandidate {
     pub id: String,
     pub import_batch_id: String,
     pub source_document_id: String,
-    pub status: String,
+    pub status: CandidateStatus,
     pub duplicate_status: ReviewDuplicateStatus,
     pub institution_hint: Option<String>,
     pub account_hint: ReviewAccountHint,
@@ -54,7 +54,7 @@ pub struct ReviewAccountHint {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ReviewDuplicateStatus {
-    pub status: String,
+    pub status: DuplicateStatusState,
     pub fingerprint: Option<String>,
     pub matched_candidate_ids: Vec<String>,
     pub matched_canonical_transaction_ids: Vec<String>,
@@ -891,7 +891,8 @@ pub fn accept_candidate(
             serde_json::json!({ "candidate_id": candidate_id }),
         ));
     };
-    if candidate.status == "accepted" || candidate.canonical_transaction_id.is_some() {
+    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
+    {
         return Ok(review_error_response(
             "candidates accept",
             "conflict",
@@ -906,8 +907,8 @@ pub fn accept_candidate(
         ));
     }
     if !matches!(
-        candidate.status.as_str(),
-        "pending_review" | "possible_duplicate"
+        candidate.status,
+        CandidateStatus::PendingReview | CandidateStatus::PossibleDuplicate
     ) {
         return Ok(review_error_response(
             "candidates accept",
@@ -986,7 +987,7 @@ pub fn reject_candidate(
             serde_json::json!({ "candidate_id": candidate_id }),
         ));
     };
-    if candidate.status == "accepted" {
+    if candidate.status == CandidateStatus::Accepted {
         return Ok(review_error_response(
             "candidates reject",
             "conflict",
@@ -1000,7 +1001,7 @@ pub fn reject_candidate(
             }),
         ));
     }
-    if candidate.status == "rejected" {
+    if candidate.status == CandidateStatus::Rejected {
         return Ok(review_error_response(
             "candidates reject",
             "conflict",
@@ -1064,6 +1065,34 @@ fn validate_candidate_status_filter(status: &str) -> Result<()> {
     }
 }
 
+fn parse_review_candidate_status(status: String) -> rusqlite::Result<CandidateStatus> {
+    match status.as_str() {
+        "pending_review" => Ok(CandidateStatus::PendingReview),
+        "possible_duplicate" => Ok(CandidateStatus::PossibleDuplicate),
+        "accepted" => Ok(CandidateStatus::Accepted),
+        "rejected" => Ok(CandidateStatus::Rejected),
+        other => Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unsupported candidate status: {other}").into(),
+        )),
+    }
+}
+
+fn parse_review_duplicate_status(status: String) -> rusqlite::Result<DuplicateStatusState> {
+    match status.as_str() {
+        "not_checked" => Ok(DuplicateStatusState::NotChecked),
+        "unique" => Ok(DuplicateStatusState::Unique),
+        "possible_duplicate" => Ok(DuplicateStatusState::PossibleDuplicate),
+        "exact_duplicate" => Ok(DuplicateStatusState::ExactDuplicate),
+        other => Err(rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("unsupported duplicate status: {other}").into(),
+        )),
+    }
+}
+
 fn find_review_candidate(
     connection: &Connection,
     candidate_id: &str,
@@ -1101,9 +1130,9 @@ fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Review
         id: row.get(0)?,
         import_batch_id: row.get(1)?,
         source_document_id: row.get(2)?,
-        status: row.get(3)?,
+        status: parse_review_candidate_status(row.get(3)?)?,
         duplicate_status: ReviewDuplicateStatus {
-            status: row.get(4)?,
+            status: parse_review_duplicate_status(row.get(4)?)?,
             fingerprint: row.get(5)?,
             matched_candidate_ids: Vec::new(),
             matched_canonical_transaction_ids: Vec::new(),

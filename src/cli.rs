@@ -384,19 +384,8 @@ fn candidate_list_command<W>(args: CandidateListArgs, stdout: &mut W) -> Result<
 where
     W: Write,
 {
-    if !args.json {
-        return write_candidate_review_response(
-            stdout,
-            review_error_response(
-                "candidates list",
-                "validation_failure",
-                "json_output_required",
-                "The candidates list command currently requires --json.".to_string(),
-                "command",
-                true,
-                serde_json::json!({ "flag": "--json" }),
-            ),
-        );
+    if let Some(exit_code) = require_candidate_json(args.json, stdout, "candidates list")? {
+        return Ok(exit_code);
     }
     let connection = open_review_database(&args.db)?;
     let response = match list_review_candidates(
@@ -430,19 +419,8 @@ fn candidate_accept_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Res
 where
     W: Write,
 {
-    if !args.json {
-        return write_candidate_review_response(
-            stdout,
-            review_error_response(
-                "candidates accept",
-                "validation_failure",
-                "json_output_required",
-                "The candidates accept command currently requires --json.".to_string(),
-                "command",
-                true,
-                serde_json::json!({ "flag": "--json" }),
-            ),
-        );
+    if let Some(exit_code) = require_candidate_json(args.json, stdout, "candidates accept")? {
+        return Ok(exit_code);
     }
     let mut connection = open_review_database(&args.db)?;
     let response = accept_candidate(&mut connection, &args.candidate_id)?;
@@ -453,23 +431,38 @@ fn candidate_reject_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Res
 where
     W: Write,
 {
-    if !args.json {
-        return write_candidate_review_response(
-            stdout,
-            review_error_response(
-                "candidates reject",
-                "validation_failure",
-                "json_output_required",
-                "The candidates reject command currently requires --json.".to_string(),
-                "command",
-                true,
-                serde_json::json!({ "flag": "--json" }),
-            ),
-        );
+    if let Some(exit_code) = require_candidate_json(args.json, stdout, "candidates reject")? {
+        return Ok(exit_code);
     }
     let mut connection = open_review_database(&args.db)?;
     let response = reject_candidate(&mut connection, &args.candidate_id)?;
     write_candidate_review_response(stdout, response)
+}
+
+fn require_candidate_json<W>(
+    json: bool,
+    stdout: &mut W,
+    command: &'static str,
+) -> Result<Option<i32>>
+where
+    W: Write,
+{
+    if json {
+        return Ok(None);
+    }
+    let exit_code = write_candidate_review_response(
+        stdout,
+        review_error_response(
+            command,
+            "validation_failure",
+            "json_output_required",
+            format!("The {command} command currently requires --json."),
+            "command",
+            true,
+            serde_json::json!({ "flag": "--json" }),
+        ),
+    )?;
+    Ok(Some(exit_code))
 }
 
 fn open_review_database(db: &Path) -> Result<Connection> {
