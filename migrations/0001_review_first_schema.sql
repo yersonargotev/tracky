@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     currency TEXT NOT NULL,
     masked_identifier TEXT,
     kind TEXT,
+    is_owned INTEGER NOT NULL DEFAULT 0 CHECK (is_owned IN (0, 1)),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -142,6 +143,7 @@ CREATE TABLE IF NOT EXISTS transaction_duplicate_markers (
     )
 );
 
+CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_source_documents_content_sha256 ON source_documents(content_sha256);
 CREATE INDEX IF NOT EXISTS idx_import_batches_source_document_id ON import_batches(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_transactions_batch ON candidate_transactions(import_batch_id);

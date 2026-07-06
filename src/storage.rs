@@ -10,6 +10,38 @@ use sha2::{Digest, Sha256};
 
 const REVIEW_FIRST_SCHEMA: &str = include_str!("../migrations/0001_review_first_schema.sql");
 pub const IMPORT_PDF_SCHEMA_VERSION: &str = "tracky.import-pdf.v1";
+pub const ACCOUNT_REGISTRY_SCHEMA_VERSION: &str = "tracky.accounts.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountRegisterInput {
+    pub institution: String,
+    pub label: String,
+    pub account_type: String,
+    pub currency: String,
+    pub masked_identifier: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct AccountRegistryResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<OwnedAccount>,
+    pub accounts: Vec<OwnedAccount>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct OwnedAccount {
+    pub id: String,
+    pub institution_id: String,
+    pub institution: String,
+    pub label: String,
+    pub account_type: String,
+    pub currency: String,
+    pub masked_identifier: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CandidateReviewResponse {
@@ -31,7 +63,9 @@ pub struct ReviewCandidate {
     pub source_document_id: String,
     pub status: CandidateStatus,
     pub duplicate_status: ReviewDuplicateStatus,
+    pub institution_id: Option<String>,
     pub institution_hint: Option<String>,
+    pub account_id: Option<String>,
     pub account_hint: ReviewAccountHint,
     pub posted_date: String,
     pub description: String,
@@ -117,6 +151,12 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         "candidate_transactions",
         "semantic_hint",
         "ALTER TABLE candidate_transactions ADD COLUMN semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment'))",
+    )?;
+    add_column_if_missing(
+        connection,
+        "accounts",
+        "is_owned",
+        "ALTER TABLE accounts ADD COLUMN is_owned INTEGER NOT NULL DEFAULT 0 CHECK (is_owned IN (0, 1))",
     )
 }
 
@@ -169,6 +209,199 @@ pub struct ImportPdfResponse {
     pub parser_status: crate::pdf::ParserStatus,
     pub candidates: Vec<CandidateTransaction>,
     pub errors: Vec<TrackyError>,
+}
+
+pub fn register_owned_account(
+    connection: &Connection,
+    input: AccountRegisterInput,
+) -> Result<AccountRegistryResponse> {
+    validate_account_input(&input)?;
+    let institution_id = institution_id(&input.institution);
+    let account_id = account_id(&input);
+    connection.execute(
+        "INSERT OR IGNORE INTO institutions (id, name) VALUES (?1, ?2)",
+        params![institution_id, input.institution.trim()],
+    )?;
+    connection.execute(
+        "INSERT INTO accounts (
+            id, institution_id, label, currency, masked_identifier, kind, is_owned
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)
+         ON CONFLICT(id) DO UPDATE SET
+            institution_id = excluded.institution_id,
+            label = excluded.label,
+            currency = excluded.currency,
+            masked_identifier = excluded.masked_identifier,
+            kind = excluded.kind,
+            is_owned = 1",
+        params![
+            account_id,
+            institution_id,
+            input.label.trim(),
+            normalized_currency(&input.currency),
+            input.masked_identifier.as_deref().map(str::trim),
+            input.account_type.trim(),
+        ],
+    )?;
+    let account = owned_account_by_id(connection, &account_id)?
+        .expect("registered owned account remains queryable");
+    Ok(AccountRegistryResponse {
+        schema_version: ACCOUNT_REGISTRY_SCHEMA_VERSION,
+        command: "accounts register",
+        ok: true,
+        account: Some(account),
+        accounts: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn list_owned_accounts(connection: &Connection) -> Result<AccountRegistryResponse> {
+    let mut statement = connection.prepare(
+        "SELECT a.id, i.id, i.name, a.label, a.kind, a.currency, a.masked_identifier
+         FROM accounts a
+         JOIN institutions i ON i.id = a.institution_id
+         WHERE a.is_owned = 1
+         ORDER BY LOWER(i.name), LOWER(a.label), a.id",
+    )?;
+    let rows = statement.query_map([], owned_account_from_row)?;
+    let mut accounts = Vec::new();
+    for row in rows {
+        accounts.push(row?);
+    }
+    Ok(AccountRegistryResponse {
+        schema_version: ACCOUNT_REGISTRY_SCHEMA_VERSION,
+        command: "accounts list",
+        ok: true,
+        account: None,
+        accounts,
+        errors: Vec::new(),
+    })
+}
+
+pub fn account_registry_error_response(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: String,
+    path: &'static str,
+    recoverable: bool,
+    details: serde_json::Value,
+) -> AccountRegistryResponse {
+    AccountRegistryResponse {
+        schema_version: ACCOUNT_REGISTRY_SCHEMA_VERSION,
+        command,
+        ok: false,
+        account: None,
+        accounts: Vec::new(),
+        errors: vec![ReviewError {
+            category,
+            code,
+            message,
+            path,
+            recoverable,
+            details,
+        }],
+    }
+}
+
+fn validate_account_input(input: &AccountRegisterInput) -> Result<()> {
+    if input.institution.trim().is_empty() {
+        anyhow::bail!("institution is required");
+    }
+    if input.label.trim().is_empty() {
+        anyhow::bail!("account label is required");
+    }
+    if input.account_type.trim().is_empty() {
+        anyhow::bail!("account type is required");
+    }
+    if input.currency.trim().is_empty() {
+        anyhow::bail!("currency is required");
+    }
+    Ok(())
+}
+
+fn owned_account_by_id(connection: &Connection, id: &str) -> Result<Option<OwnedAccount>> {
+    connection
+        .query_row(
+            "SELECT a.id, i.id, i.name, a.label, a.kind, a.currency, a.masked_identifier
+             FROM accounts a
+             JOIN institutions i ON i.id = a.institution_id
+             WHERE a.id = ?1 AND a.is_owned = 1",
+            params![id],
+            owned_account_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn owned_account_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OwnedAccount> {
+    Ok(OwnedAccount {
+        id: row.get(0)?,
+        institution_id: row.get(1)?,
+        institution: row.get(2)?,
+        label: row.get(3)?,
+        account_type: row.get(4)?,
+        currency: row.get(5)?,
+        masked_identifier: row.get(6)?,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AccountResolution {
+    institution_id: String,
+    account_id: String,
+}
+
+fn resolve_owned_account(
+    connection: &Connection,
+    institution_hint: &str,
+    account_hint: &crate::pdf::AccountHint,
+) -> Result<Option<AccountResolution>> {
+    let mut statement = connection.prepare(
+        "SELECT a.id, a.institution_id, i.name, a.label, a.kind, a.masked_identifier
+         FROM accounts a
+         JOIN institutions i ON i.id = a.institution_id
+         WHERE a.is_owned = 1 AND UPPER(a.currency) = ?1",
+    )?;
+    let rows = statement.query_map(params![normalized_currency(account_hint.currency)], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, String>(4)?,
+            row.get::<_, Option<String>>(5)?,
+        ))
+    })?;
+    let institution_key = normalize_match_key(institution_hint);
+    let label_key = normalize_match_key(&account_hint.label);
+    let masked_key = account_hint
+        .masked_identifier
+        .as_deref()
+        .map(normalize_match_key);
+    let mut matches = Vec::new();
+    for row in rows {
+        let (account_id, institution_id, institution, label, kind, masked_identifier) = row?;
+        let institution_matches = normalize_match_key(&institution) == institution_key
+            || normalize_match_key(&institution_id) == institution_key;
+        let label_or_type_matches =
+            normalize_match_key(&label) == label_key || normalize_match_key(&kind) == label_key;
+        let masked_matches = match (&masked_key, masked_identifier.as_deref()) {
+            (Some(expected), Some(actual)) => normalize_match_key(actual) == *expected,
+            (Some(_), None) => false,
+            (None, _) => true,
+        };
+        if institution_matches && label_or_type_matches && masked_matches {
+            matches.push(AccountResolution {
+                institution_id,
+                account_id,
+            });
+        }
+    }
+    if matches.len() == 1 {
+        Ok(matches.pop())
+    } else {
+        Ok(None)
+    }
 }
 
 pub fn find_source_document_by_hash(
@@ -245,14 +478,38 @@ pub fn persist_pdf_import(
         duplicate_count,
         ..batch
     };
+    let source_account_resolution = resolve_owned_account(
+        connection,
+        &source_document.institution_hint,
+        &source_document.account_hint,
+    )?;
+    let candidate_account_resolutions = candidates
+        .iter()
+        .map(|candidate| {
+            resolve_owned_account(
+                connection,
+                &candidate.institution_hint,
+                &candidate.account_hint,
+            )
+            .map(|resolution| (candidate.id.clone(), resolution))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>>>()?;
 
     let tx = connection
         .transaction()
         .context("starting import transaction")?;
-    insert_source_document(&tx, &source_document)?;
+    insert_source_document(&tx, &source_document, source_account_resolution.as_ref())?;
     insert_import_batch(&tx, &batch, &inspect.errors)?;
     for candidate in &candidates {
-        insert_candidate(&tx, candidate, &source_document, &batch.id)?;
+        insert_candidate(
+            &tx,
+            candidate,
+            &source_document,
+            &batch.id,
+            candidate_account_resolutions
+                .get(&candidate.id)
+                .and_then(Option::as_ref),
+        )?;
         insert_provenance(&tx, candidate, &source_document, &batch.id)?;
         insert_fingerprint(&tx, candidate)?;
     }
@@ -322,20 +579,26 @@ fn sqlite_now(connection: &Connection) -> rusqlite::Result<String> {
     })
 }
 
-fn insert_source_document(connection: &Connection, source: &SourceDocument) -> Result<()> {
+fn insert_source_document(
+    connection: &Connection,
+    source: &SourceDocument,
+    resolution: Option<&AccountResolution>,
+) -> Result<()> {
     connection.execute(
         "INSERT INTO source_documents (
             id, input_name, content_sha256, mime_type, byte_size,
-            institution_hint, account_label_hint, account_currency_hint,
+            institution_id, institution_hint, account_id, account_label_hint, account_currency_hint,
             account_masked_identifier_hint
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             source.id,
             source.input_name,
             source.content_sha256,
             source.mime_type,
             source.byte_size as i64,
+            resolution.map(|value| value.institution_id.as_str()),
             source.institution_hint,
+            resolution.map(|value| value.account_id.as_str()),
             source.account_hint.label,
             source.account_hint.currency,
             source.account_hint.masked_identifier,
@@ -623,20 +886,23 @@ fn insert_candidate(
     candidate: &CandidateTransaction,
     source: &SourceDocument,
     batch_id: &str,
+    resolution: Option<&AccountResolution>,
 ) -> Result<()> {
     connection.execute(
         "INSERT INTO candidate_transactions (
-            id, import_batch_id, source_document_id, institution_hint,
-            account_label_hint, account_currency_hint, account_masked_identifier_hint,
+            id, import_batch_id, source_document_id, institution_id, institution_hint,
+            account_id, account_label_hint, account_currency_hint, account_masked_identifier_hint,
             posted_date, description, amount_minor, currency, balance_minor,
             direction_hint, semantic_hint, confidence, status, duplicate_status, fingerprint,
             validation_warnings_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             candidate.id,
             batch_id,
             source.id,
+            resolution.map(|value| value.institution_id.as_str()),
             candidate.institution_hint,
+            resolution.map(|value| value.account_id.as_str()),
             candidate.account_hint.label,
             candidate.account_hint.currency,
             candidate.account_hint.masked_identifier,
@@ -754,6 +1020,62 @@ fn insert_fingerprint(connection: &Connection, candidate: &CandidateTransaction)
         ],
     )?;
     Ok(())
+}
+
+fn institution_id(institution: &str) -> String {
+    format!("inst_{}", stable_slug(institution))
+}
+
+fn account_id(input: &AccountRegisterInput) -> String {
+    let digest = Sha256::digest(
+        format!(
+            "{}|{}|{}|{}|{}",
+            normalize_match_key(&input.institution),
+            normalize_match_key(&input.label),
+            normalize_match_key(&input.account_type),
+            normalized_currency(&input.currency),
+            input
+                .masked_identifier
+                .as_deref()
+                .map(normalize_match_key)
+                .unwrap_or_default()
+        )
+        .as_bytes(),
+    );
+    format!(
+        "acct_{}",
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn stable_slug(value: &str) -> String {
+    let slug = value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>()
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    if slug.is_empty() {
+        "unknown".to_string()
+    } else {
+        slug
+    }
+}
+
+fn normalize_match_key(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
 }
 
 fn import_batch_id(content_sha256: &str) -> String {
@@ -1126,8 +1448,8 @@ fn find_review_candidate(
 fn review_candidate_select_sql() -> String {
     "SELECT
         c.id, c.import_batch_id, c.source_document_id, c.status,
-        c.duplicate_status, c.fingerprint, c.institution_hint,
-        c.account_label_hint, c.account_currency_hint, c.account_masked_identifier_hint,
+        c.duplicate_status, c.fingerprint, c.institution_id, c.institution_hint,
+        c.account_id, c.account_label_hint, c.account_currency_hint, c.account_masked_identifier_hint,
         c.posted_date, c.description, c.amount_minor, c.currency, c.balance_minor,
         c.direction_hint, c.semantic_hint, c.confidence, c.validation_warnings_json, c.canonical_transaction_id,
         p.candidate_transaction_id, p.source_document_id, p.import_batch_id, p.page_number, p.row_index,
@@ -1140,7 +1462,7 @@ fn review_candidate_select_sql() -> String {
 }
 
 fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReviewCandidate> {
-    let validation_warnings_json: String = row.get(18)?;
+    let validation_warnings_json: String = row.get(20)?;
     let validation_warnings = serde_json::from_str(&validation_warnings_json).unwrap_or_default();
     Ok(ReviewCandidate {
         id: row.get(0)?,
@@ -1154,38 +1476,40 @@ fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Review
             matched_canonical_transaction_ids: Vec::new(),
             reason: None,
         },
-        institution_hint: row.get(6)?,
+        institution_id: row.get(6)?,
+        institution_hint: row.get(7)?,
+        account_id: row.get(8)?,
         account_hint: ReviewAccountHint {
-            label: row.get(7)?,
-            currency: row.get(8)?,
-            masked_identifier: row.get(9)?,
+            label: row.get(9)?,
+            currency: row.get(10)?,
+            masked_identifier: row.get(11)?,
         },
-        posted_date: row.get(10)?,
-        description: row.get(11)?,
-        amount_minor: row.get(12)?,
-        currency: row.get(13)?,
-        balance_minor: row.get(14)?,
-        direction_hint: row.get(15)?,
-        semantic_hint: row.get(16)?,
-        confidence: row.get(17)?,
+        posted_date: row.get(12)?,
+        description: row.get(13)?,
+        amount_minor: row.get(14)?,
+        currency: row.get(15)?,
+        balance_minor: row.get(16)?,
+        direction_hint: row.get(17)?,
+        semantic_hint: row.get(18)?,
+        confidence: row.get(19)?,
         provenance: ReviewProvenance {
-            candidate_transaction_id: row.get(20)?,
-            source_document_id: row.get(21)?,
-            import_batch_id: row.get(22)?,
-            page_number: row.get(23)?,
-            row_index: row.get(24)?,
-            evidence_redaction: row.get(25)?,
-            evidence_text_redacted: row.get(26)?,
-            raw_storage_policy: row.get(27)?,
-            extractor_name: row.get(28)?,
-            extractor_version: row.get(29)?,
-            parser_id: row.get(30)?,
-            parser_version: row.get(31)?,
-            confidence: row.get(32)?,
-            canonical_transaction_id: row.get(33)?,
+            candidate_transaction_id: row.get(22)?,
+            source_document_id: row.get(23)?,
+            import_batch_id: row.get(24)?,
+            page_number: row.get(25)?,
+            row_index: row.get(26)?,
+            evidence_redaction: row.get(27)?,
+            evidence_text_redacted: row.get(28)?,
+            raw_storage_policy: row.get(29)?,
+            extractor_name: row.get(30)?,
+            extractor_version: row.get(31)?,
+            parser_id: row.get(32)?,
+            parser_version: row.get(33)?,
+            confidence: row.get(34)?,
+            canonical_transaction_id: row.get(35)?,
         },
         validation_warnings,
-        canonical_transaction_id: row.get(19)?,
+        canonical_transaction_id: row.get(21)?,
     })
 }
 

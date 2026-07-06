@@ -6,7 +6,10 @@ use tracky::pdf::{
     PdfInspectResponse, Provenance, SemanticHint, SourceDocument, TrackyError,
     PDF_INSPECT_SCHEMA_VERSION,
 };
-use tracky::storage::{apply_migrations, persist_pdf_import};
+use tracky::storage::{
+    apply_migrations, list_owned_accounts, persist_pdf_import, register_owned_account,
+    AccountRegisterInput,
+};
 
 fn temporary_database() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -107,6 +110,48 @@ fn inspect_response_with_fingerprint(hash: &str, fingerprint: &str) -> PdfInspec
         candidates: vec![candidate],
         errors: Vec::<TrackyError>::new(),
     }
+}
+
+fn register_account(
+    connection: &Connection,
+    institution: &str,
+    label: &str,
+    account_type: &str,
+    masked_identifier: Option<&str>,
+) -> String {
+    register_owned_account(
+        connection,
+        AccountRegisterInput {
+            institution: institution.to_string(),
+            label: label.to_string(),
+            account_type: account_type.to_string(),
+            currency: "COP".to_string(),
+            masked_identifier: masked_identifier.map(ToString::to_string),
+        },
+    )
+    .expect("register owned account")
+    .account
+    .expect("registered account")
+    .id
+}
+
+fn rappi_inspect_response(hash: &str) -> PdfInspectResponse {
+    let mut response = inspect_response_with_fingerprint(hash, "fp_rappi_redacted_001");
+    response.source_document.input_name = "rappi-redacted.pdf".to_string();
+    response.source_document.institution_hint = "rappi".to_string();
+    response.source_document.account_hint = AccountHint {
+        label: "Rappi card".to_string(),
+        currency: "COP",
+        masked_identifier: None,
+    };
+    response.parser_status.parser_id = "rappi.statement.v1".to_string();
+    for candidate in &mut response.candidates {
+        candidate.institution_hint = "rappi".to_string();
+        candidate.account_hint = response.source_document.account_hint.clone();
+        candidate.semantic_hint = SemanticHint::CardCharge;
+        candidate.provenance.parser.id = "rappi.statement.v1".to_string();
+    }
+    response
 }
 
 fn second_candidate(
@@ -691,4 +736,131 @@ fn reimporting_same_source_hash_reports_duplicate_without_new_batch_or_candidate
         )
         .expect("read counts");
     assert_eq!(counts, (1, 1, 1, 0));
+}
+
+#[test]
+fn owned_account_registry_registers_nequi_and_rappi_separately() {
+    let (_dir, connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+
+    let nequi_id = register_account(&connection, "nequi", "Nequi wallet", "wallet", None);
+    let rappi_id = register_account(&connection, "rappi", "RappiCard", "credit_card", None);
+    let response = list_owned_accounts(&connection).expect("list owned accounts");
+
+    assert_eq!(response.schema_version, "tracky.accounts.v1");
+    assert_eq!(response.command, "accounts list");
+    assert!(response.ok);
+    assert_eq!(response.accounts.len(), 2);
+    assert_ne!(nequi_id, rappi_id);
+    assert!(response
+        .accounts
+        .iter()
+        .any(|account| account.institution == "nequi"
+            && account.label == "Nequi wallet"
+            && account.account_type == "wallet"));
+    assert!(response
+        .accounts
+        .iter()
+        .any(|account| account.institution == "rappi"
+            && account.label == "RappiCard"
+            && account.account_type == "credit_card"));
+}
+
+#[test]
+fn imported_candidate_hints_resolve_to_unambiguous_owned_accounts() {
+    let (_dir, mut connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+    let account_id = register_account(&connection, "nequi", "Nequi wallet", "wallet", None);
+
+    let response = persist_pdf_import(
+        &mut connection,
+        inspect_response("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+    )
+    .expect("persist import");
+
+    assert!(response.ok);
+    let resolved: (Option<String>, Option<String>, String, String) = connection
+        .query_row(
+            "SELECT c.account_id, sd.account_id, c.account_label_hint, c.account_currency_hint
+             FROM candidate_transactions c
+             JOIN source_documents sd ON sd.id = c.source_document_id
+             WHERE c.id = ?1",
+            rusqlite::params![&response.candidates[0].id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read resolved account ids");
+    assert_eq!(
+        resolved,
+        (
+            Some(account_id.clone()),
+            Some(account_id),
+            "Nequi wallet".to_string(),
+            "COP".to_string()
+        )
+    );
+}
+
+#[test]
+fn ambiguous_or_unresolved_account_hints_do_not_block_import() {
+    let (_dir, mut connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(
+        &connection,
+        "nequi",
+        "Nequi wallet",
+        "wallet",
+        Some("***1111"),
+    );
+    register_account(
+        &connection,
+        "nequi",
+        "Nequi wallet",
+        "wallet",
+        Some("***2222"),
+    );
+
+    let response = persist_pdf_import(
+        &mut connection,
+        inspect_response("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+    )
+    .expect("persist import with ambiguous account hint");
+
+    assert!(response.ok);
+    let unresolved: (Option<String>, String, String) = connection
+        .query_row(
+            "SELECT account_id, account_label_hint, account_currency_hint
+             FROM candidate_transactions
+             WHERE id = ?1",
+            rusqlite::params![&response.candidates[0].id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read unresolved account hint");
+    assert_eq!(
+        unresolved,
+        (None, "Nequi wallet".to_string(), "COP".to_string())
+    );
+}
+
+#[test]
+fn rappicard_hint_resolves_to_registered_card_account_without_matching_nequi() {
+    let (_dir, mut connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet", None);
+    let rappi_id = register_account(&connection, "rappi", "RappiCard", "credit_card", None);
+
+    let response = persist_pdf_import(
+        &mut connection,
+        rappi_inspect_response("9999999999999999999999999999999999999999999999999999999999999999"),
+    )
+    .expect("persist rappi import");
+
+    assert!(response.ok);
+    let resolved: Option<String> = connection
+        .query_row(
+            "SELECT account_id FROM candidate_transactions WHERE id = ?1",
+            rusqlite::params![&response.candidates[0].id],
+            |row| row.get(0),
+        )
+        .expect("read rappi account id");
+    assert_eq!(resolved, Some(rappi_id));
 }

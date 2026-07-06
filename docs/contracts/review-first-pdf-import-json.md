@@ -323,6 +323,39 @@ Required `TrackyError.category` values:
 
 A command may return multiple errors. For example, a partial parser run can return candidates plus `validation_failure` errors for rejected rows. A duplicate source document should be reported before extraction whenever the database can identify it by hash.
 
+
+## Owned account registry CLI JSON contract
+
+Issue 0011 adds a small registry for accounts that belong to the user. These commands are separate from PDF inspection/import and candidate review; they only maintain account metadata used for conservative account resolution.
+
+| Command | Writes storage? | Creates canonical transactions? |
+| --- | --- | --- |
+| `tracky accounts register --db <PATH> --institution <NAME> --label <LABEL> --account-type <TYPE> --currency <CODE> [--masked-identifier <MASKED>] --json` | Yes | Never |
+| `tracky accounts list --db <PATH> --json` | No | Never |
+
+Both commands return `schema_version: "tracky.accounts.v1"` and machine-readable JSON. `accounts register` returns one `account`; `accounts list` returns `accounts[]`.
+
+```json
+{
+  "schema_version": "tracky.accounts.v1",
+  "command": "accounts register",
+  "ok": true,
+  "account": {
+    "id": "acct_REDACTED",
+    "institution_id": "inst_nequi",
+    "institution": "nequi",
+    "label": "Nequi wallet",
+    "account_type": "wallet",
+    "currency": "COP",
+    "masked_identifier": null
+  },
+  "accounts": [],
+  "errors": []
+}
+```
+
+PDF import remains review-first. When an imported source document or candidate has an institution/account hint, Tracky links it to a registered owned account only when institution, normalized label/type, currency, and any provided masked identifier identify exactly one account. If no account matches, or more than one account matches, `account_id` remains null and the original account hint remains stored for review.
+
 ## Redaction and wording expectations
 
 - Use domain vocabulary consistently: **transacción candidata**, **documento fuente**, **provenance**, **posible duplicado**, **credencial de documento**, **lote de importación**, and **huella de transacción**.

@@ -6,9 +6,10 @@ use crate::pdf::{
     PDF_INSPECT_SCHEMA_VERSION,
 };
 use crate::storage::{
-    accept_candidate, apply_migrations, duplicate_import_response, find_source_document_by_hash,
-    list_review_candidates, persist_pdf_import, reject_candidate, review_error_response,
-    CandidateReviewResponse, ImportPdfResponse, IMPORT_PDF_SCHEMA_VERSION,
+    accept_candidate, account_registry_error_response, apply_migrations, duplicate_import_response,
+    find_source_document_by_hash, list_owned_accounts, list_review_candidates, persist_pdf_import,
+    register_owned_account, reject_candidate, review_error_response, AccountRegisterInput,
+    AccountRegistryResponse, CandidateReviewResponse, ImportPdfResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -66,6 +67,7 @@ enum Commands {
     Pdf(PdfCommand),
     Import(ImportCommand),
     Candidates(CandidatesCommand),
+    Accounts(AccountsCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -96,11 +98,65 @@ struct CandidatesCommand {
     command: CandidateCommands,
 }
 
+#[derive(Debug, Parser)]
+struct AccountsCommand {
+    #[command(subcommand)]
+    command: AccountCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum AccountCommands {
+    Register(AccountRegisterArgs),
+    List(AccountListArgs),
+}
+
 #[derive(Debug, Subcommand)]
 enum CandidateCommands {
     List(CandidateListArgs),
     Accept(CandidateActionArgs),
     Reject(CandidateActionArgs),
+}
+
+#[derive(Debug, Parser)]
+struct AccountRegisterArgs {
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Institution name or stable hint, such as nequi or rappi.
+    #[arg(long, value_name = "NAME")]
+    institution: String,
+
+    /// User-facing account label, such as Nequi wallet or RappiCard.
+    #[arg(long, value_name = "LABEL")]
+    label: String,
+
+    /// Account type, such as wallet, checking, credit_card, or card.
+    #[arg(long = "account-type", value_name = "TYPE")]
+    account_type: String,
+
+    /// ISO-like currency code.
+    #[arg(long, value_name = "CURRENCY")]
+    currency: String,
+
+    /// Optional masked identifier; never pass a full account number.
+    #[arg(long, value_name = "MASKED")]
+    masked_identifier: Option<String>,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct AccountListArgs {
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -203,6 +259,10 @@ where
             CandidateCommands::List(args) => candidate_list_command(args, &mut stdout),
             CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
             CandidateCommands::Reject(args) => candidate_reject_command(args, &mut stdout),
+        },
+        Commands::Accounts(accounts) => match accounts.command {
+            AccountCommands::Register(args) => account_register_command(args, &mut stdout),
+            AccountCommands::List(args) => account_list_command(args, &mut stdout),
         },
     }
 }
@@ -380,6 +440,50 @@ where
     Ok(exit_code)
 }
 
+fn account_register_command<W>(args: AccountRegisterArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_account_json(args.json, stdout, "accounts register")? {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    let response = match register_owned_account(
+        &connection,
+        AccountRegisterInput {
+            institution: args.institution,
+            label: args.label,
+            account_type: args.account_type,
+            currency: args.currency,
+            masked_identifier: args.masked_identifier,
+        },
+    ) {
+        Ok(response) => response,
+        Err(error) => account_registry_error_response(
+            "accounts register",
+            "validation_failure",
+            "invalid_account_registration",
+            "Owned account registration is invalid.".to_string(),
+            "command",
+            true,
+            serde_json::json!({ "cause": error.to_string() }),
+        ),
+    };
+    write_account_registry_response(stdout, response)
+}
+
+fn account_list_command<W>(args: AccountListArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_account_json(args.json, stdout, "accounts list")? {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    let response = list_owned_accounts(&connection)?;
+    write_account_registry_response(stdout, response)
+}
+
 fn candidate_list_command<W>(args: CandidateListArgs, stdout: &mut W) -> Result<i32>
 where
     W: Write,
@@ -439,6 +543,28 @@ where
     write_candidate_review_response(stdout, response)
 }
 
+fn require_account_json<W>(json: bool, stdout: &mut W, command: &'static str) -> Result<Option<i32>>
+where
+    W: Write,
+{
+    if json {
+        return Ok(None);
+    }
+    let exit_code = write_account_registry_response(
+        stdout,
+        account_registry_error_response(
+            command,
+            "validation_failure",
+            "json_output_required",
+            format!("The {command} command currently requires --json."),
+            "command",
+            true,
+            serde_json::json!({ "flag": "--json" }),
+        ),
+    )?;
+    Ok(Some(exit_code))
+}
+
 fn require_candidate_json<W>(
     json: bool,
     stdout: &mut W,
@@ -470,6 +596,16 @@ fn open_review_database(db: &Path) -> Result<Connection> {
         .with_context(|| format!("opening SQLite database {}", db.display()))?;
     apply_migrations(&connection).context("applying SQLite migrations")?;
     Ok(connection)
+}
+
+fn write_account_registry_response<W: Write>(
+    stdout: &mut W,
+    response: AccountRegistryResponse,
+) -> Result<i32> {
+    let exit_code = if response.ok { 0 } else { 1 };
+    serde_json::to_writer(&mut *stdout, &response).context("writing account registry JSON")?;
+    writeln!(stdout).context("writing trailing newline")?;
+    Ok(exit_code)
 }
 
 fn write_candidate_review_response<W: Write>(
