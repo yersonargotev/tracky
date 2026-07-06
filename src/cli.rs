@@ -547,22 +547,13 @@ fn require_account_json<W>(json: bool, stdout: &mut W, command: &'static str) ->
 where
     W: Write,
 {
-    if json {
-        return Ok(None);
-    }
-    let exit_code = write_account_registry_response(
+    require_json_flag(
+        json,
         stdout,
-        account_registry_error_response(
-            command,
-            "validation_failure",
-            "json_output_required",
-            format!("The {command} command currently requires --json."),
-            "command",
-            true,
-            serde_json::json!({ "flag": "--json" }),
-        ),
-    )?;
-    Ok(Some(exit_code))
+        command,
+        account_registry_error_response,
+        write_account_registry_response,
+    )
 }
 
 fn require_candidate_json<W>(
@@ -573,22 +564,48 @@ fn require_candidate_json<W>(
 where
     W: Write,
 {
+    require_json_flag(
+        json,
+        stdout,
+        command,
+        review_error_response,
+        write_candidate_review_response,
+    )
+}
+
+fn require_json_flag<W, Response, BuildError, WriteResponse>(
+    json: bool,
+    stdout: &mut W,
+    command: &'static str,
+    build_error: BuildError,
+    write_response: WriteResponse,
+) -> Result<Option<i32>>
+where
+    W: Write,
+    BuildError: FnOnce(
+        &'static str,
+        &'static str,
+        &'static str,
+        String,
+        &'static str,
+        bool,
+        serde_json::Value,
+    ) -> Response,
+    WriteResponse: FnOnce(&mut W, Response) -> Result<i32>,
+{
     if json {
         return Ok(None);
     }
-    let exit_code = write_candidate_review_response(
-        stdout,
-        review_error_response(
-            command,
-            "validation_failure",
-            "json_output_required",
-            format!("The {command} command currently requires --json."),
-            "command",
-            true,
-            serde_json::json!({ "flag": "--json" }),
-        ),
-    )?;
-    Ok(Some(exit_code))
+    let response = build_error(
+        command,
+        "validation_failure",
+        "json_output_required",
+        format!("The {command} command currently requires --json."),
+        "command",
+        true,
+        serde_json::json!({ "flag": "--json" }),
+    );
+    write_response(stdout, response).map(Some)
 }
 
 fn open_review_database(db: &Path) -> Result<Connection> {
@@ -602,18 +619,38 @@ fn write_account_registry_response<W: Write>(
     stdout: &mut W,
     response: AccountRegistryResponse,
 ) -> Result<i32> {
-    let exit_code = if response.ok { 0 } else { 1 };
-    serde_json::to_writer(&mut *stdout, &response).context("writing account registry JSON")?;
-    writeln!(stdout).context("writing trailing newline")?;
-    Ok(exit_code)
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing account registry JSON",
+    )
 }
 
 fn write_candidate_review_response<W: Write>(
     stdout: &mut W,
     response: CandidateReviewResponse,
 ) -> Result<i32> {
-    let exit_code = if response.ok { 0 } else { 1 };
-    serde_json::to_writer(&mut *stdout, &response).context("writing candidate review JSON")?;
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing candidate review JSON",
+    )
+}
+
+fn write_json_response<W, Response>(
+    stdout: &mut W,
+    ok: bool,
+    response: Response,
+    context: &'static str,
+) -> Result<i32>
+where
+    W: Write,
+    Response: serde::Serialize,
+{
+    let exit_code = if ok { 0 } else { 1 };
+    serde_json::to_writer(&mut *stdout, &response).context(context)?;
     writeln!(stdout).context("writing trailing newline")?;
     Ok(exit_code)
 }

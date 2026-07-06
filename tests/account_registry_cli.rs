@@ -88,3 +88,23 @@ fn account_registry_cli_registers_and_lists_owned_accounts_as_json() {
             && account["account_type"] == "credit_card"
             && account["masked_identifier"] == "***1234"));
 }
+
+#[test]
+fn account_registry_cli_requires_json_with_stable_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+
+    let output = Command::new(tracky())
+        .args(["accounts", "list", "--db", db])
+        .output()
+        .expect("run accounts list without json");
+
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error json");
+    assert_eq!(json["schema_version"], "tracky.accounts.v1");
+    assert_eq!(json["command"], "accounts list");
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["errors"][0]["code"], "json_output_required");
+    assert_eq!(json["errors"][0]["details"]["flag"], "--json");
+}
