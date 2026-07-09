@@ -45,12 +45,12 @@ fn inspect_response(hash: &str) -> PdfInspectResponse {
         institution_hint: "nequi".to_string(),
         account_hint: source_document.account_hint.clone(),
         posted_date: "2026-05-31".to_string(),
-        description: "Redacted merchant".to_string(),
+        description: "Redacted non-expense review item".to_string(),
         amount_minor: -4590000,
         currency: "COP",
         balance_minor: Some(12500000),
         direction_hint: DirectionHint::Outflow,
-        semantic_hint: SemanticHint::BankMovement,
+        semantic_hint: SemanticHint::CardPayment,
         confidence: 0.91,
         provenance: Provenance {
             source_document_id: source_document.id.clone(),
@@ -1136,6 +1136,25 @@ fn candidate_review_cli_accepts_rappicard_and_nequi_expenses_with_categories() {
     assert_eq!(list_json["schema_version"], "tracky.categories.v1");
     assert_eq!(list_json["categories"].as_array().unwrap().len(), 1);
 
+    let generic_accept = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept",
+            "cand_rappi_card_charge_expense",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("run generic accept for purchase candidate");
+    assert!(!generic_accept.status.success());
+    let generic_json: serde_json::Value =
+        serde_json::from_slice(&generic_accept.stdout).expect("generic accept refusal json");
+    assert_eq!(
+        generic_json["errors"][0]["code"],
+        "candidate_requires_expense_category"
+    );
+
     for (candidate_id, expected_amount) in [
         ("cand_rappi_card_charge_expense", -3_250_000),
         ("cand_nequi_purchase_expense", -2_500_000),
@@ -1352,6 +1371,71 @@ fn candidate_review_cli_refuses_non_expense_transfer_like_card_payment_or_alread
         serde_json::from_slice(&transfer_like.stdout).expect("transfer-like expense json");
     assert_eq!(
         transfer_like_json["errors"][0]["code"],
+        "candidate_possible_own_account_transfer"
+    );
+
+    let bank_transfer_dir = tempfile::tempdir().expect("temp dir");
+    let bank_transfer_db_path = bank_transfer_dir.path().join("tracky.sqlite");
+    let bank_transfer_db = bank_transfer_db_path.to_str().unwrap();
+    let mut bank_transfer_connection =
+        Connection::open(&bank_transfer_db_path).expect("open bank transfer db");
+    apply_migrations(&bank_transfer_connection).expect("apply migrations");
+    register_account(
+        &bank_transfer_connection,
+        "bancolombia",
+        "Bancolombia checking",
+        "checking",
+    );
+    register_account(&bank_transfer_connection, "nequi", "Nequi wallet", "wallet");
+    persist_pdf_import(
+        &mut bank_transfer_connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "babababababababababababababababababababababababababababababababa",
+            institution: "bancolombia",
+            account_label: "Bancolombia checking",
+            candidate_id: "cand_bank_own_transfer_out_not_expense",
+            description: "TRANSFERENCIA A NEQUI REDACTED",
+            amount_minor: -7_000_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist bank transfer outflow candidate");
+    persist_pdf_import(
+        &mut bank_transfer_connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_nequi_own_transfer_in_not_expense",
+            description: "TRANSFERENCIA DESDE CUENTA PROPIA REDACTED",
+            amount_minor: 7_000_000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist bank transfer inflow candidate");
+    drop(bank_transfer_connection);
+    create_category_cli(bank_transfer_db, "Own Transfers Not Expenses");
+
+    let bank_transfer_like = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-expense",
+            "cand_bank_own_transfer_out_not_expense",
+            "--db",
+            bank_transfer_db,
+            "--category-id",
+            "cat_own_transfers_not_expenses",
+            "--json",
+        ])
+        .output()
+        .expect("run bank transfer-like accept expense");
+    assert!(!bank_transfer_like.status.success());
+    let bank_transfer_json: serde_json::Value = serde_json::from_slice(&bank_transfer_like.stdout)
+        .expect("bank transfer-like expense json");
+    assert_eq!(
+        bank_transfer_json["errors"][0]["code"],
         "candidate_possible_own_account_transfer"
     );
 }

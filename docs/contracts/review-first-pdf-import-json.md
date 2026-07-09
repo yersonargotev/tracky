@@ -8,10 +8,17 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | --- | --- | --- | --- |
 | `tracky pdf inspect` | No | Returns transient candidate-shaped results in JSON | Never |
 | `tracky import pdf` | Yes, once implemented | Persists candidate transactions in an import batch | Never |
+| `tracky accounts register/list` | Yes for register, no for list | No | Never |
+| `tracky candidates list/reject` | Yes for reject, no for list | No | Never |
+| `tracky candidates accept` | Yes | No new candidates | Creates one canonical transaction from one eligible non-specialized candidate |
 | `tracky income-sources create/list` | Yes for create, no for list | No | Never |
 | `tracky candidates accept-income` | Yes | No new candidates | Creates one canonical income transaction from one eligible candidate |
+| `tracky categories create/list` | Yes for create, no for list | No | Never |
+| `tracky candidates accept-expense` | Yes | No new candidates | Creates one canonical expense transaction and one category line from one eligible candidate |
+| `tracky candidates list-transfer-pairs` | No | No | Never |
+| `tracky candidates accept-transfer-pair` | Yes | No new candidates | Creates two canonical own-account transfer legs from one eligible pair |
 
-Out of scope for this contract: parser implementation, SQLite migrations, canonical transaction promotion, TUI review, MCP wrappers, AI fallback, and password storage.
+Out of scope for this contract: parser implementation, SQLite migration internals, canonical transaction promotion outside explicit review commands, TUI review, MCP wrappers, AI fallback, and password storage.
 
 ## Top-level responses
 
@@ -337,7 +344,7 @@ Eligible first-slice expense candidates are:
 - `bank_movement` outflows with negative amounts, such as Nequi purchases.
 - `card_charge` outflows, such as RappiCard purchases/subscriptions/fees, even when the source statement amount is positive; the canonical expense and its line are normalized to a negative outflow amount.
 
-`accept-expense` refuses income/inflows, `card_payment` rows, likely own-account transfer outflows that match an unreviewed owned card-payment candidate, missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
+`accept-expense` refuses income/inflows, `card_payment` rows, likely own-account transfer outflows that match an unreviewed owned counterparty candidate (including card-payment rows or bank/wallet inflows), missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
 
 ## Stable errors
 

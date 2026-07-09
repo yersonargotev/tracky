@@ -1948,7 +1948,7 @@ pub fn accept_expense_candidate(
             }),
         ));
     }
-    if has_matching_card_payment_candidate(&tx, &candidate)? {
+    if has_matching_owned_account_counterparty_candidate(&tx, &candidate)? {
         return Ok(review_error_response(
             "candidates accept-expense",
             "conflict",
@@ -2057,6 +2057,23 @@ pub fn accept_candidate(
             "candidate.status",
             true,
             serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
+        ));
+    }
+    if is_expense_candidate_shape(&candidate) {
+        return Ok(review_error_response(
+            "candidates accept",
+            "conflict",
+            "candidate_requires_expense_category",
+            "Purchase candidates must be accepted with an explicit expense category.".to_string(),
+            "candidate",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "direction_hint": candidate.direction_hint,
+                "semantic_hint": candidate.semantic_hint,
+                "amount_minor": candidate.amount_minor,
+                "required_command": "candidates accept-expense",
+            }),
         ));
     }
 
@@ -2499,7 +2516,7 @@ fn has_matching_owned_account_outflow(
     Ok(false)
 }
 
-fn has_matching_card_payment_candidate(
+fn has_matching_owned_account_counterparty_candidate(
     connection: &Connection,
     candidate: &ReviewCandidate,
 ) -> Result<bool> {
@@ -2525,7 +2542,14 @@ fn has_matching_card_payment_candidate(
            AND c.posted_date = ?3
            AND UPPER(c.currency) = UPPER(?4)
            AND ABS(c.amount_minor) = ?5
-           AND c.semantic_hint = 'card_payment'",
+           AND (
+               c.semantic_hint = 'card_payment'
+               OR (
+                   c.semantic_hint = 'bank_movement'
+                   AND c.direction_hint = 'inflow'
+                   AND c.amount_minor > 0
+               )
+           )",
     )?;
     let rows = statement.query_map(
         params![
