@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 const REVIEW_FIRST_SCHEMA: &str = include_str!("../migrations/0001_review_first_schema.sql");
 pub const IMPORT_PDF_SCHEMA_VERSION: &str = "tracky.import-pdf.v1";
 pub const ACCOUNT_REGISTRY_SCHEMA_VERSION: &str = "tracky.accounts.v1";
+pub const INCOME_SOURCE_REGISTRY_SCHEMA_VERSION: &str = "tracky.income-sources.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -21,6 +22,11 @@ pub struct AccountRegisterInput {
     pub masked_identifier: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomeSourceCreateInput {
+    pub name: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct AccountRegistryResponse {
     pub schema_version: &'static str,
@@ -29,6 +35,17 @@ pub struct AccountRegistryResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub account: Option<OwnedAccount>,
     pub accounts: Vec<OwnedAccount>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IncomeSourceRegistryResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub income_source: Option<IncomeSource>,
+    pub income_sources: Vec<IncomeSource>,
     pub errors: Vec<ReviewError>,
 }
 
@@ -44,6 +61,12 @@ pub struct OwnedAccount {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IncomeSource {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CandidateReviewResponse {
     pub schema_version: &'static str,
     pub command: &'static str,
@@ -54,6 +77,32 @@ pub struct CandidateReviewResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canonical_transaction: Option<CanonicalTransaction>,
     pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransferReviewResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_pair: Option<ReviewTransferPair>,
+    pub transfer_pairs: Vec<ReviewTransferPair>,
+    pub canonical_transactions: Vec<CanonicalTransaction>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReviewTransferPair {
+    pub id: String,
+    pub transfer_kind: &'static str,
+    pub posted_date: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub from_account: OwnedAccount,
+    pub to_account: OwnedAccount,
+    pub from_candidate: ReviewCandidate,
+    pub to_candidate: ReviewCandidate,
+    pub canonical_transaction_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -117,11 +166,17 @@ pub struct ReviewProvenance {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CanonicalTransaction {
     pub id: String,
+    pub account_id: Option<String>,
     pub posted_date: String,
     pub description: String,
     pub amount_minor: i64,
     pub currency: String,
     pub balance_minor: Option<i64>,
+    pub transaction_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub income_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub income_kind: Option<String>,
     pub created_from_candidate_id: String,
 }
 
@@ -136,6 +191,19 @@ pub struct ReviewError {
 }
 
 pub const CANDIDATE_REVIEW_SCHEMA_VERSION: &str = "tracky.candidate-review.v1";
+pub const TRANSFER_REVIEW_SCHEMA_VERSION: &str = "tracky.transfer-review.v1";
+const OWN_ACCOUNT_TRANSFER_KIND: &str = "own_account_transfer";
+const CARD_PAYMENT_TRANSFER_KIND: &str = "card_payment";
+const INCOME_TRANSACTION_KIND: &str = "income";
+const INCOME_KINDS: &[&str] = &[
+    "salary",
+    "freelance",
+    "client_payment",
+    "sale",
+    "interest",
+    "reimbursement",
+    "other",
+];
 
 /// Apply Tracky's SQLite migrations needed for the review-first import store.
 pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
@@ -157,6 +225,42 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         "accounts",
         "is_owned",
         "ALTER TABLE accounts ADD COLUMN is_owned INTEGER NOT NULL DEFAULT 0 CHECK (is_owned IN (0, 1))",
+    )?;
+    add_column_if_missing(
+        connection,
+        "canonical_transactions",
+        "income_source_id",
+        "ALTER TABLE canonical_transactions ADD COLUMN income_source_id TEXT REFERENCES income_sources(id)",
+    )?;
+    add_column_if_missing(
+        connection,
+        "canonical_transactions",
+        "income_kind",
+        "ALTER TABLE canonical_transactions ADD COLUMN income_kind TEXT CHECK (income_kind IN ('salary', 'freelance', 'client_payment', 'sale', 'interest', 'reimbursement', 'other'))",
+    )?;
+    connection.execute_batch(
+        "CREATE TABLE IF NOT EXISTS income_sources (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
+        CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
+            id TEXT PRIMARY KEY,
+            transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment')),
+            posted_date TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+            currency TEXT NOT NULL,
+            from_account_id TEXT NOT NULL REFERENCES accounts(id),
+            to_account_id TEXT NOT NULL REFERENCES accounts(id),
+            from_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+            to_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+            from_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+            to_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+            accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_from_candidate ON canonical_transfer_pairs(from_candidate_id);
+        CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);",
     )
 }
 
@@ -292,6 +396,76 @@ pub fn account_registry_error_response(
         ok: false,
         account: None,
         accounts: Vec::new(),
+        errors: vec![ReviewError {
+            category,
+            code,
+            message,
+            path,
+            recoverable,
+            details,
+        }],
+    }
+}
+
+pub fn create_income_source(
+    connection: &Connection,
+    input: IncomeSourceCreateInput,
+) -> Result<IncomeSourceRegistryResponse> {
+    validate_income_source_input(&input)?;
+    let id = income_source_id(&input.name);
+    connection.execute(
+        "INSERT INTO income_sources (id, name) VALUES (?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+        params![id, input.name.trim()],
+    )?;
+    let income_source =
+        income_source_by_id(connection, &id)?.expect("created income source remains queryable");
+    Ok(IncomeSourceRegistryResponse {
+        schema_version: INCOME_SOURCE_REGISTRY_SCHEMA_VERSION,
+        command: "income-sources create",
+        ok: true,
+        income_source: Some(income_source),
+        income_sources: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn list_income_sources(connection: &Connection) -> Result<IncomeSourceRegistryResponse> {
+    let mut statement = connection.prepare(
+        "SELECT id, name
+         FROM income_sources
+         ORDER BY LOWER(name), id",
+    )?;
+    let rows = statement.query_map([], income_source_from_row)?;
+    let mut income_sources = Vec::new();
+    for row in rows {
+        income_sources.push(row?);
+    }
+    Ok(IncomeSourceRegistryResponse {
+        schema_version: INCOME_SOURCE_REGISTRY_SCHEMA_VERSION,
+        command: "income-sources list",
+        ok: true,
+        income_source: None,
+        income_sources,
+        errors: Vec::new(),
+    })
+}
+
+pub fn income_source_registry_error_response(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: String,
+    path: &'static str,
+    recoverable: bool,
+    details: serde_json::Value,
+) -> IncomeSourceRegistryResponse {
+    IncomeSourceRegistryResponse {
+        schema_version: INCOME_SOURCE_REGISTRY_SCHEMA_VERSION,
+        command,
+        ok: false,
+        income_source: None,
+        income_sources: Vec::new(),
         errors: vec![ReviewError {
             category,
             code,
@@ -1051,6 +1225,35 @@ fn account_id(input: &AccountRegisterInput) -> String {
     )
 }
 
+fn income_source_id(name: &str) -> String {
+    format!("incsrc_{}", stable_slug(name))
+}
+
+fn validate_income_source_input(input: &IncomeSourceCreateInput) -> Result<()> {
+    if input.name.trim().is_empty() {
+        anyhow::bail!("income source name is required");
+    }
+    Ok(())
+}
+
+fn income_source_by_id(connection: &Connection, id: &str) -> Result<Option<IncomeSource>> {
+    connection
+        .query_row(
+            "SELECT id, name FROM income_sources WHERE id = ?1",
+            params![id],
+            income_source_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn income_source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeSource> {
+    Ok(IncomeSource {
+        id: row.get(0)?,
+        name: row.get(1)?,
+    })
+}
+
 fn stable_slug(value: &str) -> String {
     let slug = value
         .trim()
@@ -1211,6 +1414,302 @@ pub fn list_review_candidates(
     Ok(candidates)
 }
 
+pub fn list_likely_transfer_pairs(connection: &Connection) -> Result<TransferReviewResponse> {
+    let candidates = list_review_candidates(connection, None, None)?;
+    let pairs = likely_transfer_pairs_from_candidates(connection, &candidates)?;
+    Ok(TransferReviewResponse {
+        schema_version: TRANSFER_REVIEW_SCHEMA_VERSION,
+        command: "candidates list-transfer-pairs",
+        ok: true,
+        transfer_pair: None,
+        transfer_pairs: pairs,
+        canonical_transactions: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn accept_transfer_pair(
+    connection: &mut Connection,
+    from_candidate_id: &str,
+    to_candidate_id: &str,
+) -> Result<TransferReviewResponse> {
+    let tx = connection
+        .transaction()
+        .context("starting transfer pair accept transaction")?;
+    let Some(from_candidate) = find_review_candidate(&tx, from_candidate_id)? else {
+        return Ok(transfer_error_response(
+            "candidates accept-transfer-pair",
+            "not_found",
+            "candidate_not_found",
+            "From candidate transaction was not found.".to_string(),
+            "from_candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": from_candidate_id }),
+        ));
+    };
+    let Some(to_candidate) = find_review_candidate(&tx, to_candidate_id)? else {
+        return Ok(transfer_error_response(
+            "candidates accept-transfer-pair",
+            "not_found",
+            "candidate_not_found",
+            "To candidate transaction was not found.".to_string(),
+            "to_candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": to_candidate_id }),
+        ));
+    };
+    let eligible_pair = match build_transfer_pair(&tx, from_candidate, to_candidate) {
+        Ok(pair) => pair,
+        Err(error) => {
+            return Ok(transfer_error_response(
+                "candidates accept-transfer-pair",
+                "conflict",
+                error.code(),
+                "Candidates do not form an eligible own-account card payment pair.".to_string(),
+                "candidate_ids",
+                true,
+                serde_json::json!({
+                    "from_candidate_id": from_candidate_id,
+                    "to_candidate_id": to_candidate_id,
+                    "reason": error.reason()
+                }),
+            ));
+        }
+    };
+
+    let from_canonical_id = canonical_transaction_id(from_candidate_id);
+    let to_canonical_id = canonical_transaction_id(to_candidate_id);
+    let transfer_amount = eligible_pair.amount_minor;
+    insert_transfer_canonical_transaction(
+        &tx,
+        &from_canonical_id,
+        from_candidate_id,
+        -transfer_amount,
+    )?;
+    insert_transfer_canonical_transaction(&tx, &to_canonical_id, to_candidate_id, transfer_amount)?;
+    tx.execute(
+        "INSERT INTO canonical_transfer_pairs (
+            id, transfer_kind, posted_date, amount_minor, currency,
+            from_account_id, to_account_id, from_candidate_id, to_candidate_id,
+            from_canonical_transaction_id, to_canonical_transaction_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            eligible_pair.id,
+            CARD_PAYMENT_TRANSFER_KIND,
+            eligible_pair.posted_date,
+            eligible_pair.amount_minor,
+            eligible_pair.currency,
+            eligible_pair.from_account.id,
+            eligible_pair.to_account.id,
+            from_candidate_id,
+            to_candidate_id,
+            from_canonical_id,
+            to_canonical_id,
+        ],
+    )?;
+    mark_candidate_accepted_with_canonical(&tx, from_candidate_id, &from_canonical_id)?;
+    mark_candidate_accepted_with_canonical(&tx, to_candidate_id, &to_canonical_id)?;
+    tx.commit().context("committing transfer pair accept")?;
+
+    let from_candidate = find_review_candidate(connection, from_candidate_id)?
+        .expect("accepted from candidate remains queryable");
+    let to_candidate = find_review_candidate(connection, to_candidate_id)?
+        .expect("accepted to candidate remains queryable");
+    let from_account = owned_account_by_id(
+        connection,
+        from_candidate
+            .account_id
+            .as_deref()
+            .expect("accepted from candidate has account"),
+    )?
+    .expect("accepted from account remains owned");
+    let to_account = owned_account_by_id(
+        connection,
+        to_candidate
+            .account_id
+            .as_deref()
+            .expect("accepted to candidate has account"),
+    )?
+    .expect("accepted to account remains owned");
+    let transfer_pair = ReviewTransferPair {
+        id: transfer_pair_id(from_candidate_id, to_candidate_id),
+        transfer_kind: CARD_PAYMENT_TRANSFER_KIND,
+        posted_date: from_candidate.posted_date.clone(),
+        amount_minor: from_candidate.amount_minor.abs(),
+        currency: from_candidate.currency.clone(),
+        from_account,
+        to_account,
+        from_candidate,
+        to_candidate,
+        canonical_transaction_ids: vec![from_canonical_id.clone(), to_canonical_id.clone()],
+    };
+    let canonical_transactions = vec![
+        canonical_transaction(connection, &from_canonical_id)?
+            .expect("from canonical transaction remains queryable"),
+        canonical_transaction(connection, &to_canonical_id)?
+            .expect("to canonical transaction remains queryable"),
+    ];
+    Ok(TransferReviewResponse {
+        schema_version: TRANSFER_REVIEW_SCHEMA_VERSION,
+        command: "candidates accept-transfer-pair",
+        ok: true,
+        transfer_pair: Some(transfer_pair),
+        transfer_pairs: Vec::new(),
+        canonical_transactions,
+        errors: Vec::new(),
+    })
+}
+
+pub fn accept_income_candidate(
+    connection: &mut Connection,
+    candidate_id: &str,
+    income_source_id: &str,
+    income_kind: &str,
+) -> Result<CandidateReviewResponse> {
+    let normalized_income_kind = normalize_income_kind(income_kind);
+    if !INCOME_KINDS.contains(&normalized_income_kind.as_str()) {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "validation_failure",
+            "invalid_income_kind",
+            "Income kind is not supported.".to_string(),
+            "income_kind",
+            true,
+            serde_json::json!({
+                "income_kind": income_kind,
+                "allowed_income_kinds": INCOME_KINDS,
+            }),
+        ));
+    }
+
+    let tx = connection
+        .transaction()
+        .context("starting income candidate accept transaction")?;
+    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.".to_string(),
+            "candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    };
+    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
+    {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "conflict",
+            "candidate_already_accepted",
+            "Candidate transaction was already accepted.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "canonical_transaction_id": candidate.canonical_transaction_id,
+            }),
+        ));
+    }
+    if candidate.status == CandidateStatus::Rejected {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "conflict",
+            "candidate_already_rejected",
+            "Rejected candidates cannot be accepted as income.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    }
+    if !is_unreviewed_candidate_status(&candidate.status) {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "conflict",
+            "candidate_not_acceptable",
+            "Only pending_review or possible_duplicate candidates can be accepted as income."
+                .to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
+        ));
+    }
+    if income_source_by_id(&tx, income_source_id)?.is_none() {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "not_found",
+            "income_source_not_found",
+            "Income source was not found.".to_string(),
+            "income_source_id",
+            true,
+            serde_json::json!({ "income_source_id": income_source_id }),
+        ));
+    }
+    if !is_income_candidate_shape(&candidate) {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "conflict",
+            "candidate_not_income_eligible",
+            "Only explicit bank-movement inflow candidates can be accepted as income.".to_string(),
+            "candidate",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "direction_hint": candidate.direction_hint,
+                "semantic_hint": candidate.semantic_hint,
+                "amount_minor": candidate.amount_minor,
+            }),
+        ));
+    }
+    if has_matching_owned_account_outflow(&tx, &candidate)? {
+        return Ok(review_error_response(
+            "candidates accept-income",
+            "conflict",
+            "candidate_possible_own_account_transfer",
+            "Candidate resembles an own-account transfer and must not be accepted as income."
+                .to_string(),
+            "candidate",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    }
+
+    let canonical_id = canonical_transaction_id(candidate_id);
+    tx.execute(
+        "INSERT INTO canonical_transactions (
+            id, account_id, posted_date, description, amount_minor, currency,
+            balance_minor, transaction_kind, income_source_id, income_kind, created_from_candidate_id
+         )
+         SELECT ?1, account_id, posted_date, description, amount_minor, currency,
+                balance_minor, ?2, ?3, ?4, id
+         FROM candidate_transactions
+         WHERE id = ?5",
+        params![
+            canonical_id,
+            INCOME_TRANSACTION_KIND,
+            income_source_id,
+            normalized_income_kind,
+            candidate_id
+        ],
+    )?;
+    mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
+    tx.commit().context("committing income candidate accept")?;
+
+    let candidate = find_review_candidate(connection, candidate_id)?
+        .expect("accepted income candidate remains queryable");
+    let canonical_transaction = canonical_transaction(connection, &canonical_id)?
+        .expect("accepted income canonical transaction remains queryable");
+    Ok(CandidateReviewResponse {
+        schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
+        command: "candidates accept-income",
+        ok: true,
+        candidate: Some(candidate),
+        candidates: Vec::new(),
+        canonical_transaction: Some(canonical_transaction),
+        errors: Vec::new(),
+    })
+}
+
 pub fn accept_candidate(
     connection: &mut Connection,
     candidate_id: &str,
@@ -1271,25 +1770,7 @@ pub fn accept_candidate(
          WHERE id = ?2",
         params![canonical_id, candidate_id],
     )?;
-    tx.execute(
-        "UPDATE candidate_transactions
-         SET status = 'accepted', canonical_transaction_id = ?1
-         WHERE id = ?2",
-        params![canonical_id, candidate_id],
-    )?;
-    tx.execute(
-        "UPDATE provenance
-         SET canonical_transaction_id = ?1
-         WHERE candidate_transaction_id = ?2",
-        params![canonical_id, candidate_id],
-    )?;
-    tx.execute(
-        "UPDATE transaction_fingerprints
-         SET candidate_transaction_id = NULL,
-             canonical_transaction_id = ?1
-         WHERE candidate_transaction_id = ?2",
-        params![canonical_id, candidate_id],
-    )?;
+    mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
     tx.commit().context("committing candidate accept")?;
 
     let candidate = find_review_candidate(connection, candidate_id)?
@@ -1394,6 +1875,311 @@ pub fn review_error_response(
             details,
         }],
     }
+}
+
+pub fn transfer_error_response(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: String,
+    path: &'static str,
+    recoverable: bool,
+    details: serde_json::Value,
+) -> TransferReviewResponse {
+    TransferReviewResponse {
+        schema_version: TRANSFER_REVIEW_SCHEMA_VERSION,
+        command,
+        ok: false,
+        transfer_pair: None,
+        transfer_pairs: Vec::new(),
+        canonical_transactions: Vec::new(),
+        errors: vec![ReviewError {
+            category,
+            code,
+            message,
+            path,
+            recoverable,
+            details,
+        }],
+    }
+}
+
+fn likely_transfer_pairs_from_candidates(
+    connection: &Connection,
+    candidates: &[ReviewCandidate],
+) -> Result<Vec<ReviewTransferPair>> {
+    let mut pairs = Vec::new();
+    for from_candidate in candidates {
+        for to_candidate in candidates {
+            if from_candidate.id == to_candidate.id {
+                continue;
+            }
+            if let Ok(pair) =
+                build_transfer_pair(connection, from_candidate.clone(), to_candidate.clone())
+            {
+                pairs.push(pair);
+            }
+        }
+    }
+    pairs.sort_by(|left, right| {
+        left.posted_date
+            .cmp(&right.posted_date)
+            .then(left.amount_minor.cmp(&right.amount_minor))
+            .then(left.from_candidate.id.cmp(&right.from_candidate.id))
+            .then(left.to_candidate.id.cmp(&right.to_candidate.id))
+    });
+    Ok(pairs)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransferPairError {
+    AccountUnresolved,
+    AccountNotOwned,
+    NotReviewable,
+    NotMatching,
+}
+
+#[derive(Debug)]
+enum TransferPairBuildError {
+    Validation(TransferPairError),
+    Storage(anyhow::Error),
+}
+
+impl From<TransferPairError> for TransferPairBuildError {
+    fn from(error: TransferPairError) -> Self {
+        Self::Validation(error)
+    }
+}
+
+impl From<anyhow::Error> for TransferPairBuildError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Storage(error)
+    }
+}
+
+impl TransferPairBuildError {
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Validation(error) => error.code(),
+            Self::Storage(_) => "transfer_pair_validation_failed",
+        }
+    }
+
+    fn reason(&self) -> String {
+        match self {
+            Self::Validation(error) => error.reason().to_string(),
+            Self::Storage(error) => error.to_string(),
+        }
+    }
+}
+
+impl TransferPairError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::AccountUnresolved => "transfer_pair_account_unresolved",
+            Self::AccountNotOwned => "transfer_pair_account_not_owned",
+            Self::NotReviewable => "transfer_pair_not_reviewable",
+            Self::NotMatching => "transfer_pair_not_matching",
+        }
+    }
+
+    fn reason(self) -> &'static str {
+        match self {
+            Self::AccountUnresolved => "candidate account is unresolved",
+            Self::AccountNotOwned => "candidate account is not owned",
+            Self::NotReviewable => {
+                "transfer pair candidates must be unreviewed and not canonical-linked"
+            }
+            Self::NotMatching => {
+                "transfer pair date, amount, currency, direction, or semantic hints do not match"
+            }
+        }
+    }
+}
+
+fn build_transfer_pair(
+    connection: &Connection,
+    from_candidate: ReviewCandidate,
+    to_candidate: ReviewCandidate,
+) -> std::result::Result<ReviewTransferPair, TransferPairBuildError> {
+    validate_transfer_pair_shape(&from_candidate, &to_candidate)?;
+    let from_account_id = from_candidate
+        .account_id
+        .as_deref()
+        .ok_or(TransferPairError::AccountUnresolved)?;
+    let to_account_id = to_candidate
+        .account_id
+        .as_deref()
+        .ok_or(TransferPairError::AccountUnresolved)?;
+    if from_account_id == to_account_id {
+        return Err(TransferPairError::NotMatching.into());
+    }
+    let from_account = owned_account_by_id(connection, from_account_id)?
+        .ok_or(TransferPairError::AccountNotOwned)?;
+    let to_account = owned_account_by_id(connection, to_account_id)?
+        .ok_or(TransferPairError::AccountNotOwned)?;
+    Ok(ReviewTransferPair {
+        id: transfer_pair_id(&from_candidate.id, &to_candidate.id),
+        transfer_kind: CARD_PAYMENT_TRANSFER_KIND,
+        posted_date: from_candidate.posted_date.clone(),
+        amount_minor: from_candidate.amount_minor.abs(),
+        currency: from_candidate.currency.clone(),
+        from_account,
+        to_account,
+        from_candidate,
+        to_candidate,
+        canonical_transaction_ids: Vec::new(),
+    })
+}
+
+fn validate_transfer_pair_shape(
+    from_candidate: &ReviewCandidate,
+    to_candidate: &ReviewCandidate,
+) -> std::result::Result<(), TransferPairError> {
+    if !is_unreviewed_candidate_status(&from_candidate.status)
+        || !is_unreviewed_candidate_status(&to_candidate.status)
+    {
+        return Err(TransferPairError::NotReviewable);
+    }
+    if from_candidate.canonical_transaction_id.is_some()
+        || to_candidate.canonical_transaction_id.is_some()
+    {
+        return Err(TransferPairError::NotReviewable);
+    }
+    if from_candidate.semantic_hint.as_deref() != Some("bank_movement")
+        || to_candidate.semantic_hint.as_deref() != Some("card_payment")
+    {
+        return Err(TransferPairError::NotMatching);
+    }
+    if from_candidate.direction_hint.as_deref() != Some("outflow")
+        || from_candidate.amount_minor >= 0
+    {
+        return Err(TransferPairError::NotMatching);
+    }
+    if from_candidate.posted_date != to_candidate.posted_date {
+        return Err(TransferPairError::NotMatching);
+    }
+    if normalized_currency(&from_candidate.currency) != normalized_currency(&to_candidate.currency)
+    {
+        return Err(TransferPairError::NotMatching);
+    }
+    if from_candidate.amount_minor.abs() != to_candidate.amount_minor.abs() {
+        return Err(TransferPairError::NotMatching);
+    }
+    Ok(())
+}
+
+fn is_unreviewed_candidate_status(status: &CandidateStatus) -> bool {
+    matches!(
+        status,
+        CandidateStatus::PendingReview | CandidateStatus::PossibleDuplicate
+    )
+}
+
+fn insert_transfer_canonical_transaction(
+    connection: &Connection,
+    canonical_id: &str,
+    candidate_id: &str,
+    amount_minor: i64,
+) -> Result<()> {
+    connection.execute(
+        "INSERT INTO canonical_transactions (
+            id, account_id, posted_date, description, amount_minor, currency,
+            balance_minor, transaction_kind, created_from_candidate_id
+         )
+         SELECT ?1, account_id, posted_date, description, ?2, currency,
+                balance_minor, ?3, id
+         FROM candidate_transactions
+         WHERE id = ?4",
+        params![
+            canonical_id,
+            amount_minor,
+            OWN_ACCOUNT_TRANSFER_KIND,
+            candidate_id
+        ],
+    )?;
+    Ok(())
+}
+
+fn mark_candidate_accepted_with_canonical(
+    connection: &Connection,
+    candidate_id: &str,
+    canonical_id: &str,
+) -> Result<()> {
+    connection.execute(
+        "UPDATE candidate_transactions
+         SET status = 'accepted', canonical_transaction_id = ?1
+         WHERE id = ?2",
+        params![canonical_id, candidate_id],
+    )?;
+    connection.execute(
+        "UPDATE provenance
+         SET canonical_transaction_id = ?1
+         WHERE candidate_transaction_id = ?2",
+        params![canonical_id, candidate_id],
+    )?;
+    connection.execute(
+        "UPDATE transaction_fingerprints
+         SET candidate_transaction_id = NULL,
+             canonical_transaction_id = ?1
+         WHERE candidate_transaction_id = ?2",
+        params![canonical_id, candidate_id],
+    )?;
+    Ok(())
+}
+
+fn is_income_candidate_shape(candidate: &ReviewCandidate) -> bool {
+    candidate.amount_minor > 0
+        && candidate.direction_hint.as_deref() == Some("inflow")
+        && candidate.semantic_hint.as_deref() == Some("bank_movement")
+}
+
+fn has_matching_owned_account_outflow(
+    connection: &Connection,
+    candidate: &ReviewCandidate,
+) -> Result<bool> {
+    let Some(candidate_account_id) = candidate.account_id.as_deref() else {
+        return Ok(false);
+    };
+    if owned_account_by_id(connection, candidate_account_id)?.is_none() {
+        return Ok(false);
+    }
+    let mut statement = connection.prepare(
+        "SELECT c.account_id
+         FROM candidate_transactions c
+         WHERE c.id <> ?1
+           AND c.status IN ('pending_review', 'possible_duplicate')
+           AND c.canonical_transaction_id IS NULL
+           AND c.account_id IS NOT NULL
+           AND c.account_id <> ?2
+           AND c.posted_date = ?3
+           AND UPPER(c.currency) = UPPER(?4)
+           AND ABS(c.amount_minor) = ?5
+           AND c.amount_minor < 0
+           AND c.direction_hint = 'outflow'
+           AND c.semantic_hint = 'bank_movement'",
+    )?;
+    let rows = statement.query_map(
+        params![
+            candidate.id,
+            candidate_account_id,
+            candidate.posted_date,
+            candidate.currency,
+            candidate.amount_minor.abs()
+        ],
+        |row| row.get::<_, String>(0),
+    )?;
+    for row in rows {
+        let account_id = row?;
+        if owned_account_by_id(connection, &account_id)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn normalize_income_kind(kind: &str) -> String {
+    stable_slug(kind)
 }
 
 fn validate_candidate_status_filter(status: &str) -> Result<()> {
@@ -1557,20 +2343,24 @@ fn canonical_transaction(
 ) -> Result<Option<CanonicalTransaction>> {
     connection
         .query_row(
-            "SELECT id, posted_date, description, amount_minor, currency, balance_minor,
-                    created_from_candidate_id
+            "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor,
+                    transaction_kind, income_source_id, income_kind, created_from_candidate_id
              FROM canonical_transactions
              WHERE id = ?1",
             params![canonical_id],
             |row| {
                 Ok(CanonicalTransaction {
                     id: row.get(0)?,
-                    posted_date: row.get(1)?,
-                    description: row.get(2)?,
-                    amount_minor: row.get(3)?,
-                    currency: row.get(4)?,
-                    balance_minor: row.get(5)?,
-                    created_from_candidate_id: row.get(6)?,
+                    account_id: row.get(1)?,
+                    posted_date: row.get(2)?,
+                    description: row.get(3)?,
+                    amount_minor: row.get(4)?,
+                    currency: row.get(5)?,
+                    balance_minor: row.get(6)?,
+                    transaction_kind: row.get(7)?,
+                    income_source_id: row.get(8)?,
+                    income_kind: row.get(9)?,
+                    created_from_candidate_id: row.get(10)?,
                 })
             },
         )
@@ -1582,6 +2372,17 @@ fn canonical_transaction_id(candidate_id: &str) -> String {
     let digest = Sha256::digest(candidate_id.as_bytes());
     format!(
         "txn_{}",
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn transfer_pair_id(from_candidate_id: &str, to_candidate_id: &str) -> String {
+    let digest = Sha256::digest(format!("{from_candidate_id}|{to_candidate_id}").as_bytes());
+    format!(
+        "xfer_{}",
         digest[..16]
             .iter()
             .map(|byte| format!("{byte:02x}"))

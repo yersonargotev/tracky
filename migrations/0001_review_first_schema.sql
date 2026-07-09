@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS import_batches (
     error_details_json TEXT NOT NULL DEFAULT '[]'
 );
 
+CREATE TABLE IF NOT EXISTS income_sources (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS canonical_transactions (
     id TEXT PRIMARY KEY,
     account_id TEXT REFERENCES accounts(id),
@@ -54,6 +60,8 @@ CREATE TABLE IF NOT EXISTS canonical_transactions (
     currency TEXT NOT NULL,
     balance_minor INTEGER,
     transaction_kind TEXT,
+    income_source_id TEXT REFERENCES income_sources(id),
+    income_kind TEXT CHECK (income_kind IN ('salary', 'freelance', 'client_payment', 'sale', 'interest', 'reimbursement', 'other')),
     created_from_candidate_id TEXT UNIQUE REFERENCES candidate_transactions(id),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -143,7 +151,23 @@ CREATE TABLE IF NOT EXISTS transaction_duplicate_markers (
     )
 );
 
+CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
+    id TEXT PRIMARY KEY,
+    transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment')),
+    posted_date TEXT NOT NULL,
+    amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+    currency TEXT NOT NULL,
+    from_account_id TEXT NOT NULL REFERENCES accounts(id),
+    to_account_id TEXT NOT NULL REFERENCES accounts(id),
+    from_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+    to_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+    from_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+    to_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+    accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
+CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
 CREATE INDEX IF NOT EXISTS idx_source_documents_content_sha256 ON source_documents(content_sha256);
 CREATE INDEX IF NOT EXISTS idx_import_batches_source_document_id ON import_batches(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_transactions_batch ON candidate_transactions(import_batch_id);
@@ -152,5 +176,7 @@ CREATE INDEX IF NOT EXISTS idx_candidate_transactions_status ON candidate_transa
 CREATE INDEX IF NOT EXISTS idx_candidate_transactions_fingerprint ON candidate_transactions(fingerprint);
 CREATE INDEX IF NOT EXISTS idx_provenance_candidate_transaction ON provenance(candidate_transaction_id);
 CREATE INDEX IF NOT EXISTS idx_transaction_duplicate_markers_candidate ON transaction_duplicate_markers(candidate_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_from_candidate ON canonical_transfer_pairs(from_candidate_id);
+CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);
 
 PRAGMA user_version = 1;

@@ -99,6 +99,43 @@ tracky candidates reject --db /tmp/tracky-review.sqlite cand_REDACTED --json
 
 Accepting a candidate creates or links a canonical transaction and keeps the trace back to the candidate, source document, import batch, and provenance. Rejecting updates candidate state without deleting the evidence trail.
 
+### 5. Accept explicit income inflows
+
+Income review is explicit: first create or list stable income sources, then accept an eligible inflow with a chosen source and kind. Do not infer salary from a positive Nequi movement.
+
+```bash
+tracky income-sources create --db /tmp/tracky-review.sqlite \
+  --name "REDACTED_EMPLOYER" \
+  --json
+tracky income-sources list --db /tmp/tracky-review.sqlite --json
+
+tracky candidates accept-income cand_NEQUI_INFLOW_REDACTED \
+  --db /tmp/tracky-review.sqlite \
+  --income-source-id incsrc_REDACTED \
+  --income-kind salary \
+  --json
+```
+
+`accept-income` only accepts unreviewed `bank_movement` inflows with positive amounts. It refuses already accepted/rejected candidates, card-payment/card-charge rows, outflows, missing income sources, and inflows that match a resolved owned-account outflow pattern. Accepted canonical income keeps the candidate provenance link plus `transaction_kind: "income"`, `income_source_id`, and `income_kind`.
+
+### 6. Review likely own-account transfer/card-payment pairs
+
+For card payments, first ask Tracky for likely pairs. For example, a Nequi PSE outflow can match a RappiCard `card_payment` row when both accounts are registered as owned, the date/currency match, and the absolute amount is the same.
+
+```bash
+tracky candidates list-transfer-pairs --db /tmp/tracky-review.sqlite --json
+```
+
+Accept a suggested pair explicitly:
+
+```bash
+tracky candidates accept-transfer-pair cand_NEQUI_REDACTED cand_RAPPI_REDACTED \
+  --db /tmp/tracky-review.sqlite \
+  --json
+```
+
+The accepted pair creates balancing canonical transfer legs marked `transaction_kind: "own_account_transfer"` and links both candidates through a transfer-pair record. Do not accept pairs with unresolved accounts, non-owned accounts, mismatched amounts/dates/currencies, or candidates that are already accepted/rejected.
+
 ## Status and duplicate interpretation
 
 Candidate statuses:

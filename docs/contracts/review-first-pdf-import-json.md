@@ -8,6 +8,8 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | --- | --- | --- | --- |
 | `tracky pdf inspect` | No | Returns transient candidate-shaped results in JSON | Never |
 | `tracky import pdf` | Yes, once implemented | Persists candidate transactions in an import batch | Never |
+| `tracky income-sources create/list` | Yes for create, no for list | No | Never |
+| `tracky candidates accept-income` | Yes | No new candidates | Creates one canonical income transaction from one eligible candidate |
 
 Out of scope for this contract: parser implementation, SQLite migrations, canonical transaction promotion, TUI review, MCP wrappers, AI fallback, and password storage.
 
@@ -294,6 +296,25 @@ When `duplicate_status.status` is `possible_duplicate` or `exact_duplicate`, the
 | `failed` | Parser could not produce usable candidates from extracted evidence. |
 | `unsupported_document` | No deterministic parser matched the document source. |
 
+## Income source and income acceptance JSON
+
+`tracky income-sources create/list --json` uses `tracky.income-sources.v1` and returns stable income source records independent from deposit accounts:
+
+```json
+{
+  "schema_version": "tracky.income-sources.v1",
+  "command": "income-sources create",
+  "ok": true,
+  "income_source": { "id": "incsrc_redacted_employer", "name": "REDACTED_EMPLOYER" },
+  "income_sources": [],
+  "errors": []
+}
+```
+
+`tracky candidates accept-income CANDIDATE_ID --income-source-id ID --income-kind KIND --json` uses `tracky.candidate-review.v1`. It accepts only unreviewed positive `bank_movement` inflows and writes a canonical transaction with `transaction_kind: "income"`, `income_source_id`, `income_kind`, and the original candidate/provenance link. Supported first-slice income kinds are `salary`, `freelance`, `client_payment`, `sale`, `interest`, `reimbursement`, and `other`.
+
+Stable refusal codes include `candidate_not_income_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, `income_source_not_found`, and `invalid_income_kind`.
+
 ## Stable errors
 
 Errors must be safe for scripts and agents to branch on. Human wording can improve over time, but `code`, `category`, and `path` semantics should stay stable within a schema version.
@@ -406,3 +427,23 @@ Issue 0007 adds the first explicit review actions. These commands are separate f
 | `tracky candidates reject <CANDIDATE_ID> --db <PATH> --json` | Yes | Never |
 
 All three commands return `schema_version: "tracky.candidate-review.v1"` and machine-readable JSON. `accept` only accepts candidates in `pending_review` or `possible_duplicate` state. It sets the candidate to `accepted`, creates a canonical transaction, links the candidate and provenance to that canonical transaction, and keeps the original candidate/provenance audit trail. `reject` sets the candidate to `rejected` without deleting provenance, fingerprints, or duplicate markers. Re-accepting an accepted candidate returns a stable `candidate_already_accepted` error.
+
+## Own-account transfer/card-payment review JSON contract
+
+Issue 0012 adds explicit review of likely owned-account transfer pairs. Tracky may suggest pairs, but accepting the pair is still a separate review action.
+
+| Command | Writes storage? | Creates canonical transactions? |
+| --- | --- | --- |
+| `tracky candidates list-transfer-pairs --db <PATH> --json` | No | Never |
+| `tracky candidates accept-transfer-pair <FROM_CANDIDATE_ID> <TO_CANDIDATE_ID> --db <PATH> --json` | Yes | Yes, two canonical transfer legs linked by one `canonical_transfer_pairs` row |
+
+Both commands return `schema_version: "tracky.transfer-review.v1"` and machine-readable JSON. Suggested pairs require:
+
+- both candidates are `pending_review` or `possible_duplicate`;
+- both candidates have resolved account IDs;
+- both resolved accounts are registered as owned accounts;
+- the source candidate is an outflow `bank_movement`;
+- the destination candidate is a `card_payment`;
+- posted date, absolute amount, and currency match.
+
+Accepted pairs set both candidates to `accepted`, create two canonical rows with `transaction_kind: "own_account_transfer"`, normalize the canonical leg amounts to a balancing transfer outflow/inflow pair, and preserve each candidate's provenance link. Reports must treat these rows as transfers/card payments, not income or expense.

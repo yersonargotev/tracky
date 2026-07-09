@@ -15,12 +15,12 @@ The first slice should support CLI/JSON review of one imported Nequi inflow at a
 
 ## Acceptance criteria
 
-- [ ] A user can create/list income sources as stable JSON.
-- [ ] `candidates accept` or a narrowly named review command can accept an inflow candidate with an income source and income kind.
-- [ ] The accepted canonical transaction preserves the account movement, source document provenance, and selected income metadata.
-- [ ] Positive Nequi inflows are not automatically classified as salary; the source/kind is explicit.
-- [ ] Transfers from owned accounts are not accepted as income through this path.
-- [ ] Tests cover salary-like recurring inflow, smaller non-salary income, and a blocked owned-account transfer attempt.
+- [x] A user can create/list income sources as stable JSON.
+- [x] `candidates accept` or a narrowly named review command can accept an inflow candidate with an income source and income kind.
+- [x] The accepted canonical transaction preserves the account movement, source document provenance, and selected income metadata.
+- [x] Positive Nequi inflows are not automatically classified as salary; the source/kind is explicit.
+- [x] Transfers from owned accounts are not accepted as income through this path.
+- [x] Tests cover salary-like recurring inflow, smaller non-salary income, and a blocked owned-account transfer attempt.
 
 ## Blocked by
 

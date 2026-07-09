@@ -6,10 +6,14 @@ use crate::pdf::{
     PDF_INSPECT_SCHEMA_VERSION,
 };
 use crate::storage::{
-    accept_candidate, account_registry_error_response, apply_migrations, duplicate_import_response,
-    find_source_document_by_hash, list_owned_accounts, list_review_candidates, persist_pdf_import,
-    register_owned_account, reject_candidate, review_error_response, AccountRegisterInput,
-    AccountRegistryResponse, CandidateReviewResponse, ImportPdfResponse, IMPORT_PDF_SCHEMA_VERSION,
+    accept_candidate, accept_income_candidate, accept_transfer_pair,
+    account_registry_error_response, apply_migrations, create_income_source,
+    duplicate_import_response, find_source_document_by_hash, income_source_registry_error_response,
+    list_income_sources, list_likely_transfer_pairs, list_owned_accounts, list_review_candidates,
+    persist_pdf_import, register_owned_account, reject_candidate, review_error_response,
+    transfer_error_response, AccountRegisterInput, AccountRegistryResponse,
+    CandidateReviewResponse, ImportPdfResponse, IncomeSourceCreateInput,
+    IncomeSourceRegistryResponse, TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -68,6 +72,7 @@ enum Commands {
     Import(ImportCommand),
     Candidates(CandidatesCommand),
     Accounts(AccountsCommand),
+    IncomeSources(IncomeSourcesCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -104,6 +109,12 @@ struct AccountsCommand {
     command: AccountCommands,
 }
 
+#[derive(Debug, Parser)]
+struct IncomeSourcesCommand {
+    #[command(subcommand)]
+    command: IncomeSourceCommands,
+}
+
 #[derive(Debug, Subcommand)]
 enum AccountCommands {
     Register(AccountRegisterArgs),
@@ -114,7 +125,16 @@ enum AccountCommands {
 enum CandidateCommands {
     List(CandidateListArgs),
     Accept(CandidateActionArgs),
+    AcceptIncome(CandidateIncomeAcceptArgs),
     Reject(CandidateActionArgs),
+    ListTransferPairs(CandidateTransferListArgs),
+    AcceptTransferPair(CandidateTransferAcceptArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum IncomeSourceCommands {
+    Create(IncomeSourceCreateArgs),
+    List(IncomeSourceListArgs),
 }
 
 #[derive(Debug, Parser)]
@@ -160,6 +180,32 @@ struct AccountListArgs {
 }
 
 #[derive(Debug, Parser)]
+struct IncomeSourceCreateArgs {
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Stable human name for the income source, such as an employer or client.
+    #[arg(long, value_name = "NAME")]
+    name: String,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct IncomeSourceListArgs {
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
 struct CandidateListArgs {
     /// SQLite database path.
     #[arg(long, value_name = "PATH")]
@@ -183,6 +229,59 @@ struct CandidateActionArgs {
     /// Candidate transaction id.
     #[arg(value_name = "CANDIDATE_ID")]
     candidate_id: String,
+
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateIncomeAcceptArgs {
+    /// Candidate transaction id.
+    #[arg(value_name = "CANDIDATE_ID")]
+    candidate_id: String,
+
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Income source id created via `income-sources create`.
+    #[arg(long = "income-source-id", value_name = "ID")]
+    income_source_id: String,
+
+    /// Explicit income kind: salary, freelance, client_payment, sale, interest, reimbursement, or other.
+    #[arg(long = "income-kind", value_name = "KIND")]
+    income_kind: String,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateTransferListArgs {
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateTransferAcceptArgs {
+    /// Paying/outflow candidate transaction id, such as the Nequi PSE outflow.
+    #[arg(value_name = "FROM_CANDIDATE_ID")]
+    from_candidate_id: String,
+
+    /// Card-payment candidate transaction id, such as the RappiCard PSE payment.
+    #[arg(value_name = "TO_CANDIDATE_ID")]
+    to_candidate_id: String,
 
     /// SQLite database path.
     #[arg(long, value_name = "PATH")]
@@ -258,11 +357,24 @@ where
         Commands::Candidates(candidates) => match candidates.command {
             CandidateCommands::List(args) => candidate_list_command(args, &mut stdout),
             CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
+            CandidateCommands::AcceptIncome(args) => {
+                candidate_accept_income_command(args, &mut stdout)
+            }
             CandidateCommands::Reject(args) => candidate_reject_command(args, &mut stdout),
+            CandidateCommands::ListTransferPairs(args) => {
+                candidate_list_transfer_pairs_command(args, &mut stdout)
+            }
+            CandidateCommands::AcceptTransferPair(args) => {
+                candidate_accept_transfer_pair_command(args, &mut stdout)
+            }
         },
         Commands::Accounts(accounts) => match accounts.command {
             AccountCommands::Register(args) => account_register_command(args, &mut stdout),
             AccountCommands::List(args) => account_list_command(args, &mut stdout),
+        },
+        Commands::IncomeSources(income_sources) => match income_sources.command {
+            IncomeSourceCommands::Create(args) => income_source_create_command(args, &mut stdout),
+            IncomeSourceCommands::List(args) => income_source_list_command(args, &mut stdout),
         },
     }
 }
@@ -484,6 +596,43 @@ where
     write_account_registry_response(stdout, response)
 }
 
+fn income_source_create_command<W>(args: IncomeSourceCreateArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_income_source_json(args.json, stdout, "income-sources create")?
+    {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    let response =
+        match create_income_source(&connection, IncomeSourceCreateInput { name: args.name }) {
+            Ok(response) => response,
+            Err(error) => income_source_registry_error_response(
+                "income-sources create",
+                "validation_failure",
+                "invalid_income_source",
+                "Income source is invalid.".to_string(),
+                "command",
+                true,
+                serde_json::json!({ "cause": error.to_string() }),
+            ),
+        };
+    write_income_source_registry_response(stdout, response)
+}
+
+fn income_source_list_command<W>(args: IncomeSourceListArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_income_source_json(args.json, stdout, "income-sources list")? {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    let response = list_income_sources(&connection)?;
+    write_income_source_registry_response(stdout, response)
+}
+
 fn candidate_list_command<W>(args: CandidateListArgs, stdout: &mut W) -> Result<i32>
 where
     W: Write,
@@ -531,6 +680,27 @@ where
     write_candidate_review_response(stdout, response)
 }
 
+fn candidate_accept_income_command<W>(
+    args: CandidateIncomeAcceptArgs,
+    stdout: &mut W,
+) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_candidate_json(args.json, stdout, "candidates accept-income")?
+    {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = accept_income_candidate(
+        &mut connection,
+        &args.candidate_id,
+        &args.income_source_id,
+        &args.income_kind,
+    )?;
+    write_candidate_review_response(stdout, response)
+}
+
 fn candidate_reject_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>
 where
     W: Write,
@@ -543,6 +713,44 @@ where
     write_candidate_review_response(stdout, response)
 }
 
+fn candidate_list_transfer_pairs_command<W>(
+    args: CandidateTransferListArgs,
+    stdout: &mut W,
+) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) =
+        require_transfer_json(args.json, stdout, "candidates list-transfer-pairs")?
+    {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    let response = list_likely_transfer_pairs(&connection)?;
+    write_transfer_review_response(stdout, response)
+}
+
+fn candidate_accept_transfer_pair_command<W>(
+    args: CandidateTransferAcceptArgs,
+    stdout: &mut W,
+) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) =
+        require_transfer_json(args.json, stdout, "candidates accept-transfer-pair")?
+    {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = accept_transfer_pair(
+        &mut connection,
+        &args.from_candidate_id,
+        &args.to_candidate_id,
+    )?;
+    write_transfer_review_response(stdout, response)
+}
+
 fn require_account_json<W>(json: bool, stdout: &mut W, command: &'static str) -> Result<Option<i32>>
 where
     W: Write,
@@ -553,6 +761,23 @@ where
         command,
         account_registry_error_response,
         write_account_registry_response,
+    )
+}
+
+fn require_income_source_json<W>(
+    json: bool,
+    stdout: &mut W,
+    command: &'static str,
+) -> Result<Option<i32>>
+where
+    W: Write,
+{
+    require_json_flag(
+        json,
+        stdout,
+        command,
+        income_source_registry_error_response,
+        write_income_source_registry_response,
     )
 }
 
@@ -570,6 +795,23 @@ where
         command,
         review_error_response,
         write_candidate_review_response,
+    )
+}
+
+fn require_transfer_json<W>(
+    json: bool,
+    stdout: &mut W,
+    command: &'static str,
+) -> Result<Option<i32>>
+where
+    W: Write,
+{
+    require_json_flag(
+        json,
+        stdout,
+        command,
+        transfer_error_response,
+        write_transfer_review_response,
     )
 }
 
@@ -627,6 +869,18 @@ fn write_account_registry_response<W: Write>(
     )
 }
 
+fn write_income_source_registry_response<W: Write>(
+    stdout: &mut W,
+    response: IncomeSourceRegistryResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing income source registry JSON",
+    )
+}
+
 fn write_candidate_review_response<W: Write>(
     stdout: &mut W,
     response: CandidateReviewResponse,
@@ -636,6 +890,18 @@ fn write_candidate_review_response<W: Write>(
         response.ok,
         response,
         "writing candidate review JSON",
+    )
+}
+
+fn write_transfer_review_response<W: Write>(
+    stdout: &mut W,
+    response: TransferReviewResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing transfer review JSON",
     )
 }
 
