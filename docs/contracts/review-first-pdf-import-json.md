@@ -315,6 +315,30 @@ When `duplicate_status.status` is `possible_duplicate` or `exact_duplicate`, the
 
 Stable refusal codes include `candidate_not_income_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, `income_source_not_found`, and `invalid_income_kind`.
 
+## Category and expense acceptance JSON
+
+`tracky categories create/list --json` uses `tracky.categories.v1` and returns stable category records used by transaction lines:
+
+```json
+{
+  "schema_version": "tracky.categories.v1",
+  "command": "categories create",
+  "ok": true,
+  "category": { "id": "cat_redacted_category", "name": "REDACTED_CATEGORY" },
+  "categories": [],
+  "errors": []
+}
+```
+
+`tracky candidates accept-expense CANDIDATE_ID --category-id ID --json` uses `tracky.candidate-review.v1`. It accepts only unreviewed purchase/outflow candidates with an explicit category. The first slice creates one canonical transaction with `transaction_kind: "expense"` and one `transaction_lines[]` entry whose `amount_minor` equals the canonical transaction amount and whose `category_id` is the selected category.
+
+Eligible first-slice expense candidates are:
+
+- `bank_movement` outflows with negative amounts, such as Nequi purchases.
+- `card_charge` outflows, such as RappiCard purchases/subscriptions/fees, even when the source statement amount is positive; the canonical expense and its line are normalized to a negative outflow amount.
+
+`accept-expense` refuses income/inflows, `card_payment` rows, likely own-account transfer outflows that match an unreviewed owned card-payment candidate, missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
+
 ## Stable errors
 
 Errors must be safe for scripts and agents to branch on. Human wording can improve over time, but `code`, `category`, and `path` semantics should stay stable within a schema version.

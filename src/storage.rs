@@ -12,6 +12,7 @@ const REVIEW_FIRST_SCHEMA: &str = include_str!("../migrations/0001_review_first_
 pub const IMPORT_PDF_SCHEMA_VERSION: &str = "tracky.import-pdf.v1";
 pub const ACCOUNT_REGISTRY_SCHEMA_VERSION: &str = "tracky.accounts.v1";
 pub const INCOME_SOURCE_REGISTRY_SCHEMA_VERSION: &str = "tracky.income-sources.v1";
+pub const CATEGORY_REGISTRY_SCHEMA_VERSION: &str = "tracky.categories.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -24,6 +25,11 @@ pub struct AccountRegisterInput {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncomeSourceCreateInput {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CategoryCreateInput {
     pub name: String,
 }
 
@@ -50,6 +56,17 @@ pub struct IncomeSourceRegistryResponse {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CategoryRegistryResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<Category>,
+    pub categories: Vec<Category>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OwnedAccount {
     pub id: String,
     pub institution_id: String,
@@ -67,6 +84,12 @@ pub struct IncomeSource {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Category {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct CandidateReviewResponse {
     pub schema_version: &'static str,
     pub command: &'static str,
@@ -76,6 +99,8 @@ pub struct CandidateReviewResponse {
     pub candidates: Vec<ReviewCandidate>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub canonical_transaction: Option<CanonicalTransaction>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub transaction_lines: Vec<TransactionLine>,
     pub errors: Vec<ReviewError>,
 }
 
@@ -181,6 +206,17 @@ pub struct CanonicalTransaction {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransactionLine {
+    pub id: String,
+    pub canonical_transaction_id: String,
+    pub category_id: String,
+    pub category_name: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub line_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ReviewError {
     pub category: &'static str,
     pub code: &'static str,
@@ -195,6 +231,8 @@ pub const TRANSFER_REVIEW_SCHEMA_VERSION: &str = "tracky.transfer-review.v1";
 const OWN_ACCOUNT_TRANSFER_KIND: &str = "own_account_transfer";
 const CARD_PAYMENT_TRANSFER_KIND: &str = "card_payment";
 const INCOME_TRANSACTION_KIND: &str = "income";
+const EXPENSE_TRANSACTION_KIND: &str = "expense";
+const EXPENSE_LINE_KIND: &str = "expense";
 const INCOME_KINDS: &[&str] = &[
     "salary",
     "freelance",
@@ -245,6 +283,23 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         );
         CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
+        CREATE TABLE IF NOT EXISTS categories (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
+        CREATE TABLE IF NOT EXISTS transaction_lines (
+            id TEXT PRIMARY KEY,
+            canonical_transaction_id TEXT NOT NULL REFERENCES canonical_transactions(id),
+            category_id TEXT NOT NULL REFERENCES categories(id),
+            amount_minor INTEGER NOT NULL CHECK (amount_minor <> 0),
+            currency TEXT NOT NULL,
+            line_kind TEXT NOT NULL CHECK (line_kind IN ('expense')),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_transaction_lines_canonical ON transaction_lines(canonical_transaction_id);
+        CREATE INDEX IF NOT EXISTS idx_transaction_lines_category ON transaction_lines(category_id);
         CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
             id TEXT PRIMARY KEY,
             transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment')),
@@ -466,6 +521,75 @@ pub fn income_source_registry_error_response(
         ok: false,
         income_source: None,
         income_sources: Vec::new(),
+        errors: vec![ReviewError {
+            category,
+            code,
+            message,
+            path,
+            recoverable,
+            details,
+        }],
+    }
+}
+
+pub fn create_category(
+    connection: &Connection,
+    input: CategoryCreateInput,
+) -> Result<CategoryRegistryResponse> {
+    validate_category_input(&input)?;
+    let id = category_id(&input.name);
+    connection.execute(
+        "INSERT INTO categories (id, name) VALUES (?1, ?2)
+         ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+        params![id, input.name.trim()],
+    )?;
+    let category = category_by_id(connection, &id)?.expect("created category remains queryable");
+    Ok(CategoryRegistryResponse {
+        schema_version: CATEGORY_REGISTRY_SCHEMA_VERSION,
+        command: "categories create",
+        ok: true,
+        category: Some(category),
+        categories: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn list_categories(connection: &Connection) -> Result<CategoryRegistryResponse> {
+    let mut statement = connection.prepare(
+        "SELECT id, name
+         FROM categories
+         ORDER BY LOWER(name), id",
+    )?;
+    let rows = statement.query_map([], category_from_row)?;
+    let mut categories = Vec::new();
+    for row in rows {
+        categories.push(row?);
+    }
+    Ok(CategoryRegistryResponse {
+        schema_version: CATEGORY_REGISTRY_SCHEMA_VERSION,
+        command: "categories list",
+        ok: true,
+        category: None,
+        categories,
+        errors: Vec::new(),
+    })
+}
+
+pub fn category_registry_error_response(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: String,
+    path: &'static str,
+    recoverable: bool,
+    details: serde_json::Value,
+) -> CategoryRegistryResponse {
+    CategoryRegistryResponse {
+        schema_version: CATEGORY_REGISTRY_SCHEMA_VERSION,
+        command,
+        ok: false,
+        category: None,
+        categories: Vec::new(),
         errors: vec![ReviewError {
             category,
             code,
@@ -1229,9 +1353,20 @@ fn income_source_id(name: &str) -> String {
     format!("incsrc_{}", stable_slug(name))
 }
 
+fn category_id(name: &str) -> String {
+    format!("cat_{}", stable_slug(name))
+}
+
 fn validate_income_source_input(input: &IncomeSourceCreateInput) -> Result<()> {
     if input.name.trim().is_empty() {
         anyhow::bail!("income source name is required");
+    }
+    Ok(())
+}
+
+fn validate_category_input(input: &CategoryCreateInput) -> Result<()> {
+    if input.name.trim().is_empty() {
+        anyhow::bail!("category name is required");
     }
     Ok(())
 }
@@ -1247,8 +1382,26 @@ fn income_source_by_id(connection: &Connection, id: &str) -> Result<Option<Incom
         .map_err(Into::into)
 }
 
+fn category_by_id(connection: &Connection, id: &str) -> Result<Option<Category>> {
+    connection
+        .query_row(
+            "SELECT id, name FROM categories WHERE id = ?1",
+            params![id],
+            category_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
 fn income_source_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<IncomeSource> {
     Ok(IncomeSource {
+        id: row.get(0)?,
+        name: row.get(1)?,
+    })
+}
+
+fn category_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Category> {
+    Ok(Category {
         id: row.get(0)?,
         name: row.get(1)?,
     })
@@ -1706,6 +1859,155 @@ pub fn accept_income_candidate(
         candidate: Some(candidate),
         candidates: Vec::new(),
         canonical_transaction: Some(canonical_transaction),
+        transaction_lines: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn accept_expense_candidate(
+    connection: &mut Connection,
+    candidate_id: &str,
+    category_id: &str,
+) -> Result<CandidateReviewResponse> {
+    let tx = connection
+        .transaction()
+        .context("starting expense candidate accept transaction")?;
+    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.".to_string(),
+            "candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    };
+    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
+    {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_already_accepted",
+            "Candidate transaction was already accepted.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "canonical_transaction_id": candidate.canonical_transaction_id,
+            }),
+        ));
+    }
+    if candidate.status == CandidateStatus::Rejected {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_already_rejected",
+            "Rejected candidates cannot be accepted as an expense.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    }
+    if !is_unreviewed_candidate_status(&candidate.status) {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_not_acceptable",
+            "Only pending_review or possible_duplicate candidates can be accepted as expenses."
+                .to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
+        ));
+    }
+    if category_by_id(&tx, category_id)?.is_none() {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "not_found",
+            "category_not_found",
+            "Expense category was not found.".to_string(),
+            "category_id",
+            true,
+            serde_json::json!({ "category_id": category_id }),
+        ));
+    }
+    if !is_expense_candidate_shape(&candidate) {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_not_expense_eligible",
+            "Only explicit purchase/outflow candidates can be accepted as expenses.".to_string(),
+            "candidate",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "direction_hint": candidate.direction_hint,
+                "semantic_hint": candidate.semantic_hint,
+                "amount_minor": candidate.amount_minor,
+            }),
+        ));
+    }
+    if has_matching_card_payment_candidate(&tx, &candidate)? {
+        return Ok(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_possible_own_account_transfer",
+            "Candidate resembles an own-account transfer and must not be accepted as an expense."
+                .to_string(),
+            "candidate",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    }
+
+    let canonical_id = canonical_transaction_id(candidate_id);
+    let expense_amount_minor = expense_amount_minor(&candidate);
+    tx.execute(
+        "INSERT INTO canonical_transactions (
+            id, account_id, posted_date, description, amount_minor, currency,
+            balance_minor, transaction_kind, created_from_candidate_id
+         )
+         SELECT ?1, account_id, posted_date, description, ?2, currency,
+                balance_minor, ?3, id
+         FROM candidate_transactions
+         WHERE id = ?4",
+        params![
+            canonical_id,
+            expense_amount_minor,
+            EXPENSE_TRANSACTION_KIND,
+            candidate_id
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO transaction_lines (
+            id, canonical_transaction_id, category_id, amount_minor, currency, line_kind
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            transaction_line_id(&canonical_id, category_id, EXPENSE_LINE_KIND),
+            canonical_id.as_str(),
+            category_id,
+            expense_amount_minor,
+            candidate.currency.as_str(),
+            EXPENSE_LINE_KIND,
+        ],
+    )?;
+    mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
+    tx.commit().context("committing expense candidate accept")?;
+
+    let candidate = find_review_candidate(connection, candidate_id)?
+        .expect("accepted expense candidate remains queryable");
+    let canonical_transaction = canonical_transaction(connection, &canonical_id)?
+        .expect("accepted expense canonical transaction remains queryable");
+    let transaction_lines = transaction_lines_for_canonical(connection, &canonical_id)?;
+    Ok(CandidateReviewResponse {
+        schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
+        command: "candidates accept-expense",
+        ok: true,
+        candidate: Some(candidate),
+        candidates: Vec::new(),
+        canonical_transaction: Some(canonical_transaction),
+        transaction_lines,
         errors: Vec::new(),
     })
 }
@@ -1784,6 +2086,7 @@ pub fn accept_candidate(
         candidate: Some(candidate),
         candidates: Vec::new(),
         canonical_transaction: Some(canonical_transaction),
+        transaction_lines: Vec::new(),
         errors: Vec::new(),
     })
 }
@@ -1846,6 +2149,7 @@ pub fn reject_candidate(
         candidate: Some(candidate),
         candidates: Vec::new(),
         canonical_transaction: None,
+        transaction_lines: Vec::new(),
         errors: Vec::new(),
     })
 }
@@ -1866,6 +2170,7 @@ pub fn review_error_response(
         candidate: None,
         candidates: Vec::new(),
         canonical_transaction: None,
+        transaction_lines: Vec::new(),
         errors: vec![ReviewError {
             category,
             code,
@@ -2134,6 +2439,22 @@ fn is_income_candidate_shape(candidate: &ReviewCandidate) -> bool {
         && candidate.semantic_hint.as_deref() == Some("bank_movement")
 }
 
+fn is_expense_candidate_shape(candidate: &ReviewCandidate) -> bool {
+    match candidate.semantic_hint.as_deref() {
+        Some("bank_movement") => {
+            candidate.direction_hint.as_deref() == Some("outflow") && candidate.amount_minor < 0
+        }
+        Some("card_charge") => {
+            candidate.direction_hint.as_deref() == Some("outflow") && candidate.amount_minor != 0
+        }
+        _ => false,
+    }
+}
+
+fn expense_amount_minor(candidate: &ReviewCandidate) -> i64 {
+    -candidate.amount_minor.abs()
+}
+
 fn has_matching_owned_account_outflow(
     connection: &Connection,
     candidate: &ReviewCandidate,
@@ -2158,6 +2479,53 @@ fn has_matching_owned_account_outflow(
            AND c.amount_minor < 0
            AND c.direction_hint = 'outflow'
            AND c.semantic_hint = 'bank_movement'",
+    )?;
+    let rows = statement.query_map(
+        params![
+            candidate.id,
+            candidate_account_id,
+            candidate.posted_date,
+            candidate.currency,
+            candidate.amount_minor.abs()
+        ],
+        |row| row.get::<_, String>(0),
+    )?;
+    for row in rows {
+        let account_id = row?;
+        if owned_account_by_id(connection, &account_id)?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn has_matching_card_payment_candidate(
+    connection: &Connection,
+    candidate: &ReviewCandidate,
+) -> Result<bool> {
+    if candidate.semantic_hint.as_deref() != Some("bank_movement")
+        || candidate.direction_hint.as_deref() != Some("outflow")
+    {
+        return Ok(false);
+    }
+    let Some(candidate_account_id) = candidate.account_id.as_deref() else {
+        return Ok(false);
+    };
+    if owned_account_by_id(connection, candidate_account_id)?.is_none() {
+        return Ok(false);
+    }
+    let mut statement = connection.prepare(
+        "SELECT c.account_id
+         FROM candidate_transactions c
+         WHERE c.id <> ?1
+           AND c.status IN ('pending_review', 'possible_duplicate')
+           AND c.canonical_transaction_id IS NULL
+           AND c.account_id IS NOT NULL
+           AND c.account_id <> ?2
+           AND c.posted_date = ?3
+           AND UPPER(c.currency) = UPPER(?4)
+           AND ABS(c.amount_minor) = ?5
+           AND c.semantic_hint = 'card_payment'",
     )?;
     let rows = statement.query_map(
         params![
@@ -2368,6 +2736,36 @@ fn canonical_transaction(
         .map_err(Into::into)
 }
 
+fn transaction_lines_for_canonical(
+    connection: &Connection,
+    canonical_id: &str,
+) -> Result<Vec<TransactionLine>> {
+    let mut statement = connection.prepare(
+        "SELECT tl.id, tl.canonical_transaction_id, tl.category_id, c.name,
+                tl.amount_minor, tl.currency, tl.line_kind
+         FROM transaction_lines tl
+         JOIN categories c ON c.id = tl.category_id
+         WHERE tl.canonical_transaction_id = ?1
+         ORDER BY tl.id",
+    )?;
+    let rows = statement.query_map(params![canonical_id], |row| {
+        Ok(TransactionLine {
+            id: row.get(0)?,
+            canonical_transaction_id: row.get(1)?,
+            category_id: row.get(2)?,
+            category_name: row.get(3)?,
+            amount_minor: row.get(4)?,
+            currency: row.get(5)?,
+            line_kind: row.get(6)?,
+        })
+    })?;
+    let mut lines = Vec::new();
+    for row in rows {
+        lines.push(row?);
+    }
+    Ok(lines)
+}
+
 fn canonical_transaction_id(candidate_id: &str) -> String {
     let digest = Sha256::digest(candidate_id.as_bytes());
     format!(
@@ -2383,6 +2781,17 @@ fn transfer_pair_id(from_candidate_id: &str, to_candidate_id: &str) -> String {
     let digest = Sha256::digest(format!("{from_candidate_id}|{to_candidate_id}").as_bytes());
     format!(
         "xfer_{}",
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn transaction_line_id(canonical_id: &str, category_id: &str, line_kind: &str) -> String {
+    let digest = Sha256::digest(format!("{canonical_id}|{category_id}|{line_kind}").as_bytes());
+    format!(
+        "line_{}",
         digest[..16]
             .iter()
             .map(|byte| format!("{byte:02x}"))

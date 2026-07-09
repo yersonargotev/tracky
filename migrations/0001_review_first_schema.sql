@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS income_sources (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS canonical_transactions (
     id TEXT PRIMARY KEY,
     account_id TEXT REFERENCES accounts(id),
@@ -63,6 +69,16 @@ CREATE TABLE IF NOT EXISTS canonical_transactions (
     income_source_id TEXT REFERENCES income_sources(id),
     income_kind TEXT CHECK (income_kind IN ('salary', 'freelance', 'client_payment', 'sale', 'interest', 'reimbursement', 'other')),
     created_from_candidate_id TEXT UNIQUE REFERENCES candidate_transactions(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS transaction_lines (
+    id TEXT PRIMARY KEY,
+    canonical_transaction_id TEXT NOT NULL REFERENCES canonical_transactions(id),
+    category_id TEXT NOT NULL REFERENCES categories(id),
+    amount_minor INTEGER NOT NULL CHECK (amount_minor <> 0),
+    currency TEXT NOT NULL,
+    line_kind TEXT NOT NULL CHECK (line_kind IN ('expense')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
@@ -168,6 +184,9 @@ CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
 
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
+CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
+CREATE INDEX IF NOT EXISTS idx_transaction_lines_canonical ON transaction_lines(canonical_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_transaction_lines_category ON transaction_lines(category_id);
 CREATE INDEX IF NOT EXISTS idx_source_documents_content_sha256 ON source_documents(content_sha256);
 CREATE INDEX IF NOT EXISTS idx_import_batches_source_document_id ON import_batches(source_document_id);
 CREATE INDEX IF NOT EXISTS idx_candidate_transactions_batch ON candidate_transactions(import_batch_id);

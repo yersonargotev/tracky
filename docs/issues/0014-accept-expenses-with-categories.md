@@ -15,12 +15,12 @@ This is the minimum path from imported PDF candidate to categorized real expense
 
 ## Acceptance criteria
 
-- [ ] A user can create/list categories as stable JSON.
-- [ ] A user can accept a purchase candidate with exactly one expense category.
-- [ ] Acceptance creates a canonical transaction plus one transaction line tied to the selected category.
-- [ ] The transaction line amount reconciles exactly with the canonical transaction amount.
-- [ ] Rejected, transfer-like, or already accepted candidates cannot be accepted as categorized expenses.
-- [ ] Tests cover a RappiCard purchase candidate, category persistence, and provenance preservation.
+- [x] A user can create/list categories as stable JSON.
+- [x] A user can accept a purchase candidate with exactly one expense category.
+- [x] Acceptance creates a canonical transaction plus one transaction line tied to the selected category.
+- [x] The transaction line amount reconciles exactly with the canonical transaction amount.
+- [x] Rejected, transfer-like, or already accepted candidates cannot be accepted as categorized expenses.
+- [x] Tests cover a RappiCard purchase candidate, category persistence, and provenance preservation.
 
 ## Blocked by
 

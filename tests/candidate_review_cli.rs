@@ -728,6 +728,19 @@ fn create_income_source_cli(db: &str, name: &str) -> serde_json::Value {
     serde_json::from_slice(&output.stdout).expect("income source create json")
 }
 
+fn create_category_cli(db: &str, name: &str) -> serde_json::Value {
+    let output = Command::new(tracky())
+        .args(["categories", "create", "--db", db, "--name", name, "--json"])
+        .output()
+        .expect("run category create");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("category create json")
+}
+
 #[test]
 fn candidate_review_cli_accepts_nequi_income_with_explicit_source_and_kind() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1059,6 +1072,284 @@ fn candidate_review_cli_refuses_non_income_transfer_like_or_already_reviewed_inc
     assert!(!transfer_like.status.success());
     let transfer_like_json: serde_json::Value =
         serde_json::from_slice(&transfer_like.stdout).expect("transfer-like income json");
+    assert_eq!(
+        transfer_like_json["errors"][0]["code"],
+        "candidate_possible_own_account_transfer"
+    );
+}
+
+#[test]
+fn candidate_review_cli_accepts_rappicard_and_nequi_expenses_with_categories() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet");
+    register_account(&connection, "rappi", "RappiCard", "credit_card");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            institution: "rappi",
+            account_label: "RappiCard",
+            candidate_id: "cand_rappi_card_charge_expense",
+            description: "COMERCIO REDACTADO",
+            amount_minor: 3_250_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::CardCharge,
+        }),
+    )
+    .expect("persist RappiCard charge candidate");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "abababababababababababababababababababababababababababababababab",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_nequi_purchase_expense",
+            description: "COMPRA REDACTADA",
+            amount_minor: -2_500_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist Nequi purchase candidate");
+    drop(connection);
+
+    let category = create_category_cli(db, "Food & Groceries");
+    assert_eq!(category["schema_version"], "tracky.categories.v1");
+    assert_eq!(category["command"], "categories create");
+    assert_eq!(category["category"]["id"], "cat_food_groceries");
+
+    let list_categories = Command::new(tracky())
+        .args(["categories", "list", "--db", db, "--json"])
+        .output()
+        .expect("run category list");
+    assert!(
+        list_categories.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&list_categories.stderr)
+    );
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list_categories.stdout).expect("category list json");
+    assert_eq!(list_json["schema_version"], "tracky.categories.v1");
+    assert_eq!(list_json["categories"].as_array().unwrap().len(), 1);
+
+    for (candidate_id, expected_amount) in [
+        ("cand_rappi_card_charge_expense", -3_250_000),
+        ("cand_nequi_purchase_expense", -2_500_000),
+    ] {
+        let accept = Command::new(tracky())
+            .args([
+                "candidates",
+                "accept-expense",
+                candidate_id,
+                "--db",
+                db,
+                "--category-id",
+                "cat_food_groceries",
+                "--json",
+            ])
+            .output()
+            .expect("run accept expense");
+        assert!(
+            accept.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&accept.stderr)
+        );
+        let json: serde_json::Value =
+            serde_json::from_slice(&accept.stdout).expect("expense accept json");
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["candidate"]["status"], "accepted");
+        assert_eq!(json["canonical_transaction"]["transaction_kind"], "expense");
+        assert_eq!(
+            json["canonical_transaction"]["amount_minor"],
+            expected_amount
+        );
+        assert_eq!(
+            json["canonical_transaction"]["created_from_candidate_id"],
+            candidate_id
+        );
+        assert_eq!(json["transaction_lines"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            json["transaction_lines"][0]["canonical_transaction_id"],
+            json["canonical_transaction"]["id"]
+        );
+        assert_eq!(
+            json["transaction_lines"][0]["category_id"],
+            "cat_food_groceries"
+        );
+        assert_eq!(
+            json["transaction_lines"][0]["amount_minor"],
+            expected_amount
+        );
+        assert_eq!(json["transaction_lines"][0]["line_kind"], "expense");
+        assert_eq!(
+            json["candidate"]["provenance"]["canonical_transaction_id"],
+            json["canonical_transaction"]["id"]
+        );
+    }
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    let audit: (i64, i64, i64, i64) = connection
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM canonical_transactions WHERE transaction_kind = 'expense'),
+                (SELECT COUNT(*) FROM transaction_lines tl JOIN canonical_transactions ct ON ct.id = tl.canonical_transaction_id WHERE ct.transaction_kind = 'expense' AND tl.amount_minor = ct.amount_minor),
+                (SELECT COUNT(*) FROM transaction_lines WHERE category_id = 'cat_food_groceries'),
+                (SELECT COUNT(*) FROM provenance WHERE candidate_transaction_id IN ('cand_rappi_card_charge_expense', 'cand_nequi_purchase_expense') AND canonical_transaction_id IS NOT NULL)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .expect("read expense audit");
+    assert_eq!(audit, (2, 2, 2, 2));
+}
+
+#[test]
+fn candidate_review_cli_refuses_non_expense_transfer_like_card_payment_or_already_reviewed_expense()
+{
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet");
+    register_account(&connection, "rappi", "RappiCard", "credit_card");
+    for fixture in [
+        TransferCandidateFixture {
+            hash: "acacacacacacacacacacacacacacacacacacacacacacacacacacacacacacacac",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_nequi_income_not_expense",
+            description: "INGRESO REDACTADO",
+            amount_minor: 9_000_000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+        TransferCandidateFixture {
+            hash: "adadadadadadadadadadadadadadadadadadadadadadadadadadadadadadadad",
+            institution: "rappi",
+            account_label: "RappiCard",
+            candidate_id: "cand_rappi_card_payment_not_expense",
+            description: "PAGOS POR PSE REDACTED",
+            amount_minor: 4_590_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::CardPayment,
+        },
+        TransferCandidateFixture {
+            hash: "aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_nequi_rejected_expense",
+            description: "COMPRA RECHAZADA REDACTADA",
+            amount_minor: -1_200_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+        TransferCandidateFixture {
+            hash: "afafafafafafafafafafafafafafafafafafafafafafafafafafafafafafafaf",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_nequi_already_accepted_expense",
+            description: "COMPRA ACEPTADA REDACTADA",
+            amount_minor: -1_300_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+    ] {
+        persist_pdf_import(&mut connection, transfer_inspect_response(fixture))
+            .expect("persist expense refusal fixture");
+    }
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET status = 'rejected' WHERE id = 'cand_nequi_rejected_expense'",
+            [],
+        )
+        .expect("mark rejected expense");
+    drop(connection);
+    create_category_cli(db, "General Expenses");
+
+    let accept_once = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-expense",
+            "cand_nequi_already_accepted_expense",
+            "--db",
+            db,
+            "--category-id",
+            "cat_general_expenses",
+            "--json",
+        ])
+        .output()
+        .expect("run first expense accept");
+    assert!(
+        accept_once.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&accept_once.stderr)
+    );
+
+    for (candidate_id, expected_code) in [
+        (
+            "cand_nequi_income_not_expense",
+            "candidate_not_expense_eligible",
+        ),
+        (
+            "cand_rappi_card_payment_not_expense",
+            "candidate_not_expense_eligible",
+        ),
+        ("cand_nequi_rejected_expense", "candidate_already_rejected"),
+        (
+            "cand_nequi_already_accepted_expense",
+            "candidate_already_accepted",
+        ),
+    ] {
+        let output = Command::new(tracky())
+            .args([
+                "candidates",
+                "accept-expense",
+                candidate_id,
+                "--db",
+                db,
+                "--category-id",
+                "cat_general_expenses",
+                "--json",
+            ])
+            .output()
+            .expect("run refused accept expense");
+        assert!(!output.status.success());
+        let json: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("refused expense json");
+        assert_eq!(json["errors"][0]["code"], expected_code);
+    }
+
+    let transfer_dir = tempfile::tempdir().expect("temp dir");
+    let transfer_db_path = transfer_dir.path().join("tracky.sqlite");
+    let transfer_db = transfer_db_path.to_str().unwrap();
+    let mut transfer_connection = Connection::open(&transfer_db_path).expect("open transfer db");
+    apply_migrations(&transfer_connection).expect("apply migrations");
+    register_account(&transfer_connection, "nequi", "Nequi wallet", "wallet");
+    register_account(&transfer_connection, "rappi", "RappiCard", "credit_card");
+    let (from_candidate_id, _) = persist_transfer_candidates(&mut transfer_connection, 4_590_000);
+    drop(transfer_connection);
+    create_category_cli(transfer_db, "Transfers Are Not Expenses");
+
+    let transfer_like = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-expense",
+            &from_candidate_id,
+            "--db",
+            transfer_db,
+            "--category-id",
+            "cat_transfers_are_not_expenses",
+            "--json",
+        ])
+        .output()
+        .expect("run transfer-like accept expense");
+    assert!(!transfer_like.status.success());
+    let transfer_like_json: serde_json::Value =
+        serde_json::from_slice(&transfer_like.stdout).expect("transfer-like expense json");
     assert_eq!(
         transfer_like_json["errors"][0]["code"],
         "candidate_possible_own_account_transfer"

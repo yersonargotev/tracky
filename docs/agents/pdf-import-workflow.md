@@ -118,7 +118,25 @@ tracky candidates accept-income cand_NEQUI_INFLOW_REDACTED \
 
 `accept-income` only accepts unreviewed `bank_movement` inflows with positive amounts. It refuses already accepted/rejected candidates, card-payment/card-charge rows, outflows, missing income sources, and inflows that match a resolved owned-account outflow pattern. Accepted canonical income keeps the candidate provenance link plus `transaction_kind: "income"`, `income_source_id`, and `income_kind`.
 
-### 6. Review likely own-account transfer/card-payment pairs
+### 6. Accept explicit categorized expenses
+
+Expense review is explicit: create or list categories, then accept an eligible purchase/outflow candidate with a chosen category. Do not infer categories during import.
+
+```bash
+tracky categories create --db /tmp/tracky-review.sqlite \
+  --name "REDACTED_CATEGORY" \
+  --json
+tracky categories list --db /tmp/tracky-review.sqlite --json
+
+tracky candidates accept-expense cand_PURCHASE_REDACTED \
+  --db /tmp/tracky-review.sqlite \
+  --category-id cat_REDACTED_CATEGORY \
+  --json
+```
+
+`accept-expense` creates a canonical transaction marked `transaction_kind: "expense"` and exactly one transaction line with the selected `category_id`. The line amount reconciles exactly with the canonical transaction amount. Nequi purchase outflows remain negative; RappiCard `card_charge` rows are accepted as card expenses and normalized to a negative outflow amount even if the source statement amount was positive. Income/inflows, `card_payment` rows, likely own-account transfers, missing categories, and already accepted/rejected candidates are refused.
+
+### 7. Review likely own-account transfer/card-payment pairs
 
 For card payments, first ask Tracky for likely pairs. For example, a Nequi PSE outflow can match a RappiCard `card_payment` row when both accounts are registered as owned, the date/currency match, and the absolute amount is the same.
 
@@ -152,7 +170,7 @@ Semantic hints:
 | Hint | Meaning | Agent action |
 | --- | --- | --- |
 | `bank_movement` | Regular bank/wallet movement. | Review with amount, direction, provenance, and future income/category rules. |
-| `card_charge` | RappiCard purchase/subscription/fee/interest/installment; expense-like card activity even if the raw amount is positive. | Do not treat as income; review later as card expense/category work. |
+| `card_charge` | RappiCard purchase/subscription/fee/interest/installment; expense-like card activity even if the raw amount is positive. | Do not treat as income; accept as a categorized expense only with explicit `accept-expense`. |
 | `card_payment` | RappiCard payment/liability reduction such as `PAGOS POR PSE`. | Keep distinct from purchases; future transfer/card-payment resolution should link it to the paying owned account. |
 
 Duplicate statuses:
