@@ -1026,7 +1026,7 @@ where
             Err(response) => {
                 return write_manual_transaction_response(
                     stdout,
-                    manual_from_candidate_response(response),
+                    manual_from_candidate_response(*response),
                 )
             }
         };
@@ -1136,7 +1136,7 @@ fn transaction_update_command<W: Write>(
             Err(response) => {
                 return write_transaction_ledger_response(
                     stdout,
-                    transaction_ledger_from_candidate_response(response),
+                    transaction_ledger_from_candidate_response(*response),
                 )
             }
         }
@@ -1470,7 +1470,7 @@ where
     let lines =
         match expense_lines_from_args(args.category_id, args.lines, "candidates accept-expense") {
             Ok(lines) => lines,
-            Err(response) => return write_candidate_review_response(stdout, response),
+            Err(response) => return write_candidate_review_response(stdout, *response),
         };
     let mut connection = open_review_database(&args.db)?;
     let response = accept_expense_candidate(&mut connection, &args.candidate_id, &lines)?;
@@ -1491,7 +1491,7 @@ where
     }
     let lines = match expense_lines_from_args(None, args.lines, "candidates set-expense-lines") {
         Ok(lines) => lines,
-        Err(response) => return write_candidate_review_response(stdout, response),
+        Err(response) => return write_candidate_review_response(stdout, *response),
     };
     let mut connection = open_review_database(&args.db)?;
     let response = replace_expense_transaction_lines(&mut connection, &args.candidate_id, &lines)?;
@@ -1502,9 +1502,9 @@ fn expense_lines_from_args(
     category_id: Option<String>,
     raw_lines: Vec<String>,
     command: &'static str,
-) -> Result<Vec<ExpenseLineInput>, CandidateReviewResponse> {
+) -> Result<Vec<ExpenseLineInput>, Box<CandidateReviewResponse>> {
     if category_id.is_some() && !raw_lines.is_empty() {
-        return Err(review_error_response(
+        return Err(Box::new(review_error_response(
             command,
             "validation_failure",
             "expense_category_or_lines_required",
@@ -1512,7 +1512,7 @@ fn expense_lines_from_args(
             "category_id",
             true,
             serde_json::json!({}),
-        ));
+        )));
     }
     if let Some(category_id) = category_id {
         return Ok(vec![ExpenseLineInput {
@@ -1522,7 +1522,7 @@ fn expense_lines_from_args(
         }]);
     }
     if raw_lines.is_empty() {
-        return Err(review_error_response(
+        return Err(Box::new(review_error_response(
             command,
             "validation_failure",
             "expense_lines_required",
@@ -1530,7 +1530,7 @@ fn expense_lines_from_args(
             "lines",
             true,
             serde_json::json!({}),
-        ));
+        )));
     }
     raw_lines
         .into_iter()
@@ -1541,7 +1541,7 @@ fn expense_lines_from_args(
 fn parse_expense_line(
     raw_line: &str,
     command: &'static str,
-) -> Result<ExpenseLineInput, CandidateReviewResponse> {
+) -> Result<ExpenseLineInput, Box<CandidateReviewResponse>> {
     let Some((category_id, remainder)) = raw_line.split_once(':') else {
         return Err(invalid_expense_line_response(command, raw_line));
     };
@@ -1561,8 +1561,11 @@ fn parse_expense_line(
     })
 }
 
-fn invalid_expense_line_response(command: &'static str, raw_line: &str) -> CandidateReviewResponse {
-    review_error_response(
+fn invalid_expense_line_response(
+    command: &'static str,
+    raw_line: &str,
+) -> Box<CandidateReviewResponse> {
+    Box::new(review_error_response(
         command,
         "validation_failure",
         "invalid_expense_line",
@@ -1570,7 +1573,7 @@ fn invalid_expense_line_response(command: &'static str, raw_line: &str) -> Candi
         "lines",
         true,
         serde_json::json!({ "line": raw_line }),
-    )
+    ))
 }
 
 fn candidate_reject_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>

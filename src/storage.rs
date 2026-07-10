@@ -460,7 +460,7 @@ struct PreparedBatchAction {
 
 enum BatchActionMutation {
     RejectDuplicate { candidate_id: String },
-    AcceptTransferPair { pair: ReviewTransferPair },
+    AcceptTransferPair { pair: Box<ReviewTransferPair> },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -2530,7 +2530,9 @@ fn preflight_batch_action(
                 Ok(pair) => Ok(Ok(PreparedBatchAction {
                     action: action.action(),
                     candidate_ids: action.candidate_ids().to_vec(),
-                    mutation: BatchActionMutation::AcceptTransferPair { pair },
+                    mutation: BatchActionMutation::AcceptTransferPair {
+                        pair: Box::new(pair),
+                    },
                 })),
                 Err(error) => Ok(Err(vec![ReviewError {
                     category: "conflict",
@@ -4460,13 +4462,15 @@ pub fn list_canonical_transactions(
     let canonical_transactions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(transaction_ledger_success(
         "transactions list",
-        None,
-        canonical_transactions,
-        None,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        None,
+        TransactionLedgerSuccessData {
+            canonical_transaction: None,
+            canonical_transactions,
+            candidate: None,
+            transaction_lines: Vec::new(),
+            provenance: Vec::new(),
+            edits: Vec::new(),
+            transfer: None,
+        },
     ))
 }
 
@@ -4722,13 +4726,15 @@ pub fn inspect_canonical_transaction(
     let lines = transaction_lines_for_canonical(connection, canonical_id)?;
     Ok(transaction_ledger_success(
         "transactions inspect",
-        Some(canonical),
-        Vec::new(),
-        candidate,
-        lines,
-        provenance,
-        edits,
-        transfer,
+        TransactionLedgerSuccessData {
+            canonical_transaction: Some(canonical),
+            canonical_transactions: Vec::new(),
+            candidate,
+            transaction_lines: lines,
+            provenance,
+            edits,
+            transfer,
+        },
     ))
 }
 
@@ -4934,8 +4940,7 @@ fn transaction_edits_for(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn transaction_ledger_success(
-    command: &'static str,
+struct TransactionLedgerSuccessData {
     canonical_transaction: Option<CanonicalTransaction>,
     canonical_transactions: Vec<CanonicalTransaction>,
     candidate: Option<ReviewCandidate>,
@@ -4943,18 +4948,23 @@ fn transaction_ledger_success(
     provenance: Vec<TransactionProvenance>,
     edits: Vec<TransactionEdit>,
     transfer: Option<TransactionTransferMetadata>,
+}
+
+fn transaction_ledger_success(
+    command: &'static str,
+    data: TransactionLedgerSuccessData,
 ) -> TransactionLedgerResponse {
     TransactionLedgerResponse {
         schema_version: TRANSACTION_LEDGER_SCHEMA_VERSION,
         command,
         ok: true,
-        canonical_transaction,
-        canonical_transactions,
-        candidate,
-        transaction_lines,
-        provenance,
-        edits,
-        transfer,
+        canonical_transaction: data.canonical_transaction,
+        canonical_transactions: data.canonical_transactions,
+        candidate: data.candidate,
+        transaction_lines: data.transaction_lines,
+        provenance: data.provenance,
+        edits: data.edits,
+        transfer: data.transfer,
         errors: Vec::new(),
     }
 }
