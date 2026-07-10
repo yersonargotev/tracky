@@ -280,3 +280,16 @@ tracky transactions update txn_REDACTED --db /tmp/tracky-review.sqlite --line ca
 ```
 
 Updates retain the original candidate/source-document provenance or manual-entry provenance. Transfer legs may have their description corrected, but cannot be reclassified as income or expenses. Expense line updates must remain balanced in the canonical amount and currency.
+
+## Report canonical finance activity
+
+Request an inclusive date-range summary only after the relevant candidates have been explicitly reviewed:
+
+```bash
+tracky reports summary --db /tmp/tracky-review.sqlite \
+  --start-date 2026-06-01 --end-date 2026-06-30 --json
+```
+
+The report returns per-currency income, positive expense magnitudes, net cash flow, category totals, income-source totals, and excluded transfer totals. Pending, possible-duplicate, and rejected candidates do not appear because the report queries the canonical ledger only. Balanced expense splits contribute their lines to category totals without duplicating the canonical expense total.
+
+Reviewed card-payment pairs and manual own-account transfers are excluded from income, expenses, categories, and net cash flow. They remain visible under `excluded_transfer_totals[]`, where each pair is counted once instead of counting both canonical legs.

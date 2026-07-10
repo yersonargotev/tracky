@@ -522,3 +522,64 @@ Accepted pairs set both candidates to `accepted`, create two canonical rows with
 A successful inspection/update returns `canonical_transaction`, optional `candidate`, `transaction_lines`, `provenance`, and optional `transfer`. A list returns `canonical_transactions[]`. Manual provenance remains `{ "source": "manual_entry", "entry_id": "..." }`; imported records retain their candidate provenance and redacted evidence.
 
 `update` refuses empty descriptions, missing income sources, unsupported income kinds, unbalanced/mismatched expense lines, and category/income changes to transfer legs. It does not change a transaction kind, candidate link, or provenance. Every successful update writes an append-only `edits[]` audit record with before/after change data and timestamp, returned by inspect/update.
+
+## Canonical finance report JSON
+
+`tracky reports summary --db <PATH> --start-date YYYY-MM-DD --end-date YYYY-MM-DD --json` uses `tracky.finance-report.v1`. Both range endpoints are required and inclusive. The command reads canonical transactions and transfer-pair records only; candidate rows in `pending_review`, `possible_duplicate`, or `rejected` state cannot affect the report.
+
+Because canonical accounts may use different currencies, the report never combines unlike currencies into one number. `totals[]`, `category_totals[]`, `income_source_totals[]`, and `excluded_transfer_totals[]` are deterministically ordered and identify their currency explicitly. Expense totals are positive magnitudes even though canonical expense rows and transaction lines use negative amounts. `net_cash_flow_minor` is `total_income_minor - total_expenses_minor`.
+
+```json
+{
+  "schema_version": "tracky.finance-report.v1",
+  "command": "reports summary",
+  "ok": true,
+  "date_range": {
+    "start_date": "2026-06-01",
+    "end_date": "2026-06-30"
+  },
+  "totals": [
+    {
+      "currency": "COP",
+      "total_income_minor": 500000,
+      "total_expenses_minor": 200000,
+      "net_cash_flow_minor": 300000,
+      "excluded_transfer_total_minor": 190000,
+      "excluded_transfer_count": 2
+    }
+  ],
+  "category_totals": [
+    {
+      "category_id": "cat_synthetic_food",
+      "category_name": "Synthetic food",
+      "currency": "COP",
+      "total_expenses_minor": 170000
+    }
+  ],
+  "income_source_totals": [
+    {
+      "income_source_id": "incsrc_synthetic_employer",
+      "income_source_name": "Synthetic employer",
+      "currency": "COP",
+      "total_income_minor": 500000
+    }
+  ],
+  "excluded_transfer_totals": [
+    {
+      "transfer_kind": "card_payment",
+      "currency": "COP",
+      "total_amount_minor": 70000,
+      "transfer_count": 1
+    },
+    {
+      "transfer_kind": "own_account_transfer",
+      "currency": "COP",
+      "total_amount_minor": 120000,
+      "transfer_count": 1
+    }
+  ],
+  "errors": []
+}
+```
+
+An expense split contributes each transaction line once to its category while the canonical transaction contributes once to overall expenses. Own-account transfers and reviewed card-payment pairs never contribute to income, expenses, category totals, or net cash flow. Their positive pair amount is counted once in excluded transfer totals rather than summing or double-counting their balancing canonical legs. Stable report validation codes include `json_output_required`, `invalid_start_date`, `invalid_end_date`, and `invalid_date_range`.

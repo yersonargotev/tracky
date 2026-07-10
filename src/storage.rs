@@ -16,6 +16,7 @@ pub const INCOME_SOURCE_REGISTRY_SCHEMA_VERSION: &str = "tracky.income-sources.v
 pub const CATEGORY_REGISTRY_SCHEMA_VERSION: &str = "tracky.categories.v1";
 pub const MANUAL_TRANSACTIONS_SCHEMA_VERSION: &str = "tracky.manual-transactions.v1";
 pub const TRANSACTION_LEDGER_SCHEMA_VERSION: &str = "tracky.transactions.v1";
+pub const FINANCE_REPORT_SCHEMA_VERSION: &str = "tracky.finance-report.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -256,6 +257,59 @@ pub struct TransactionLedgerResponse {
     pub edits: Vec<TransactionEdit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transfer: Option<TransactionTransferMetadata>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReportDateRange {
+    pub start_date: String,
+    pub end_date: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FinanceCurrencyTotal {
+    pub currency: String,
+    pub total_income_minor: i64,
+    pub total_expenses_minor: i64,
+    pub net_cash_flow_minor: i64,
+    pub excluded_transfer_total_minor: i64,
+    pub excluded_transfer_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CategoryTotal {
+    pub category_id: String,
+    pub category_name: String,
+    pub currency: String,
+    pub total_expenses_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IncomeSourceTotal {
+    pub income_source_id: String,
+    pub income_source_name: String,
+    pub currency: String,
+    pub total_income_minor: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ExcludedTransferTotal {
+    pub transfer_kind: String,
+    pub currency: String,
+    pub total_amount_minor: i64,
+    pub transfer_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FinanceReportResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    pub date_range: ReportDateRange,
+    pub totals: Vec<FinanceCurrencyTotal>,
+    pub category_totals: Vec<CategoryTotal>,
+    pub income_source_totals: Vec<IncomeSourceTotal>,
+    pub excluded_transfer_totals: Vec<ExcludedTransferTotal>,
     pub errors: Vec<ReviewError>,
 }
 
@@ -3509,6 +3563,234 @@ pub fn list_canonical_transactions(
         Vec::new(),
         None,
     ))
+}
+
+pub fn summarize_finances(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<FinanceReportResponse> {
+    let date_range = ReportDateRange {
+        start_date: start_date.to_string(),
+        end_date: end_date.to_string(),
+    };
+    if !is_valid_posted_date(start_date) {
+        return Ok(finance_report_error(
+            date_range,
+            "invalid_start_date",
+            "Start date must use YYYY-MM-DD.",
+            "start_date",
+        ));
+    }
+    if !is_valid_posted_date(end_date) {
+        return Ok(finance_report_error(
+            date_range,
+            "invalid_end_date",
+            "End date must use YYYY-MM-DD.",
+            "end_date",
+        ));
+    }
+    if start_date > end_date {
+        return Ok(finance_report_error(
+            date_range,
+            "invalid_date_range",
+            "Start date must be on or before end date.",
+            "date_range",
+        ));
+    }
+
+    let excluded_transfer_totals =
+        finance_excluded_transfer_totals(connection, start_date, end_date)?;
+    let totals =
+        finance_currency_totals(connection, start_date, end_date, &excluded_transfer_totals)?;
+    let category_totals = finance_category_totals(connection, start_date, end_date)?;
+    let income_source_totals = finance_income_source_totals(connection, start_date, end_date)?;
+    Ok(FinanceReportResponse {
+        schema_version: FINANCE_REPORT_SCHEMA_VERSION,
+        command: "reports summary",
+        ok: true,
+        date_range,
+        totals,
+        category_totals,
+        income_source_totals,
+        excluded_transfer_totals,
+        errors: Vec::new(),
+    })
+}
+
+fn finance_currency_totals(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+    excluded_transfer_totals: &[ExcludedTransferTotal],
+) -> Result<Vec<FinanceCurrencyTotal>> {
+    let mut statement = connection.prepare(
+        "SELECT UPPER(currency) AS currency,
+                COALESCE(SUM(CASE WHEN transaction_kind = 'income' THEN amount_minor ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN transaction_kind = 'expense' THEN -amount_minor ELSE 0 END), 0)
+         FROM canonical_transactions
+         WHERE posted_date >= ?1 AND posted_date <= ?2
+           AND transaction_kind IN ('income', 'expense')
+         GROUP BY UPPER(currency)",
+    )?;
+    let rows = statement.query_map(params![start_date, end_date], |row| {
+        let total_income_minor = row.get(1)?;
+        let total_expenses_minor = row.get(2)?;
+        let currency = row.get::<_, String>(0)?;
+        Ok((
+            currency.clone(),
+            FinanceCurrencyTotal {
+                currency,
+                total_income_minor,
+                total_expenses_minor,
+                net_cash_flow_minor: total_income_minor - total_expenses_minor,
+                excluded_transfer_total_minor: 0,
+                excluded_transfer_count: 0,
+            },
+        ))
+    })?;
+    let mut totals = rows.collect::<rusqlite::Result<std::collections::BTreeMap<_, _>>>()?;
+    for transfer_total in excluded_transfer_totals {
+        let total = totals
+            .entry(transfer_total.currency.clone())
+            .or_insert_with(|| FinanceCurrencyTotal {
+                currency: transfer_total.currency.clone(),
+                total_income_minor: 0,
+                total_expenses_minor: 0,
+                net_cash_flow_minor: 0,
+                excluded_transfer_total_minor: 0,
+                excluded_transfer_count: 0,
+            });
+        total.excluded_transfer_total_minor += transfer_total.total_amount_minor;
+        total.excluded_transfer_count += transfer_total.transfer_count;
+    }
+    Ok(totals.into_values().collect())
+}
+
+fn finance_category_totals(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<Vec<CategoryTotal>> {
+    let mut statement = connection.prepare(
+        "SELECT c.id, c.name, UPPER(tl.currency), SUM(-tl.amount_minor)
+         FROM transaction_lines tl
+         JOIN canonical_transactions ct ON ct.id = tl.canonical_transaction_id
+         JOIN categories c ON c.id = tl.category_id
+         WHERE ct.transaction_kind = 'expense'
+           AND ct.posted_date >= ?1 AND ct.posted_date <= ?2
+         GROUP BY c.id, c.name, UPPER(tl.currency)
+         ORDER BY UPPER(tl.currency), LOWER(c.name), c.id",
+    )?;
+    let rows = statement.query_map(params![start_date, end_date], |row| {
+        Ok(CategoryTotal {
+            category_id: row.get(0)?,
+            category_name: row.get(1)?,
+            currency: row.get(2)?,
+            total_expenses_minor: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn finance_income_source_totals(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<Vec<IncomeSourceTotal>> {
+    let mut statement = connection.prepare(
+        "SELECT income_sources.id, income_sources.name, UPPER(ct.currency), SUM(ct.amount_minor)
+         FROM canonical_transactions ct
+         JOIN income_sources ON income_sources.id = ct.income_source_id
+         WHERE ct.transaction_kind = 'income'
+           AND ct.posted_date >= ?1 AND ct.posted_date <= ?2
+         GROUP BY income_sources.id, income_sources.name, UPPER(ct.currency)
+         ORDER BY UPPER(ct.currency), LOWER(income_sources.name), income_sources.id",
+    )?;
+    let rows = statement.query_map(params![start_date, end_date], |row| {
+        Ok(IncomeSourceTotal {
+            income_source_id: row.get(0)?,
+            income_source_name: row.get(1)?,
+            currency: row.get(2)?,
+            total_income_minor: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn finance_excluded_transfer_totals(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<Vec<ExcludedTransferTotal>> {
+    let mut statement = connection.prepare(
+        "WITH transfer_rows AS (
+             SELECT transfer_kind, posted_date, UPPER(currency) AS currency, amount_minor
+             FROM canonical_transfer_pairs
+             UNION ALL
+             SELECT 'own_account_transfer' AS transfer_kind, posted_date,
+                    UPPER(currency) AS currency, amount_minor
+             FROM manual_transfer_pairs
+         )
+         SELECT transfer_kind, currency, SUM(amount_minor), COUNT(*)
+         FROM transfer_rows
+         WHERE posted_date >= ?1 AND posted_date <= ?2
+         GROUP BY transfer_kind, currency
+         ORDER BY currency, transfer_kind",
+    )?;
+    let rows = statement.query_map(params![start_date, end_date], |row| {
+        Ok(ExcludedTransferTotal {
+            transfer_kind: row.get(0)?,
+            currency: row.get(1)?,
+            total_amount_minor: row.get(2)?,
+            transfer_count: row.get(3)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+pub fn finance_report_error_response(
+    start_date: String,
+    end_date: String,
+    code: &'static str,
+    message: &'static str,
+    path: &'static str,
+) -> FinanceReportResponse {
+    finance_report_error(
+        ReportDateRange {
+            start_date,
+            end_date,
+        },
+        code,
+        message,
+        path,
+    )
+}
+
+fn finance_report_error(
+    date_range: ReportDateRange,
+    code: &'static str,
+    message: &'static str,
+    path: &'static str,
+) -> FinanceReportResponse {
+    FinanceReportResponse {
+        schema_version: FINANCE_REPORT_SCHEMA_VERSION,
+        command: "reports summary",
+        ok: false,
+        date_range,
+        totals: Vec::new(),
+        category_totals: Vec::new(),
+        income_source_totals: Vec::new(),
+        excluded_transfer_totals: Vec::new(),
+        errors: vec![ReviewError {
+            category: "validation_failure",
+            code,
+            message: message.to_string(),
+            path,
+            recoverable: true,
+            details: serde_json::json!({}),
+        }],
+    }
 }
 
 pub fn inspect_canonical_transaction(

@@ -41,11 +41,23 @@ tracky candidates reject --db /tmp/tracky-review.sqlite cand_REDACTED --json
 
 Only `candidates accept` creates or links a canonical transaction, and it preserves the audit path back to the candidate, provenance, source document, and import batch. `candidates reject` updates review state without deleting provenance or evidence.
 
+## Canonical finance reports
+
+Summarize an inclusive date range after review:
+
+```bash
+tracky reports summary --db /tmp/tracky-review.sqlite \
+  --start-date 2026-06-01 --end-date 2026-06-30 --json
+```
+
+The stable JSON report groups totals by currency and includes income, positive expense magnitudes, net cash flow, categories, income sources, and excluded transfer/card-payment totals. Candidate transactions never affect the report until accepted; rejected and still-pending candidates remain audit data only.
+
 ## Safety guardrails
 
 - Supply PDF passwords only at runtime, such as with `--password-env`; Tracky records the credential source, not the credential value.
 - Do not commit real PDFs, document credentials, account numbers, emails, addresses, counterparties, long identifiers, or unredacted financial data as fixtures or examples.
 - Treat `possible_duplicate` and `exact_duplicate` signals as review prompts. Tracky flags possible duplicates; it does not auto-merge, auto-accept, or auto-delete them.
+- Reports count each accepted transfer pair once and never classify its balancing canonical legs as income or expense.
 - Use redacted examples and synthetic identifiers in documentation and tests.
 
 ## Reference docs

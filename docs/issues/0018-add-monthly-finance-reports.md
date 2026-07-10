@@ -15,12 +15,12 @@ Reports must ignore pending/rejected candidates and must not count own-account t
 
 ## Acceptance criteria
 
-- [ ] A user can request a date-range report as stable JSON.
-- [ ] The report includes total income, total expenses, net, category totals, income-source totals, and transfer totals.
-- [ ] Pending and rejected candidates do not affect reports.
-- [ ] Own-account transfers/card payments are excluded from income and expense totals but visible as transfers.
-- [ ] Split transaction lines contribute to category totals correctly.
-- [ ] Tests cover accepted income, categorized expenses, split expenses, transfers, and rejected candidates.
+- [x] A user can request a date-range report as stable JSON.
+- [x] The report includes total income, total expenses, net, category totals, income-source totals, and transfer totals.
+- [x] Pending and rejected candidates do not affect reports.
+- [x] Own-account transfers/card payments are excluded from income and expense totals but visible as transfers.
+- [x] Split transaction lines contribute to category totals correctly.
+- [x] Tests cover accepted income, categorized expenses, split expenses, transfers, and rejected candidates.
 
 ## Blocked by
 

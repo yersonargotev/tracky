@@ -9,17 +9,19 @@ use crate::storage::{
     accept_candidate, accept_expense_candidate, accept_income_candidate, accept_transfer_pair,
     account_registry_error_response, apply_migrations, category_registry_error_response,
     create_category, create_income_source, create_manual_expense, create_manual_income,
-    create_manual_transfer, duplicate_import_response, find_source_document_by_hash,
-    income_source_registry_error_response, inspect_canonical_transaction,
-    list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
-    list_owned_accounts, list_review_candidates, persist_pdf_import, register_owned_account,
-    reject_candidate, replace_expense_transaction_lines, review_error_response,
+    create_manual_transfer, duplicate_import_response, finance_report_error_response,
+    find_source_document_by_hash, income_source_registry_error_response,
+    inspect_canonical_transaction, list_canonical_transactions, list_categories,
+    list_income_sources, list_likely_transfer_pairs, list_owned_accounts, list_review_candidates,
+    persist_pdf_import, register_owned_account, reject_candidate,
+    replace_expense_transaction_lines, review_error_response, summarize_finances,
     transfer_error_response, update_canonical_transaction, AccountRegisterInput,
     AccountRegistryResponse, CandidateReviewResponse, CategoryCreateInput,
-    CategoryRegistryResponse, ExpenseLineInput, ImportPdfResponse, IncomeSourceCreateInput,
-    IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput, ManualTransactionResponse,
-    ManualTransferInput, TransactionLedgerResponse, TransactionListFilter, TransactionUpdateInput,
-    TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
+    CategoryRegistryResponse, ExpenseLineInput, FinanceReportResponse, ImportPdfResponse,
+    IncomeSourceCreateInput, IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput,
+    ManualTransactionResponse, ManualTransferInput, TransactionLedgerResponse,
+    TransactionListFilter, TransactionUpdateInput, TransferReviewResponse,
+    IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -81,6 +83,7 @@ enum Commands {
     IncomeSources(IncomeSourcesCommand),
     Categories(CategoriesCommand),
     Transactions(TransactionsCommand),
+    Reports(ReportsCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -135,6 +138,12 @@ struct TransactionsCommand {
     command: TransactionCommands,
 }
 
+#[derive(Debug, Parser)]
+struct ReportsCommand {
+    #[command(subcommand)]
+    command: ReportCommands,
+}
+
 #[derive(Debug, Subcommand)]
 enum AccountCommands {
     Register(AccountRegisterArgs),
@@ -173,6 +182,23 @@ enum TransactionCommands {
     List(TransactionListArgs),
     Inspect(TransactionInspectArgs),
     Update(TransactionUpdateArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum ReportCommands {
+    Summary(FinanceReportArgs),
+}
+
+#[derive(Debug, Parser)]
+struct FinanceReportArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "start-date", value_name = "YYYY-MM-DD")]
+    start_date: String,
+    #[arg(long = "end-date", value_name = "YYYY-MM-DD")]
+    end_date: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -630,6 +656,9 @@ where
             TransactionCommands::Inspect(args) => transaction_inspect_command(args, &mut stdout),
             TransactionCommands::Update(args) => transaction_update_command(args, &mut stdout),
         },
+        Commands::Reports(reports) => match reports.command {
+            ReportCommands::Summary(args) => finance_report_command(args, &mut stdout),
+        },
     }
 }
 
@@ -1079,6 +1108,26 @@ fn transaction_update_command<W: Write>(
                 expense_lines,
             },
         )?,
+    )
+}
+
+fn finance_report_command<W: Write>(args: FinanceReportArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_finance_report_response(
+            stdout,
+            finance_report_error_response(
+                args.start_date,
+                args.end_date,
+                "json_output_required",
+                "The reports summary command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_finance_report_response(
+        stdout,
+        summarize_finances(&connection, &args.start_date, &args.end_date)?,
     )
 }
 
@@ -1573,6 +1622,13 @@ fn write_transaction_ledger_response<W: Write>(
         response,
         "writing transaction ledger JSON",
     )
+}
+
+fn write_finance_report_response<W: Write>(
+    stdout: &mut W,
+    response: FinanceReportResponse,
+) -> Result<i32> {
+    write_json_response(stdout, response.ok, response, "writing finance report JSON")
 }
 
 fn transaction_ledger_cli_error(
