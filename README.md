@@ -35,11 +35,10 @@ tracky candidates list \
   --import-batch-id batch_REDACTED \
   --json
 
-tracky candidates accept --db /tmp/tracky-review.sqlite cand_REDACTED --json
 tracky candidates reject --db /tmp/tracky-review.sqlite cand_REDACTED --json
 ```
 
-Only `candidates accept` creates or links a canonical transaction, and it preserves the audit path back to the candidate, provenance, source document, and import batch. `candidates reject` updates review state without deleting provenance or evidence.
+Use the typed accept command for every finance candidate: `accept-income` requires an income source and kind, `accept-expense` requires category lines, and `accept-transfer-pair` requires an explicit validated pair. The legacy `candidates accept` command refuses those shapes with a stable `required_command` error; `candidates reject` updates review state without deleting provenance or evidence.
 
 ### Review large batches safely
 

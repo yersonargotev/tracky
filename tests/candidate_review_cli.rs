@@ -134,6 +134,105 @@ fn register_account(
     .id
 }
 
+#[test]
+fn candidate_review_cli_generic_accept_refuses_typed_candidates_without_mutation() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet");
+    register_account(&connection, "rappi", "RappiCard", "credit_card");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "5555555555555555555555555555555555555555555555555555555555555555",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_generic_income",
+            description: "PAGO REDACTADO",
+            amount_minor: 125000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist synthetic income candidate");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "6666666666666666666666666666666666666666666666666666666666666666",
+            institution: "rappi",
+            account_label: "RappiCard",
+            candidate_id: "cand_generic_card_payment",
+            description: "PAGO PSE REDACTADO",
+            amount_minor: -125000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::CardPayment,
+        }),
+    )
+    .expect("persist synthetic card payment candidate");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "7777777777777777777777777777777777777777777777777777777777777777",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_generic_transfer_outflow",
+            description: "SALIDA PSE REDACTADA",
+            amount_minor: -125000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist synthetic transfer-like candidate");
+    drop(connection);
+
+    for (candidate_id, required_command) in [
+        ("cand_generic_income", "candidates accept-income"),
+        (
+            "cand_generic_card_payment",
+            "candidates accept-transfer-pair",
+        ),
+        (
+            "cand_generic_transfer_outflow",
+            "candidates accept-transfer-pair",
+        ),
+    ] {
+        let output = Command::new(tracky())
+            .args([
+                "candidates",
+                "accept",
+                candidate_id,
+                "--db",
+                db_path.to_str().unwrap(),
+                "--json",
+            ])
+            .output()
+            .expect("run generic candidate accept");
+        assert!(!output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error json");
+        assert_eq!(json["schema_version"], "tracky.candidate-review.v1");
+        assert_eq!(json["command"], "candidates accept");
+        assert_eq!(json["ok"], false);
+        assert_eq!(
+            json["errors"][0]["details"]["required_command"],
+            required_command
+        );
+    }
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    let counts: (i64, i64, i64) = connection
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM canonical_transactions),
+                (SELECT COUNT(*) FROM candidate_transactions WHERE status = 'pending_review'),
+                (SELECT COUNT(*) FROM candidate_transactions WHERE canonical_transaction_id IS NOT NULL)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read unchanged review storage");
+    assert_eq!(counts, (0, 3, 0));
+}
+
 struct TransferCandidateFixture<'a> {
     hash: &'a str,
     institution: &'a str,
@@ -274,7 +373,7 @@ fn persist_transfer_candidates(
 }
 
 #[test]
-fn candidate_review_cli_lists_accepts_and_rejects_with_audit_links() {
+fn candidate_review_cli_lists_refuses_typed_accept_and_rejects_with_audit_links() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("tracky.sqlite");
     let mut connection = Connection::open(&db_path).expect("open db");
@@ -338,23 +437,12 @@ fn candidate_review_cli_lists_accepts_and_rejects_with_audit_links() {
         ])
         .output()
         .expect("run candidates accept");
-    assert!(
-        accept_output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&accept_output.stderr)
-    );
+    assert!(!accept_output.status.success());
     let accept_json: serde_json::Value =
         serde_json::from_slice(&accept_output.stdout).expect("accept json");
-    assert_eq!(accept_json["ok"], true);
-    assert_eq!(accept_json["candidate"]["status"], "accepted");
-    let canonical_id = accept_json["canonical_transaction"]["id"].as_str().unwrap();
     assert_eq!(
-        accept_json["canonical_transaction"]["created_from_candidate_id"],
-        "cand_review_001"
-    );
-    assert_eq!(
-        accept_json["candidate"]["provenance"]["canonical_transaction_id"],
-        canonical_id
+        accept_json["errors"][0]["code"],
+        "candidate_requires_transfer_pair_review"
     );
 
     let reject_output = Command::new(tracky())
@@ -382,39 +470,20 @@ fn candidate_review_cli_lists_accepts_and_rejects_with_audit_links() {
         "cand_review_002"
     );
 
-    let double_accept = Command::new(tracky())
-        .args([
-            "candidates",
-            "accept",
-            "cand_review_001",
-            "--db",
-            db_path.to_str().unwrap(),
-            "--json",
-        ])
-        .output()
-        .expect("run second accept");
-    assert!(!double_accept.status.success());
-    let double_json: serde_json::Value =
-        serde_json::from_slice(&double_accept.stdout).expect("double json");
-    assert_eq!(
-        double_json["errors"][0]["code"],
-        "candidate_already_accepted"
-    );
-
     let connection = Connection::open(&db_path).expect("reopen db");
     let audit_links: (i64, i64, i64, i64, i64) = connection
         .query_row(
             "SELECT
                 (SELECT COUNT(*) FROM canonical_transactions),
-                (SELECT COUNT(*) FROM candidate_transactions WHERE id = 'cand_review_001' AND status = 'accepted' AND canonical_transaction_id IS NOT NULL),
-                (SELECT COUNT(*) FROM provenance WHERE candidate_transaction_id = 'cand_review_001' AND canonical_transaction_id IS NOT NULL),
-                (SELECT COUNT(*) FROM transaction_fingerprints WHERE candidate_transaction_id IS NULL AND canonical_transaction_id IS NOT NULL),
+                (SELECT COUNT(*) FROM candidate_transactions WHERE id = 'cand_review_001' AND status = 'possible_duplicate' AND canonical_transaction_id IS NULL),
+                (SELECT COUNT(*) FROM provenance WHERE candidate_transaction_id = 'cand_review_001' AND canonical_transaction_id IS NULL),
+                (SELECT COUNT(*) FROM transaction_fingerprints WHERE candidate_transaction_id = 'cand_review_001' AND canonical_transaction_id IS NULL),
                 (SELECT COUNT(*) FROM provenance WHERE candidate_transaction_id = 'cand_review_002' AND canonical_transaction_id IS NULL)",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         )
         .expect("read audit links");
-    assert_eq!(audit_links, (1, 1, 1, 1, 1));
+    assert_eq!(audit_links, (0, 1, 1, 1, 1));
 }
 
 #[test]

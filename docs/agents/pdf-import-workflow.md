@@ -6,7 +6,7 @@ This guide describes the current CLI/JSON path for Tracky's review-first PDF imp
 
 - `tracky pdf inspect` is read-only. It returns transient candidate-shaped JSON and does not write SQLite data.
 - `tracky import pdf` writes a `SourceDocument`, `ImportBatch`, `Provenance`, duplicate markers, and **candidate transactions** only. It must not create canonical transactions.
-- Canonical transactions appear only after an explicit `tracky candidates accept` action.
+- Canonical transactions appear only after an explicit typed review action: `candidates accept-income`, `candidates accept-expense`, or `candidates accept-transfer-pair`. The legacy generic `candidates accept` refuses typed finance candidates.
 - Do not drop or hide provenance when reviewing candidates. Accepted and rejected decisions must remain auditable through the source document, import batch, parser/extractor evidence, and candidate id.
 - Do not use real PDFs, unredacted account data, passwords, emails, addresses, counterparties, long identifiers, or full amounts as committed fixtures or examples.
 
@@ -109,13 +109,9 @@ tracky candidates apply-actions --db /tmp/tracky-review.sqlite \
 
 Remove `--dry-run` only after inspecting every `action_results[]` entry. Apply preflights the complete set and then writes one SQLite transaction; if one candidate is missing, already reviewed, reused across actions, not an obvious exact duplicate, or fails the individual transfer validation, Tracky applies none of the actions. Deterministic suggestion ids are not persisted or accepted by apply in this slice, so candidate ids must always be explicit.
 
-### 4. Accept or reject explicitly
+### 4. Reject or review explicitly
 
 Accept only candidates that have been reviewed and whose provenance/evidence still supports the transaction.
-
-```bash
-tracky candidates accept --db /tmp/tracky-review.sqlite cand_REDACTED --json
-```
 
 Reject candidates that should not become canonical, while preserving audit history.
 
@@ -123,7 +119,7 @@ Reject candidates that should not become canonical, while preserving audit histo
 tracky candidates reject --db /tmp/tracky-review.sqlite cand_REDACTED --json
 ```
 
-Accepting a candidate creates or links a canonical transaction and keeps the trace back to the candidate, source document, import batch, and provenance. Rejecting updates candidate state without deleting the evidence trail.
+Do not use the legacy generic accept command for typed finance candidates. It refuses inflows, card payments, and transfer-like candidates with a stable JSON error naming the required typed command. The typed commands below create or link canonical transactions while keeping the trace back to the candidate, source document, import batch, and provenance. Rejecting updates candidate state without deleting the evidence trail.
 
 ### 5. Accept explicit income inflows
 

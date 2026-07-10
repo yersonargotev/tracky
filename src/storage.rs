@@ -3144,6 +3144,40 @@ pub fn accept_candidate(
             serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
         ));
     }
+    if is_income_candidate_shape(&candidate) {
+        return Ok(review_error_response(
+            "candidates accept",
+            "conflict",
+            "candidate_requires_income_review",
+            "Inflow candidates require explicit income source and kind metadata.".to_string(),
+            "candidate",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "direction_hint": candidate.direction_hint,
+                "semantic_hint": candidate.semantic_hint,
+                "required_command": "candidates accept-income",
+            }),
+        ));
+    }
+    if candidate.semantic_hint.as_deref() == Some("card_payment")
+        || has_matching_owned_account_counterparty_candidate(&tx, &candidate)?
+    {
+        return Ok(review_error_response(
+            "candidates accept",
+            "conflict",
+            "candidate_requires_transfer_pair_review",
+            "Transfer-like candidates require an explicit validated transfer pair.".to_string(),
+            "candidate",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "direction_hint": candidate.direction_hint,
+                "semantic_hint": candidate.semantic_hint,
+                "required_command": "candidates accept-transfer-pair",
+            }),
+        ));
+    }
     if is_expense_candidate_shape(&candidate) {
         return Ok(review_error_response(
             "candidates accept",

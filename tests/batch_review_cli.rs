@@ -9,8 +9,9 @@ use tracky::pdf::{
     PDF_INSPECT_SCHEMA_VERSION,
 };
 use tracky::storage::{
-    accept_candidate, apply_migrations, persist_pdf_import, register_owned_account,
-    reject_candidate, AccountRegisterInput,
+    accept_expense_candidate, apply_migrations, create_category, persist_pdf_import,
+    register_owned_account, reject_candidate, AccountRegisterInput, CategoryCreateInput,
+    ExpenseLineInput,
 };
 
 const HASH: &str = "1919191919191919191919191919191919191919191919191919191919191919";
@@ -159,7 +160,7 @@ fn inspect_response() -> PdfInspectResponse {
             account_label: "Nequi wallet",
             amount_minor: -300,
             direction_hint: DirectionHint::Outflow,
-            semantic_hint: SemanticHint::CardPayment,
+            semantic_hint: SemanticHint::CardCharge,
             row_index: 5,
         }),
         candidate(CandidateSpec {
@@ -277,10 +278,28 @@ fn fixture() -> Fixture {
         .expect("seed canonical fingerprint");
     let imported = persist_pdf_import(&mut connection, inspect_response()).expect("persist batch");
     let batch_id = imported.import_batch.expect("batch").id;
+    let category = create_category(
+        &connection,
+        CategoryCreateInput {
+            name: "Synthetic review category".to_string(),
+        },
+    )
+    .expect("create fixture category")
+    .category
+    .expect("fixture category")
+    .id;
     assert!(
-        accept_candidate(&mut connection, "cand_accepted")
-            .expect("accept fixture candidate")
-            .ok
+        accept_expense_candidate(
+            &mut connection,
+            "cand_accepted",
+            &[ExpenseLineInput {
+                category_id: category,
+                amount_minor: -300,
+                currency: "COP".to_string(),
+            }],
+        )
+        .expect("accept fixture expense")
+        .ok
     );
     assert!(
         reject_candidate(&mut connection, "cand_rejected")

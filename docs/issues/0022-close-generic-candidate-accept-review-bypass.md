@@ -15,13 +15,13 @@ The audit reproduced two unsafe successes: a Nequi inflow became canonical witho
 
 ## Acceptance criteria
 
-- [ ] Generic `candidates accept` cannot promote a `bank_movement` inflow without explicit income source and kind metadata.
-- [ ] Generic `candidates accept` cannot promote `card_payment` or transfer-like candidates without an explicit validated transfer pair.
-- [ ] Existing expense/category guardrails remain enforced.
-- [ ] Refused generic accepts return stable JSON errors naming the required specialized command and leave candidates/canonical storage unchanged.
-- [ ] Reports cannot receive a new unclassified canonical income, expense, or card-payment record through this bypass.
-- [ ] README and agent workflow examples no longer recommend generic accept where a typed review action is required.
-- [ ] CLI integration tests cover the inflow and card-payment regressions plus storage non-mutation.
+- [x] Generic `candidates accept` cannot promote a `bank_movement` inflow without explicit income source and kind metadata.
+- [x] Generic `candidates accept` cannot promote `card_payment` or transfer-like candidates without an explicit validated transfer pair.
+- [x] Existing expense/category guardrails remain enforced.
+- [x] Refused generic accepts return stable JSON errors naming the required specialized command and leave candidates/canonical storage unchanged.
+- [x] Reports cannot receive a new unclassified canonical income, expense, or card-payment record through this bypass.
+- [x] README and agent workflow examples no longer recommend generic accept where a typed review action is required.
+- [x] CLI integration tests cover the inflow and card-payment regressions plus storage non-mutation.
 
 ## Blocked by
 

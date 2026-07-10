@@ -10,7 +10,7 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky import pdf` | Yes, once implemented | Persists candidate transactions in an import batch | Never |
 | `tracky accounts register/list` | Yes for register, no for list | No | Never |
 | `tracky candidates list/reject` | Yes for reject, no for list | No | Never |
-| `tracky candidates accept` | Yes | No new candidates | Creates one canonical transaction from one eligible non-specialized candidate |
+| `tracky candidates accept` | Yes | No new candidates | Legacy compatibility path only; refuses typed finance candidates and returns `required_command` |
 | `tracky income-sources create/list` | Yes for create, no for list | No | Never |
 | `tracky candidates accept-income` | Yes | No new candidates | Creates one canonical income transaction from one eligible candidate |
 | `tracky categories create/list` | Yes for create, no for list | No | Never |
@@ -487,10 +487,10 @@ Issue 0007 adds the first explicit review actions. These commands are separate f
 | Command | Writes storage? | Creates canonical transactions? |
 | --- | --- | --- |
 | `tracky candidates list --db <PATH> --json` | No | Never |
-| `tracky candidates accept <CANDIDATE_ID> --db <PATH> --json` | Yes | Yes, exactly one canonical transaction for an eligible candidate |
+| `tracky candidates accept <CANDIDATE_ID> --db <PATH> --json` | Yes | Only for a legacy non-specialized candidate; typed candidates are refused without mutation |
 | `tracky candidates reject <CANDIDATE_ID> --db <PATH> --json` | Yes | Never |
 
-All three commands return `schema_version: "tracky.candidate-review.v1"` and machine-readable JSON. `accept` only accepts candidates in `pending_review` or `possible_duplicate` state. It sets the candidate to `accepted`, creates a canonical transaction, links the candidate and provenance to that canonical transaction, and keeps the original candidate/provenance audit trail. `reject` sets the candidate to `rejected` without deleting provenance, fingerprints, or duplicate markers. Re-accepting an accepted candidate returns a stable `candidate_already_accepted` error.
+All three commands return `schema_version: "tracky.candidate-review.v1"` and machine-readable JSON. The legacy `accept` path refuses positive `bank_movement` inflows with `required_command: "candidates accept-income"`, `card_payment` and transfer-like candidates with `required_command: "candidates accept-transfer-pair"`, and purchase candidates with `required_command: "candidates accept-expense"`. These refusals do not change candidate status or create canonical transactions. `reject` sets the candidate to `rejected` without deleting provenance, fingerprints, or duplicate markers. Re-accepting an accepted candidate returns a stable `candidate_already_accepted` error.
 
 ## Own-account transfer/card-payment review JSON contract
 
