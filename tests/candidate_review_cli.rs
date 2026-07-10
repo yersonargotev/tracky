@@ -990,6 +990,125 @@ fn candidate_review_cli_accepts_nequi_income_with_explicit_source_and_kind() {
 }
 
 #[test]
+fn candidate_review_cli_accepts_investment_outflow_pending_allocation_with_provenance() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    let account_id = register_account(&connection, "nequi", "Synthetic wallet", "wallet");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "abababababababababababababababababababababababababababababababab",
+            institution: "nequi",
+            account_label: "Synthetic wallet",
+            candidate_id: "cand_synthetic_investment",
+            description: "SYNTHETIC INVESTMENT OUTFLOW",
+            amount_minor: -2_000_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist investment candidate");
+    drop(connection);
+
+    let output = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-investment",
+            "cand_synthetic_investment",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("accept investment candidate");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("accept JSON");
+    assert_eq!(json["command"], "candidates accept-investment");
+    assert_eq!(json["candidate"]["status"], "accepted");
+    assert_eq!(json["candidate"]["account_id"], account_id);
+    assert_eq!(
+        json["canonical_transaction"]["transaction_kind"],
+        "investment_contribution"
+    );
+    assert_eq!(
+        json["canonical_transaction"]["investment_allocation_status"],
+        "pending_allocation"
+    );
+    assert_eq!(json["canonical_transaction"]["amount_minor"], -2_000_000);
+    assert_eq!(json["canonical_transaction"]["currency"], "COP");
+    assert_eq!(
+        json["canonical_transaction"]["description"],
+        "SYNTHETIC INVESTMENT OUTFLOW"
+    );
+    assert_eq!(
+        json["candidate"]["provenance"]["canonical_transaction_id"],
+        json["canonical_transaction"]["id"]
+    );
+}
+
+#[test]
+fn candidate_review_cli_rejects_incompatible_investment_action_without_mutation() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Synthetic wallet", "wallet");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            institution: "nequi",
+            account_label: "Synthetic wallet",
+            candidate_id: "cand_synthetic_inflow_not_investment",
+            description: "SYNTHETIC INFLOW",
+            amount_minor: 500_000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist incompatible candidate");
+    drop(connection);
+
+    let output = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-investment",
+            "cand_synthetic_inflow_not_investment",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("reject incompatible investment action");
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error JSON");
+    assert_eq!(
+        json["errors"][0]["code"],
+        "candidate_not_investment_eligible"
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen database");
+    let state: (String, Option<String>, i64) = connection
+        .query_row(
+            "SELECT status, canonical_transaction_id,
+                    (SELECT COUNT(*) FROM canonical_transactions)
+             FROM candidate_transactions WHERE id = ?1",
+            ["cand_synthetic_inflow_not_investment"],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read unchanged state");
+    assert_eq!(state, ("pending_review".to_string(), None, 0));
+}
+
+#[test]
 fn candidate_review_cli_refuses_non_income_transfer_like_or_already_reviewed_income() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("tracky.sqlite");

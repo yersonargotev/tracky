@@ -15,13 +15,14 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky candidates accept-income` | Yes | No new candidates | Creates one canonical income transaction from one eligible candidate |
 | `tracky categories create/list` | Yes for create, no for list | No | Never |
 | `tracky candidates accept-expense` | Yes | No new candidates | Creates one canonical expense transaction and one or more balanced category lines from one eligible candidate |
+| `tracky candidates accept-investment` | Yes | No new candidates | Creates one canonical investment contribution pending allocation from one eligible bank outflow |
 | `tracky candidates set-expense-lines` | Yes | No new candidates | Replaces the category lines of an accepted canonical expense while preserving candidate provenance |
 | `tracky candidates list-transfer-pairs` | No | No | Never |
 | `tracky candidates accept-transfer-pair` | Yes | No new candidates | Creates two canonical own-account transfer legs from one eligible pair |
 | `tracky candidates batch-summary/compare-duplicate/suggest-actions` | No | No | Never |
 | `tracky candidates apply-actions --dry-run` | No | No | Never |
 | `tracky candidates apply-actions` | Yes, atomically after full preflight | No new candidates | Rejects exact reviewed duplicates or creates validated transfer pairs only when explicit candidate ids are supplied |
-| `tracky transactions add-expense/add-income/add-transfer` | Yes | No | Creates direct manual canonical expense/income rows or two balanced transfer legs with distinct manual provenance |
+| `tracky transactions add-expense/add-income/add-investment/add-transfer` | Yes | No | Creates direct manual canonical expense, income, or pending-allocation investment rows, or two balanced transfer legs, with distinct manual provenance |
 
 Out of scope for this contract: parser implementation, SQLite migration internals, TUI review, MCP wrappers, AI fallback, and password storage.
 
@@ -353,6 +354,10 @@ Eligible first-slice expense candidates are:
 
 `accept-expense` refuses income/inflows, `card_payment` rows, likely own-account transfer outflows that match an unreviewed owned counterparty candidate (including card-payment rows or bank/wallet inflows), missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
 
+## Investment contribution acceptance JSON
+
+`tracky candidates accept-investment CANDIDATE_ID --json` uses `tracky.candidate-review.v1`. It accepts only an unreviewed negative `bank_movement` outflow that is not a likely own-account transfer. The canonical row keeps the candidate account, date, signed amount, currency, description, and provenance link, with `transaction_kind: "investment_contribution"` and `investment_allocation_status: "pending_allocation"`. Stable refusal codes include `candidate_not_investment_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, and `candidate_already_rejected`.
+
 ## Manual canonical transaction JSON
 
 Manual entry is an explicit route outside PDF inspection/import. All commands require `--json` and return `schema_version: "tracky.manual-transactions.v1"`; they never create source documents, import batches, or candidates.
@@ -361,6 +366,7 @@ Manual entry is an explicit route outside PDF inspection/import. All commands re
 | --- | --- | --- |
 | `tracky transactions add-expense --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor NEGATIVE --currency CODE --category-id ID --json` | Yes | One `expense` canonical transaction and one categorized line. `--line CATEGORY_ID:AMOUNT_MINOR:CURRENCY` may be repeated for a balanced split instead of `--category-id`. |
 | `tracky transactions add-income --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor POSITIVE --currency CODE --income-source-id ID --income-kind KIND --json` | Yes | One `income` canonical transaction. |
+| `tracky transactions add-investment --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor NEGATIVE --currency CODE --json` | Yes | One `investment_contribution` canonical transaction with `investment_allocation_status: "pending_allocation"`. |
 | `tracky transactions add-transfer --db <PATH> --from-account-id ID --to-account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor POSITIVE --currency CODE --json` | Yes | Two balancing `own_account_transfer` canonical legs and one manual transfer-pair record. |
 
 Each successful response includes `canonical_transactions[]` and distinct manual audit metadata:
@@ -377,7 +383,7 @@ Each successful response includes `canonical_transactions[]` and distinct manual
 }
 ```
 
-Manual commands require registered owned accounts whose currency matches the submitted currency. Expenses must use negative minor units, income and transfer amounts must be positive, expense categories and income sources must exist, and split expense lines must reconcile exactly. Transfers require two distinct owned accounts and write one negative and one positive leg of the same amount/currency; they are not income or expenses. Stable validation codes include `owned_account_not_found`, `account_currency_mismatch`, `invalid_amount_sign`, `income_source_not_found`, `invalid_income_kind`, `category_not_found`, `expense_lines_unbalanced`, and `transfer_accounts_must_differ`.
+Manual commands require registered owned accounts whose currency matches the submitted currency. Expenses and investment contributions must use negative minor units; income and transfer amounts must be positive. Expense categories and income sources must exist, and split expense lines must reconcile exactly. Transfers require two distinct owned accounts and write one negative and one positive leg of the same amount/currency; they are not income or expenses. Stable validation codes include `owned_account_not_found`, `account_currency_mismatch`, `invalid_amount_sign`, `income_source_not_found`, `invalid_income_kind`, `category_not_found`, `expense_lines_unbalanced`, and `transfer_accounts_must_differ`.
 
 ## Stable errors
 
@@ -530,7 +536,7 @@ A successful inspection/update returns `canonical_transaction`, optional `candid
 
 `tracky reports summary --db <PATH> --start-date YYYY-MM-DD --end-date YYYY-MM-DD --json` uses `tracky.finance-report.v1`. Both range endpoints are required and inclusive. The command reads canonical transactions and transfer-pair records only; candidate rows in `pending_review`, `possible_duplicate`, or `rejected` state cannot affect the report.
 
-Because canonical accounts may use different currencies, the report never combines unlike currencies into one number. `totals[]`, `category_totals[]`, `income_source_totals[]`, and `excluded_transfer_totals[]` are deterministically ordered and identify their currency explicitly. Expense totals are positive magnitudes even though canonical expense rows and transaction lines use negative amounts. `net_cash_flow_minor` is `total_income_minor - total_expenses_minor`.
+Because canonical accounts may use different currencies, the report never combines unlike currencies into one number. `totals[]`, `category_totals[]`, `income_source_totals[]`, `excluded_transfer_totals[]`, and `investment_contribution_totals[]` are deterministically ordered and identify their currency explicitly. Expense and investment-contribution totals are positive magnitudes even though their canonical rows use negative amounts. Investment principal appears only in `investment_contribution_totals[]`; it does not affect income, expense, category, or net-cash-flow totals.
 
 ```json
 {
@@ -579,6 +585,13 @@ Because canonical accounts may use different currencies, the report never combin
       "currency": "COP",
       "total_amount_minor": 120000,
       "transfer_count": 1
+    }
+  ],
+  "investment_contribution_totals": [
+    {
+      "currency": "COP",
+      "total_contributed_minor": 2000000,
+      "contribution_count": 1
     }
   ],
   "errors": []

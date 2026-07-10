@@ -463,6 +463,106 @@ fn report_summarizes_only_canonical_activity_without_double_counting_splits_or_t
 }
 
 #[test]
+fn report_exposes_investment_contributions_separately_by_date_and_currency() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tracky.sqlite");
+    let db = path.to_str().unwrap();
+    let connection = Connection::open(&path).unwrap();
+    apply_migrations(&connection).unwrap();
+    let account_id = register_account(&connection, "nequi", "Synthetic wallet", "wallet");
+    let usd_account_id = register_owned_account(
+        &connection,
+        AccountRegisterInput {
+            institution: "synthetic_fx".to_string(),
+            label: "Synthetic USD account".to_string(),
+            account_type: "wallet".to_string(),
+            currency: "USD".to_string(),
+            masked_identifier: None,
+        },
+    )
+    .unwrap()
+    .account
+    .unwrap()
+    .id;
+    drop(connection);
+
+    for (date, amount) in [("2026-06-15", "-2000000"), ("2026-07-01", "-900000")] {
+        let (ok, json) = run(&[
+            "transactions",
+            "add-investment",
+            "--db",
+            db,
+            "--account-id",
+            &account_id,
+            "--posted-date",
+            date,
+            "--description",
+            "Synthetic investment",
+            "--amount-minor",
+            amount,
+            "--currency",
+            "COP",
+            "--json",
+        ]);
+        assert!(ok, "{json}");
+    }
+    let (ok, json) = run(&[
+        "transactions",
+        "add-investment",
+        "--db",
+        db,
+        "--account-id",
+        &usd_account_id,
+        "--posted-date",
+        "2026-06-20",
+        "--description",
+        "Synthetic USD investment",
+        "--amount-minor",
+        "-25000",
+        "--currency",
+        "USD",
+        "--json",
+    ]);
+    assert!(ok, "{json}");
+
+    let (ok, report) = run(&[
+        "reports",
+        "summary",
+        "--db",
+        db,
+        "--start-date",
+        "2026-06-01",
+        "--end-date",
+        "2026-06-30",
+        "--json",
+    ]);
+    assert!(ok, "{report}");
+    assert_eq!(
+        report["investment_contribution_totals"][0]["currency"],
+        "COP"
+    );
+    assert_eq!(
+        report["investment_contribution_totals"][0]["total_contributed_minor"],
+        2_000_000
+    );
+    assert_eq!(
+        report["investment_contribution_totals"][0]["contribution_count"],
+        1
+    );
+    assert_eq!(
+        report["investment_contribution_totals"][1]["currency"],
+        "USD"
+    );
+    assert_eq!(
+        report["investment_contribution_totals"][1]["total_contributed_minor"],
+        25_000
+    );
+    assert_eq!(report["totals"], serde_json::json!([]));
+    assert_eq!(report["category_totals"], serde_json::json!([]));
+    assert_eq!(report["income_source_totals"], serde_json::json!([]));
+}
+
+#[test]
 fn report_requires_json_and_valid_inclusive_date_range() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("tracky.sqlite");

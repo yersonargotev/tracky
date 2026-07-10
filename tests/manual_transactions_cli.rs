@@ -178,6 +178,81 @@ fn manual_transactions_cli_creates_expense_income_and_balanced_transfer_with_man
 }
 
 #[test]
+fn manual_investment_cli_records_pending_allocation_with_manual_audit() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let cash = register_account(db, "nequi", "Synthetic wallet");
+
+    let investment = run(&[
+        "transactions",
+        "add-investment",
+        "--db",
+        db,
+        "--account-id",
+        &cash,
+        "--posted-date",
+        "2026-07-09",
+        "--description",
+        "Synthetic unallocated investment",
+        "--amount-minor",
+        "-750000",
+        "--currency",
+        "COP",
+        "--json",
+    ]);
+    assert_eq!(investment["command"], "transactions add-investment");
+    assert_eq!(investment["canonical_transactions"][0]["account_id"], cash);
+    assert_eq!(
+        investment["canonical_transactions"][0]["transaction_kind"],
+        "investment_contribution"
+    );
+    assert_eq!(
+        investment["canonical_transactions"][0]["investment_allocation_status"],
+        "pending_allocation"
+    );
+    assert_eq!(investment["provenance"][0]["source"], "manual_entry");
+}
+
+#[test]
+fn manual_investment_cli_rejects_invalid_input_without_partial_mutation() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let cash = register_account(db, "nequi", "Synthetic wallet");
+    let output = Command::new(tracky())
+        .args([
+            "transactions",
+            "add-investment",
+            "--db",
+            db,
+            "--account-id",
+            &cash,
+            "--posted-date",
+            "2026-07-09",
+            "--description",
+            "Invalid positive investment",
+            "--amount-minor",
+            "750000",
+            "--currency",
+            "COP",
+            "--json",
+        ])
+        .output()
+        .expect("run invalid investment");
+    assert!(!output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error JSON");
+    assert_eq!(json["errors"][0]["code"], "invalid_amount_sign");
+    let connection = Connection::open(&db_path).expect("open database");
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM canonical_transactions", [], |row| {
+            row.get(0)
+        })
+        .expect("count canonical rows");
+    assert_eq!(count, 0);
+}
+
+#[test]
 fn manual_transactions_cli_refuses_invalid_signs_currency_categories_and_unbalanced_transfers() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("tracky.sqlite");

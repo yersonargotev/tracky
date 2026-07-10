@@ -42,6 +42,14 @@ Una transacción que aumenta el patrimonio neto del usuario, como nómina, inter
 
 Un movimiento entre cuentas propias que no debe contarse como gasto ni ingreso, como pagar una tarjeta de crédito Rappi o Nu desde Nequi.
 
+### Aporte de inversión
+
+Una salida confirmada de capital destinada a inversión. El principal no es gasto de consumo ni ingreso y permanece ligado a su cuenta de origen, fecha, monto, moneda, descripción y provenance.
+
+### Asignación pendiente
+
+Estado explícito de un aporte de inversión cuyo instrumento o cantidad adquirida todavía no se conoce. Tracky conserva el aporte sin inventar una posición ni degradarlo a gasto.
+
 ### Documento fuente
 
 Un archivo importado, como un extracto bancario PDF, del que se extraen transacciones candidatas. Debe tener una huella de archivo para evitar reimportaciones exactas.

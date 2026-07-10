@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS canonical_transactions (
     currency TEXT NOT NULL,
     balance_minor INTEGER,
     transaction_kind TEXT,
+    investment_allocation_status TEXT CHECK (investment_allocation_status IN ('pending_allocation')),
     income_source_id TEXT REFERENCES income_sources(id),
     income_kind TEXT CHECK (income_kind IN ('salary', 'freelance', 'client_payment', 'sale', 'interest', 'reimbursement', 'other')),
     created_from_candidate_id TEXT UNIQUE REFERENCES candidate_transactions(id),

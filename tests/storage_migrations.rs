@@ -118,6 +118,37 @@ fn migrations_add_semantic_hint_to_existing_candidate_transactions() {
 }
 
 #[test]
+fn migrations_add_pending_investment_allocation_to_existing_canonical_ledger() {
+    let (_dir, connection) = temporary_database();
+    connection
+        .execute_batch(
+            "CREATE TABLE canonical_transactions (
+                id TEXT PRIMARY KEY,
+                posted_date TEXT NOT NULL,
+                description TEXT NOT NULL,
+                amount_minor INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                transaction_kind TEXT
+            );
+            INSERT INTO canonical_transactions (
+                id, posted_date, description, amount_minor, currency, transaction_kind
+            ) VALUES ('txn_legacy', '2026-07-01', 'Legacy expense', -1000, 'COP', 'expense');",
+        )
+        .expect("seed legacy canonical ledger");
+
+    apply_migrations(&connection).expect("apply migrations");
+
+    let allocation_status: Option<String> = connection
+        .query_row(
+            "SELECT investment_allocation_status FROM canonical_transactions WHERE id = 'txn_legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read nullable allocation status");
+    assert_eq!(allocation_status, None);
+}
+
+#[test]
 fn can_insert_and_read_core_review_first_records_without_canonical_promotion() {
     let (_dir, connection) = temporary_database();
     apply_migrations(&connection).expect("apply migrations");

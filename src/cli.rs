@@ -6,11 +6,12 @@ use crate::pdf::{
     PDF_INSPECT_SCHEMA_VERSION,
 };
 use crate::storage::{
-    accept_candidate, accept_expense_candidate, accept_income_candidate, accept_transfer_pair,
-    account_registry_error_response, apply_batch_actions, apply_migrations,
-    batch_review_error_response, batch_review_error_response_with_dry_run,
-    category_registry_error_response, compare_duplicate_candidate, create_category,
-    create_income_source, create_manual_expense, create_manual_income, create_manual_transfer,
+    accept_candidate, accept_expense_candidate, accept_income_candidate,
+    accept_investment_candidate, accept_transfer_pair, account_registry_error_response,
+    apply_batch_actions, apply_migrations, batch_review_error_response,
+    batch_review_error_response_with_dry_run, category_registry_error_response,
+    compare_duplicate_candidate, create_category, create_income_source, create_manual_expense,
+    create_manual_income, create_manual_investment, create_manual_transfer,
     duplicate_import_response, finance_report_error_response, find_source_document_by_hash,
     income_source_registry_error_response, inspect_canonical_transaction,
     list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
@@ -21,9 +22,9 @@ use crate::storage::{
     BatchActionRequest, BatchReviewResponse, CandidateReviewResponse, CategoryCreateInput,
     CategoryRegistryResponse, ExpenseLineInput, FinanceReportResponse, ImportPdfResponse,
     IncomeSourceCreateInput, IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput,
-    ManualTransactionResponse, ManualTransferInput, TransactionLedgerResponse,
-    TransactionListFilter, TransactionUpdateInput, TransferReviewResponse,
-    IMPORT_PDF_SCHEMA_VERSION,
+    ManualInvestmentInput, ManualTransactionResponse, ManualTransferInput,
+    TransactionLedgerResponse, TransactionListFilter, TransactionUpdateInput,
+    TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -162,6 +163,7 @@ enum CandidateCommands {
     Accept(CandidateActionArgs),
     AcceptIncome(CandidateIncomeAcceptArgs),
     AcceptExpense(CandidateExpenseAcceptArgs),
+    AcceptInvestment(CandidateActionArgs),
     SetExpenseLines(CandidateExpenseLinesArgs),
     Reject(CandidateActionArgs),
     ListTransferPairs(CandidateTransferListArgs),
@@ -184,6 +186,7 @@ enum CategoryCommands {
 enum TransactionCommands {
     AddExpense(ManualExpenseArgs),
     AddIncome(ManualIncomeArgs),
+    AddInvestment(ManualInvestmentArgs),
     AddTransfer(ManualTransferArgs),
     List(TransactionListArgs),
     Inspect(TransactionInspectArgs),
@@ -305,6 +308,28 @@ struct ManualIncomeArgs {
     income_source_id: String,
     #[arg(long = "income-kind", value_name = "KIND")]
     income_kind: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ManualInvestmentArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "account-id", value_name = "ID")]
+    account_id: String,
+    #[arg(long = "posted-date", value_name = "YYYY-MM-DD")]
+    posted_date: String,
+    #[arg(long, value_name = "TEXT")]
+    description: String,
+    #[arg(
+        long = "amount-minor",
+        value_name = "AMOUNT",
+        allow_hyphen_values = true
+    )]
+    amount_minor: i64,
+    #[arg(long, value_name = "CURRENCY")]
+    currency: String,
     #[arg(long)]
     json: bool,
 }
@@ -687,6 +712,9 @@ where
             CandidateCommands::AcceptExpense(args) => {
                 candidate_accept_expense_command(args, &mut stdout)
             }
+            CandidateCommands::AcceptInvestment(args) => {
+                candidate_accept_investment_command(args, &mut stdout)
+            }
             CandidateCommands::SetExpenseLines(args) => {
                 candidate_set_expense_lines_command(args, &mut stdout)
             }
@@ -713,6 +741,9 @@ where
         Commands::Transactions(transactions) => match transactions.command {
             TransactionCommands::AddExpense(args) => manual_expense_command(args, &mut stdout),
             TransactionCommands::AddIncome(args) => manual_income_command(args, &mut stdout),
+            TransactionCommands::AddInvestment(args) => {
+                manual_investment_command(args, &mut stdout)
+            }
             TransactionCommands::AddTransfer(args) => manual_transfer_command(args, &mut stdout),
             TransactionCommands::List(args) => transaction_list_command(args, &mut stdout),
             TransactionCommands::Inspect(args) => transaction_inspect_command(args, &mut stdout),
@@ -1063,6 +1094,28 @@ where
             currency: args.currency,
             income_source_id: args.income_source_id,
             income_kind: args.income_kind,
+        },
+    )?;
+    write_manual_transaction_response(stdout, response)
+}
+
+fn manual_investment_command<W>(args: ManualInvestmentArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_manual_json(args.json, stdout, "transactions add-investment")?
+    {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = create_manual_investment(
+        &mut connection,
+        ManualInvestmentInput {
+            account_id: args.account_id,
+            posted_date: args.posted_date,
+            description: args.description,
+            amount_minor: args.amount_minor,
+            currency: args.currency,
         },
     )?;
     write_manual_transaction_response(stdout, response)
@@ -1475,6 +1528,22 @@ where
     let mut connection = open_review_database(&args.db)?;
     let response = accept_expense_candidate(&mut connection, &args.candidate_id, &lines)?;
     write_candidate_review_response(stdout, response)
+}
+
+fn candidate_accept_investment_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) =
+        require_candidate_json(args.json, stdout, "candidates accept-investment")?
+    {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    write_candidate_review_response(
+        stdout,
+        accept_investment_candidate(&mut connection, &args.candidate_id)?,
+    )
 }
 
 fn candidate_set_expense_lines_command<W>(

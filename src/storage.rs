@@ -205,6 +205,8 @@ pub struct CanonicalTransaction {
     pub balance_minor: Option<i64>,
     pub transaction_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub investment_allocation_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub income_source_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub income_kind: Option<String>,
@@ -312,7 +314,15 @@ pub struct FinanceReportResponse {
     pub category_totals: Vec<CategoryTotal>,
     pub income_source_totals: Vec<IncomeSourceTotal>,
     pub excluded_transfer_totals: Vec<ExcludedTransferTotal>,
+    pub investment_contribution_totals: Vec<InvestmentContributionTotal>,
     pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct InvestmentContributionTotal {
+    pub currency: String,
+    pub total_contributed_minor: i64,
+    pub contribution_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -528,6 +538,15 @@ pub struct ManualTransferInput {
     pub currency: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualInvestmentInput {
+    pub account_id: String,
+    pub posted_date: String,
+    pub description: String,
+    pub amount_minor: i64,
+    pub currency: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ManualProvenance {
     pub source: &'static str,
@@ -577,6 +596,8 @@ const OWN_ACCOUNT_TRANSFER_KIND: &str = "own_account_transfer";
 const CARD_PAYMENT_TRANSFER_KIND: &str = "card_payment";
 const INCOME_TRANSACTION_KIND: &str = "income";
 const EXPENSE_TRANSACTION_KIND: &str = "expense";
+const INVESTMENT_CONTRIBUTION_KIND: &str = "investment_contribution";
+const PENDING_ALLOCATION_STATUS: &str = "pending_allocation";
 const EXPENSE_LINE_KIND: &str = "expense";
 const INCOME_KINDS: &[&str] = &[
     "salary",
@@ -608,6 +629,12 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         "accounts",
         "is_owned",
         "ALTER TABLE accounts ADD COLUMN is_owned INTEGER NOT NULL DEFAULT 0 CHECK (is_owned IN (0, 1))",
+    )?;
+    add_column_if_missing(
+        connection,
+        "canonical_transactions",
+        "investment_allocation_status",
+        "ALTER TABLE canonical_transactions ADD COLUMN investment_allocation_status TEXT CHECK (investment_allocation_status IN ('pending_allocation'))",
     )?;
     add_column_if_missing(
         connection,
@@ -3027,6 +3054,129 @@ pub fn accept_expense_candidate(
     })
 }
 
+pub fn accept_investment_candidate(
+    connection: &mut Connection,
+    candidate_id: &str,
+) -> Result<CandidateReviewResponse> {
+    let command = "candidates accept-investment";
+    let tx = connection
+        .transaction()
+        .context("starting investment candidate accept transaction")?;
+    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
+        return Ok(review_error_response(
+            command,
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.".to_string(),
+            "candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    };
+    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
+    {
+        return Ok(review_error_response(
+            command,
+            "conflict",
+            "candidate_already_accepted",
+            "Candidate transaction was already accepted.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "canonical_transaction_id": candidate.canonical_transaction_id,
+            }),
+        ));
+    }
+    if candidate.status == CandidateStatus::Rejected {
+        return Ok(review_error_response(
+            command,
+            "conflict",
+            "candidate_already_rejected",
+            "Rejected candidates cannot be accepted as investment contributions.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    }
+    if !is_unreviewed_candidate_status(&candidate.status)
+        || candidate.canonical_transaction_id.is_some()
+    {
+        return Ok(review_error_response(
+            command,
+            "conflict",
+            "candidate_not_acceptable",
+            "Only unreviewed candidates can be accepted as investment contributions.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
+        ));
+    }
+    if candidate.semantic_hint.as_deref() != Some("bank_movement")
+        || candidate.direction_hint.as_deref() != Some("outflow")
+        || candidate.amount_minor >= 0
+    {
+        return Ok(review_error_response(
+            command,
+            "conflict",
+            "candidate_not_investment_eligible",
+            "Only explicit bank-movement outflows can be accepted as investment contributions."
+                .to_string(),
+            "candidate",
+            true,
+            serde_json::json!({
+                "candidate_id": candidate_id,
+                "direction_hint": candidate.direction_hint,
+                "semantic_hint": candidate.semantic_hint,
+                "amount_minor": candidate.amount_minor,
+            }),
+        ));
+    }
+    if has_matching_owned_account_counterparty_candidate(&tx, &candidate)? {
+        return Ok(review_error_response(
+            command,
+            "conflict",
+            "candidate_possible_own_account_transfer",
+            "Candidate resembles an own-account transfer and cannot be accepted as an investment contribution."
+                .to_string(),
+            "candidate",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    }
+
+    let canonical_id = canonical_transaction_id(candidate_id);
+    tx.execute(
+        "INSERT INTO canonical_transactions (
+            id, account_id, posted_date, description, amount_minor, currency, balance_minor,
+            transaction_kind, investment_allocation_status, created_from_candidate_id
+         )
+         SELECT ?1, account_id, posted_date, description, amount_minor, currency, balance_minor,
+                ?2, ?3, id
+         FROM candidate_transactions WHERE id = ?4",
+        params![
+            canonical_id,
+            INVESTMENT_CONTRIBUTION_KIND,
+            PENDING_ALLOCATION_STATUS,
+            candidate_id
+        ],
+    )?;
+    mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
+    tx.commit()
+        .context("committing investment candidate accept")?;
+
+    Ok(CandidateReviewResponse {
+        schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
+        command,
+        ok: true,
+        candidate: find_review_candidate(connection, candidate_id)?,
+        candidates: Vec::new(),
+        canonical_transaction: canonical_transaction(connection, &canonical_id)?,
+        transaction_lines: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
 pub fn replace_expense_transaction_lines(
     connection: &mut Connection,
     candidate_id: &str,
@@ -3651,6 +3801,67 @@ pub fn create_manual_income(
     ))
 }
 
+pub fn create_manual_investment(
+    connection: &mut Connection,
+    input: ManualInvestmentInput,
+) -> Result<ManualTransactionResponse> {
+    let command = "transactions add-investment";
+    let account =
+        match validate_manual_account(connection, &input.account_id, &input.currency, command)? {
+            Ok(account) => account,
+            Err(response) => return Ok(response),
+        };
+    if let Some(response) = validate_manual_fields(
+        command,
+        &input.posted_date,
+        &input.description,
+        input.amount_minor,
+        false,
+    ) {
+        return Ok(response);
+    }
+    let entry_id = manual_entry_id(
+        "investment",
+        &input.account_id,
+        &input.posted_date,
+        input.amount_minor,
+        &input.currency,
+        &input.description,
+    );
+    let canonical_id = canonical_transaction_id(&entry_id);
+    let tx = connection
+        .transaction()
+        .context("starting manual investment transaction")?;
+    tx.execute(
+        "INSERT INTO canonical_transactions (
+            id, account_id, posted_date, description, amount_minor, currency,
+            transaction_kind, investment_allocation_status
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            canonical_id,
+            input.account_id,
+            input.posted_date,
+            input.description.trim(),
+            input.amount_minor,
+            normalized_currency(&input.currency),
+            INVESTMENT_CONTRIBUTION_KIND,
+            PENDING_ALLOCATION_STATUS
+        ],
+    )?;
+    insert_manual_fingerprint(&tx, &canonical_id, &account)?;
+    insert_manual_provenance(&tx, &canonical_id, &entry_id)?;
+    tx.commit().context("committing manual investment")?;
+    let canonical = canonical_transaction(connection, &canonical_id)?
+        .expect("manual investment remains queryable");
+    Ok(manual_success(
+        command,
+        vec![canonical],
+        Vec::new(),
+        None,
+        vec![manual_provenance(entry_id)],
+    ))
+}
+
 pub fn create_manual_transfer(
     connection: &mut Connection,
     input: ManualTransferInput,
@@ -3835,7 +4046,7 @@ fn validate_manual_fields(
             if positive {
                 "Amount must be positive."
             } else {
-                "Expense amount must be negative."
+                "Amount must be negative."
             },
             "amount_minor",
             serde_json::json!({ "amount_minor": amount_minor }),
@@ -4427,7 +4638,7 @@ pub fn list_canonical_transactions(
     connection: &Connection,
     filter: TransactionListFilter<'_>,
 ) -> Result<TransactionLedgerResponse> {
-    let mut sql = "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor, transaction_kind, income_source_id, income_kind, created_from_candidate_id FROM canonical_transactions WHERE 1 = 1".to_string();
+    let mut sql = "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor, transaction_kind, investment_allocation_status, income_source_id, income_kind, created_from_candidate_id FROM canonical_transactions WHERE 1 = 1".to_string();
     let mut values: Vec<String> = Vec::new();
     if let Some(value) = filter.start_date {
         sql.push_str(" AND posted_date >= ?");
@@ -4514,6 +4725,8 @@ pub fn summarize_finances(
         finance_currency_totals(connection, start_date, end_date, &excluded_transfer_totals)?;
     let category_totals = finance_category_totals(connection, start_date, end_date)?;
     let income_source_totals = finance_income_source_totals(connection, start_date, end_date)?;
+    let investment_contribution_totals =
+        finance_investment_contribution_totals(connection, start_date, end_date)?;
     Ok(FinanceReportResponse {
         schema_version: FINANCE_REPORT_SCHEMA_VERSION,
         command: "reports summary",
@@ -4523,8 +4736,32 @@ pub fn summarize_finances(
         category_totals,
         income_source_totals,
         excluded_transfer_totals,
+        investment_contribution_totals,
         errors: Vec::new(),
     })
+}
+
+fn finance_investment_contribution_totals(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<Vec<InvestmentContributionTotal>> {
+    let mut statement = connection.prepare(
+        "SELECT UPPER(currency), SUM(-amount_minor), COUNT(*)
+         FROM canonical_transactions
+         WHERE transaction_kind = 'investment_contribution'
+           AND posted_date >= ?1 AND posted_date <= ?2
+         GROUP BY UPPER(currency)
+         ORDER BY UPPER(currency)",
+    )?;
+    let rows = statement.query_map(params![start_date, end_date], |row| {
+        Ok(InvestmentContributionTotal {
+            currency: row.get(0)?,
+            total_contributed_minor: row.get(1)?,
+            contribution_count: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn finance_currency_totals(
@@ -4691,6 +4928,7 @@ fn finance_report_error(
         category_totals: Vec::new(),
         income_source_totals: Vec::new(),
         excluded_transfer_totals: Vec::new(),
+        investment_contribution_totals: Vec::new(),
         errors: vec![ReviewError {
             category: "validation_failure",
             code,
@@ -4896,9 +5134,10 @@ fn canonical_transaction_from_row(
         currency: row.get(5)?,
         balance_minor: row.get(6)?,
         transaction_kind: row.get(7)?,
-        income_source_id: row.get(8)?,
-        income_kind: row.get(9)?,
-        created_from_candidate_id: row.get(10)?,
+        investment_allocation_status: row.get(8)?,
+        income_source_id: row.get(9)?,
+        income_kind: row.get(10)?,
+        created_from_candidate_id: row.get(11)?,
     })
 }
 
@@ -5022,7 +5261,8 @@ fn canonical_transaction(
     connection
         .query_row(
             "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor,
-                    transaction_kind, income_source_id, income_kind, created_from_candidate_id
+                    transaction_kind, investment_allocation_status, income_source_id, income_kind,
+                    created_from_candidate_id
              FROM canonical_transactions
              WHERE id = ?1",
             params![canonical_id],
@@ -5036,9 +5276,10 @@ fn canonical_transaction(
                     currency: row.get(5)?,
                     balance_minor: row.get(6)?,
                     transaction_kind: row.get(7)?,
-                    income_source_id: row.get(8)?,
-                    income_kind: row.get(9)?,
-                    created_from_candidate_id: row.get(10)?,
+                    investment_allocation_status: row.get(8)?,
+                    income_source_id: row.get(9)?,
+                    income_kind: row.get(10)?,
+                    created_from_candidate_id: row.get(11)?,
                 })
             },
         )

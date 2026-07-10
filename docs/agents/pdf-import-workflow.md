@@ -6,7 +6,7 @@ This guide describes the current CLI/JSON path for Tracky's review-first PDF imp
 
 - `tracky pdf inspect` is read-only. It returns transient candidate-shaped JSON and does not write SQLite data.
 - `tracky import pdf` writes a `SourceDocument`, `ImportBatch`, `Provenance`, duplicate markers, and **candidate transactions** only. It must not create canonical transactions.
-- Canonical transactions appear only after an explicit typed review action: `candidates accept-income`, `candidates accept-expense`, or `candidates accept-transfer-pair`. The legacy generic `candidates accept` refuses typed finance candidates.
+- Canonical transactions appear only after an explicit typed review action: `candidates accept-income`, `candidates accept-expense`, `candidates accept-investment`, or `candidates accept-transfer-pair`. The legacy generic `candidates accept` refuses typed finance candidates.
 - Do not drop or hide provenance when reviewing candidates. Accepted and rejected decisions must remain auditable through the source document, import batch, parser/extractor evidence, and candidate id.
 - Do not use real PDFs, unredacted account data, passwords, emails, addresses, counterparties, long identifiers, or full amounts as committed fixtures or examples.
 
@@ -158,6 +158,15 @@ tracky candidates accept-expense cand_PURCHASE_REDACTED \
 
 `accept-expense` creates a canonical transaction marked `transaction_kind: "expense"` with one or more categorized transaction lines. The compatible `--category-id` form creates exactly one line; split lines must collectively reconcile with the canonical transaction amount. Nequi purchase outflows remain negative; RappiCard `card_charge` rows are accepted as card expenses and normalized to a negative outflow amount even if the source statement amount was positive. Income/inflows, `card_payment` rows, likely own-account transfers, missing categories, and already accepted/rejected candidates are refused.
 
+To confirm that a bank outflow is capital destined for investment before its instrument is known:
+
+```sh
+tracky candidates accept-investment cand_INVESTMENT_REDACTED \
+  --db /tmp/tracky-review.sqlite --json
+```
+
+The result is an `investment_contribution` with `investment_allocation_status: "pending_allocation"`. It preserves the candidate and provenance link and remains separate from consumption expenses and income.
+
 For a mixed purchase, create a balanced split explicitly instead of using `--category-id`:
 
 ```bash
@@ -210,6 +219,15 @@ tracky transactions add-expense --db /tmp/tracky-review.sqlite \
   --account-id acct_REDACTED --posted-date 2026-07-09 \
   --description "REDACTED_MANUAL_PURCHASE" --amount-minor -150000 --currency COP \
   --category-id cat_REDACTED --json
+```
+
+Manual investment contributions use the equivalent typed command:
+
+```sh
+tracky transactions add-investment --db /tmp/tracky-review.sqlite \
+  --account-id acct_REDACTED --posted-date 2026-06-15 \
+  --description "Redacted investment contribution" \
+  --amount-minor -2000000 --currency COP --json
 ```
 
 Create a manual income only with an explicit registered income source and kind:

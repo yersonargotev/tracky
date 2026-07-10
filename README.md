@@ -38,7 +38,7 @@ tracky candidates list \
 tracky candidates reject --db /tmp/tracky-review.sqlite cand_REDACTED --json
 ```
 
-Use the typed accept command for every finance candidate: `accept-income` requires an income source and kind, `accept-expense` requires category lines, and `accept-transfer-pair` requires an explicit validated pair. The legacy `candidates accept` command refuses those shapes with a stable `required_command` error; `candidates reject` updates review state without deleting provenance or evidence.
+Use the typed accept command for every finance candidate: `accept-income` requires an income source and kind, `accept-expense` requires category lines, `accept-investment` records an outflow as capital pending allocation, and `accept-transfer-pair` requires an explicit validated pair. The legacy `candidates accept` command refuses typed shapes; `candidates reject` updates review state without deleting provenance or evidence.
 
 ### Review large batches safely
 
