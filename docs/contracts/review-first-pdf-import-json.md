@@ -18,8 +18,9 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky candidates set-expense-lines` | Yes | No new candidates | Replaces the category lines of an accepted canonical expense while preserving candidate provenance |
 | `tracky candidates list-transfer-pairs` | No | No | Never |
 | `tracky candidates accept-transfer-pair` | Yes | No new candidates | Creates two canonical own-account transfer legs from one eligible pair |
+| `tracky transactions add-expense/add-income/add-transfer` | Yes | No | Creates direct manual canonical expense/income rows or two balanced transfer legs with distinct manual provenance |
 
-Out of scope for this contract: parser implementation, SQLite migration internals, canonical transaction promotion outside explicit review commands, TUI review, MCP wrappers, AI fallback, and password storage.
+Out of scope for this contract: parser implementation, SQLite migration internals, TUI review, MCP wrappers, AI fallback, and password storage.
 
 ## Top-level responses
 
@@ -348,6 +349,32 @@ Eligible first-slice expense candidates are:
 - `card_charge` outflows, such as RappiCard purchases/subscriptions/fees, even when the source statement amount is positive; the canonical expense and its line are normalized to a negative outflow amount.
 
 `accept-expense` refuses income/inflows, `card_payment` rows, likely own-account transfer outflows that match an unreviewed owned counterparty candidate (including card-payment rows or bank/wallet inflows), missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
+
+## Manual canonical transaction JSON
+
+Manual entry is an explicit route outside PDF inspection/import. All commands require `--json` and return `schema_version: "tracky.manual-transactions.v1"`; they never create source documents, import batches, or candidates.
+
+| Command | Writes storage? | Canonical result |
+| --- | --- | --- |
+| `tracky transactions add-expense --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor NEGATIVE --currency CODE --category-id ID --json` | Yes | One `expense` canonical transaction and one categorized line. `--line CATEGORY_ID:AMOUNT_MINOR:CURRENCY` may be repeated for a balanced split instead of `--category-id`. |
+| `tracky transactions add-income --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor POSITIVE --currency CODE --income-source-id ID --income-kind KIND --json` | Yes | One `income` canonical transaction. |
+| `tracky transactions add-transfer --db <PATH> --from-account-id ID --to-account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor POSITIVE --currency CODE --json` | Yes | Two balancing `own_account_transfer` canonical legs and one manual transfer-pair record. |
+
+Each successful response includes `canonical_transactions[]` and distinct manual audit metadata:
+
+```json
+{
+  "schema_version": "tracky.manual-transactions.v1",
+  "command": "transactions add-expense",
+  "ok": true,
+  "canonical_transactions": [{ "transaction_kind": "expense", "created_from_candidate_id": null }],
+  "transaction_lines": [{ "category_id": "cat_REDACTED", "amount_minor": -150000, "currency": "COP" }],
+  "provenance": [{ "source": "manual_entry", "entry_id": "manual_REDACTED" }],
+  "errors": []
+}
+```
+
+Manual commands require registered owned accounts whose currency matches the submitted currency. Expenses must use negative minor units, income and transfer amounts must be positive, expense categories and income sources must exist, and split expense lines must reconcile exactly. Transfers require two distinct owned accounts and write one negative and one positive leg of the same amount/currency; they are not income or expenses. Stable validation codes include `owned_account_not_found`, `account_currency_mismatch`, `invalid_amount_sign`, `income_source_not_found`, `invalid_income_kind`, `category_not_found`, `expense_lines_unbalanced`, and `transfer_accounts_must_differ`.
 
 ## Stable errors
 

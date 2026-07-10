@@ -8,14 +8,16 @@ use crate::pdf::{
 use crate::storage::{
     accept_candidate, accept_expense_candidate, accept_income_candidate, accept_transfer_pair,
     account_registry_error_response, apply_migrations, category_registry_error_response,
-    create_category, create_income_source, duplicate_import_response, find_source_document_by_hash,
+    create_category, create_income_source, create_manual_expense, create_manual_income,
+    create_manual_transfer, duplicate_import_response, find_source_document_by_hash,
     income_source_registry_error_response, list_categories, list_income_sources,
     list_likely_transfer_pairs, list_owned_accounts, list_review_candidates, persist_pdf_import,
     register_owned_account, reject_candidate, replace_expense_transaction_lines,
     review_error_response, transfer_error_response, AccountRegisterInput, AccountRegistryResponse,
     CandidateReviewResponse, CategoryCreateInput, CategoryRegistryResponse, ExpenseLineInput,
-    ImportPdfResponse, IncomeSourceCreateInput, IncomeSourceRegistryResponse,
-    TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
+    ImportPdfResponse, IncomeSourceCreateInput, IncomeSourceRegistryResponse, ManualExpenseInput,
+    ManualIncomeInput, ManualTransactionResponse, ManualTransferInput, TransferReviewResponse,
+    IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -76,6 +78,7 @@ enum Commands {
     Accounts(AccountsCommand),
     IncomeSources(IncomeSourcesCommand),
     Categories(CategoriesCommand),
+    Transactions(TransactionsCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -124,6 +127,12 @@ struct CategoriesCommand {
     command: CategoryCommands,
 }
 
+#[derive(Debug, Parser)]
+struct TransactionsCommand {
+    #[command(subcommand)]
+    command: TransactionCommands,
+}
+
 #[derive(Debug, Subcommand)]
 enum AccountCommands {
     Register(AccountRegisterArgs),
@@ -152,6 +161,89 @@ enum IncomeSourceCommands {
 enum CategoryCommands {
     Create(CategoryCreateArgs),
     List(CategoryListArgs),
+}
+
+#[derive(Debug, Subcommand)]
+enum TransactionCommands {
+    AddExpense(ManualExpenseArgs),
+    AddIncome(ManualIncomeArgs),
+    AddTransfer(ManualTransferArgs),
+}
+
+#[derive(Debug, Parser)]
+struct ManualExpenseArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "account-id", value_name = "ID")]
+    account_id: String,
+    #[arg(long = "posted-date", value_name = "YYYY-MM-DD")]
+    posted_date: String,
+    #[arg(long, value_name = "TEXT")]
+    description: String,
+    #[arg(
+        long = "amount-minor",
+        value_name = "AMOUNT",
+        allow_hyphen_values = true
+    )]
+    amount_minor: i64,
+    #[arg(long, value_name = "CURRENCY")]
+    currency: String,
+    #[arg(long = "category-id", value_name = "ID")]
+    category_id: Option<String>,
+    #[arg(long = "line", value_name = "CATEGORY_ID:AMOUNT_MINOR:CURRENCY")]
+    lines: Vec<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ManualIncomeArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "account-id", value_name = "ID")]
+    account_id: String,
+    #[arg(long = "posted-date", value_name = "YYYY-MM-DD")]
+    posted_date: String,
+    #[arg(long, value_name = "TEXT")]
+    description: String,
+    #[arg(
+        long = "amount-minor",
+        value_name = "AMOUNT",
+        allow_hyphen_values = true
+    )]
+    amount_minor: i64,
+    #[arg(long, value_name = "CURRENCY")]
+    currency: String,
+    #[arg(long = "income-source-id", value_name = "ID")]
+    income_source_id: String,
+    #[arg(long = "income-kind", value_name = "KIND")]
+    income_kind: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ManualTransferArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "from-account-id", value_name = "ID")]
+    from_account_id: String,
+    #[arg(long = "to-account-id", value_name = "ID")]
+    to_account_id: String,
+    #[arg(long = "posted-date", value_name = "YYYY-MM-DD")]
+    posted_date: String,
+    #[arg(long, value_name = "TEXT")]
+    description: String,
+    #[arg(
+        long = "amount-minor",
+        value_name = "AMOUNT",
+        allow_hyphen_values = true
+    )]
+    amount_minor: i64,
+    #[arg(long, value_name = "CURRENCY")]
+    currency: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -475,6 +567,11 @@ where
             CategoryCommands::Create(args) => category_create_command(args, &mut stdout),
             CategoryCommands::List(args) => category_list_command(args, &mut stdout),
         },
+        Commands::Transactions(transactions) => match transactions.command {
+            TransactionCommands::AddExpense(args) => manual_expense_command(args, &mut stdout),
+            TransactionCommands::AddIncome(args) => manual_income_command(args, &mut stdout),
+            TransactionCommands::AddTransfer(args) => manual_transfer_command(args, &mut stdout),
+        },
     }
 }
 
@@ -765,6 +862,83 @@ where
     let connection = open_review_database(&args.db)?;
     let response = list_categories(&connection)?;
     write_category_registry_response(stdout, response)
+}
+
+fn manual_expense_command<W>(args: ManualExpenseArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_manual_json(args.json, stdout, "transactions add-expense")? {
+        return Ok(exit_code);
+    }
+    let lines =
+        match expense_lines_from_args(args.category_id, args.lines, "transactions add-expense") {
+            Ok(lines) => lines,
+            Err(response) => {
+                return write_manual_transaction_response(
+                    stdout,
+                    manual_from_candidate_response(response),
+                )
+            }
+        };
+    let mut connection = open_review_database(&args.db)?;
+    let response = create_manual_expense(
+        &mut connection,
+        ManualExpenseInput {
+            account_id: args.account_id,
+            posted_date: args.posted_date,
+            description: args.description,
+            amount_minor: args.amount_minor,
+            currency: args.currency,
+            lines,
+        },
+    )?;
+    write_manual_transaction_response(stdout, response)
+}
+
+fn manual_income_command<W>(args: ManualIncomeArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_manual_json(args.json, stdout, "transactions add-income")? {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = create_manual_income(
+        &mut connection,
+        ManualIncomeInput {
+            account_id: args.account_id,
+            posted_date: args.posted_date,
+            description: args.description,
+            amount_minor: args.amount_minor,
+            currency: args.currency,
+            income_source_id: args.income_source_id,
+            income_kind: args.income_kind,
+        },
+    )?;
+    write_manual_transaction_response(stdout, response)
+}
+
+fn manual_transfer_command<W>(args: ManualTransferArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_manual_json(args.json, stdout, "transactions add-transfer")? {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = create_manual_transfer(
+        &mut connection,
+        ManualTransferInput {
+            from_account_id: args.from_account_id,
+            to_account_id: args.to_account_id,
+            posted_date: args.posted_date,
+            description: args.description,
+            amount_minor: args.amount_minor,
+            currency: args.currency,
+        },
+    )?;
+    write_manual_transaction_response(stdout, response)
 }
 
 fn candidate_list_command<W>(args: CandidateListArgs, stdout: &mut W) -> Result<i32>
@@ -1084,6 +1258,19 @@ where
     )
 }
 
+fn require_manual_json<W>(json: bool, stdout: &mut W, command: &'static str) -> Result<Option<i32>>
+where
+    W: Write,
+{
+    require_json_flag(
+        json,
+        stdout,
+        command,
+        manual_json_error,
+        write_manual_transaction_response,
+    )
+}
+
 fn require_json_flag<W, Response, BuildError, WriteResponse>(
     json: bool,
     stdout: &mut W,
@@ -1184,6 +1371,59 @@ fn write_transfer_review_response<W: Write>(
         response,
         "writing transfer review JSON",
     )
+}
+
+fn write_manual_transaction_response<W: Write>(
+    stdout: &mut W,
+    response: ManualTransactionResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing manual transaction JSON",
+    )
+}
+
+fn manual_from_candidate_response(response: CandidateReviewResponse) -> ManualTransactionResponse {
+    ManualTransactionResponse {
+        schema_version: crate::storage::MANUAL_TRANSACTIONS_SCHEMA_VERSION,
+        command: response.command,
+        ok: false,
+        canonical_transactions: Vec::new(),
+        transaction_lines: Vec::new(),
+        transfer_pair: None,
+        provenance: Vec::new(),
+        errors: response.errors,
+    }
+}
+
+fn manual_json_error(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: String,
+    path: &'static str,
+    _recoverable: bool,
+    details: serde_json::Value,
+) -> ManualTransactionResponse {
+    ManualTransactionResponse {
+        schema_version: crate::storage::MANUAL_TRANSACTIONS_SCHEMA_VERSION,
+        command,
+        ok: false,
+        canonical_transactions: Vec::new(),
+        transaction_lines: Vec::new(),
+        transfer_pair: None,
+        provenance: Vec::new(),
+        errors: vec![crate::storage::ReviewError {
+            category,
+            code,
+            message,
+            path,
+            recoverable: true,
+            details,
+        }],
+    }
 }
 
 fn write_json_response<W, Response>(

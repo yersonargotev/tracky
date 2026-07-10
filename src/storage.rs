@@ -7,12 +7,14 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const REVIEW_FIRST_SCHEMA: &str = include_str!("../migrations/0001_review_first_schema.sql");
 pub const IMPORT_PDF_SCHEMA_VERSION: &str = "tracky.import-pdf.v1";
 pub const ACCOUNT_REGISTRY_SCHEMA_VERSION: &str = "tracky.accounts.v1";
 pub const INCOME_SOURCE_REGISTRY_SCHEMA_VERSION: &str = "tracky.income-sources.v1";
 pub const CATEGORY_REGISTRY_SCHEMA_VERSION: &str = "tracky.categories.v1";
+pub const MANUAL_TRANSACTIONS_SCHEMA_VERSION: &str = "tracky.manual-transactions.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -202,7 +204,7 @@ pub struct CanonicalTransaction {
     pub income_source_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub income_kind: Option<String>,
-    pub created_from_candidate_id: String,
+    pub created_from_candidate_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -221,6 +223,70 @@ pub struct ExpenseLineInput {
     pub category_id: String,
     pub amount_minor: i64,
     pub currency: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManualExpenseInput {
+    pub account_id: String,
+    pub posted_date: String,
+    pub description: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub lines: Vec<ExpenseLineInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualIncomeInput {
+    pub account_id: String,
+    pub posted_date: String,
+    pub description: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub income_source_id: String,
+    pub income_kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualTransferInput {
+    pub from_account_id: String,
+    pub to_account_id: String,
+    pub posted_date: String,
+    pub description: String,
+    pub amount_minor: i64,
+    pub currency: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ManualProvenance {
+    pub source: &'static str,
+    pub entry_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ManualTransferPair {
+    pub id: String,
+    pub transfer_kind: &'static str,
+    pub posted_date: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub from_account: OwnedAccount,
+    pub to_account: OwnedAccount,
+    pub canonical_transaction_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ManualTransactionResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    pub canonical_transactions: Vec<CanonicalTransaction>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub transaction_lines: Vec<TransactionLine>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer_pair: Option<ManualTransferPair>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<ManualProvenance>,
+    pub errors: Vec<ReviewError>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -322,7 +388,24 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
             accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         );
         CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_from_candidate ON canonical_transfer_pairs(from_candidate_id);
-        CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);",
+        CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);
+        CREATE TABLE IF NOT EXISTS manual_transaction_provenance (
+            canonical_transaction_id TEXT PRIMARY KEY REFERENCES canonical_transactions(id),
+            entry_id TEXT NOT NULL UNIQUE,
+            source TEXT NOT NULL CHECK (source = 'manual_entry'),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE TABLE IF NOT EXISTS manual_transfer_pairs (
+            id TEXT PRIMARY KEY,
+            posted_date TEXT NOT NULL,
+            amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+            currency TEXT NOT NULL,
+            from_account_id TEXT NOT NULL REFERENCES accounts(id),
+            to_account_id TEXT NOT NULL REFERENCES accounts(id),
+            from_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+            to_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );",
     )
 }
 
@@ -2479,6 +2562,507 @@ fn is_unreviewed_candidate_status(status: &CandidateStatus) -> bool {
         status,
         CandidateStatus::PendingReview | CandidateStatus::PossibleDuplicate
     )
+}
+
+pub fn create_manual_expense(
+    connection: &mut Connection,
+    input: ManualExpenseInput,
+) -> Result<ManualTransactionResponse> {
+    let command = "transactions add-expense";
+    let account =
+        match validate_manual_account(connection, &input.account_id, &input.currency, command)? {
+            Ok(account) => account,
+            Err(response) => return Ok(response),
+        };
+    if let Some(response) = validate_manual_fields(
+        command,
+        &input.posted_date,
+        &input.description,
+        input.amount_minor,
+        false,
+    ) {
+        return Ok(response);
+    }
+    let lines = normalized_expense_lines(&input.lines, input.amount_minor, &input.currency);
+    if let Some(response) = validate_expense_lines(
+        connection,
+        command,
+        input.amount_minor,
+        &input.currency,
+        &lines,
+    )? {
+        return Ok(manual_from_review_error(response));
+    }
+    let entry_id = manual_entry_id(
+        "expense",
+        &input.account_id,
+        &input.posted_date,
+        input.amount_minor,
+        &input.currency,
+        &input.description,
+    );
+    let canonical_id = canonical_transaction_id(&entry_id);
+    let tx = connection
+        .transaction()
+        .context("starting manual expense transaction")?;
+    tx.execute(
+        "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, transaction_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![canonical_id, input.account_id, input.posted_date, input.description.trim(), input.amount_minor, normalized_currency(&input.currency), EXPENSE_TRANSACTION_KIND],
+    )?;
+    insert_expense_lines(&tx, &canonical_id, &lines)?;
+    insert_manual_fingerprint(&tx, &canonical_id, &account)?;
+    insert_manual_provenance(&tx, &canonical_id, &entry_id)?;
+    tx.commit().context("committing manual expense")?;
+    let canonical = canonical_transaction(connection, &canonical_id)?
+        .expect("manual expense remains queryable");
+    let lines = transaction_lines_for_canonical(connection, &canonical_id)?;
+    Ok(manual_success(
+        command,
+        vec![canonical],
+        lines,
+        None,
+        vec![manual_provenance(entry_id)],
+    ))
+}
+
+pub fn create_manual_income(
+    connection: &mut Connection,
+    input: ManualIncomeInput,
+) -> Result<ManualTransactionResponse> {
+    let command = "transactions add-income";
+    let account =
+        match validate_manual_account(connection, &input.account_id, &input.currency, command)? {
+            Ok(account) => account,
+            Err(response) => return Ok(response),
+        };
+    if let Some(response) = validate_manual_fields(
+        command,
+        &input.posted_date,
+        &input.description,
+        input.amount_minor,
+        true,
+    ) {
+        return Ok(response);
+    }
+    let income_kind = normalize_income_kind(&input.income_kind);
+    if !INCOME_KINDS.contains(&income_kind.as_str()) {
+        return Ok(manual_error(
+            command,
+            "validation_failure",
+            "invalid_income_kind",
+            "Income kind is not supported.",
+            "income_kind",
+            serde_json::json!({ "income_kind": input.income_kind, "allowed_income_kinds": INCOME_KINDS }),
+        ));
+    }
+    if income_source_by_id(connection, &input.income_source_id)?.is_none() {
+        return Ok(manual_error(
+            command,
+            "not_found",
+            "income_source_not_found",
+            "Income source was not found.",
+            "income_source_id",
+            serde_json::json!({ "income_source_id": input.income_source_id }),
+        ));
+    }
+    let entry_id = manual_entry_id(
+        "income",
+        &input.account_id,
+        &input.posted_date,
+        input.amount_minor,
+        &input.currency,
+        &input.description,
+    );
+    let canonical_id = canonical_transaction_id(&entry_id);
+    let tx = connection
+        .transaction()
+        .context("starting manual income transaction")?;
+    tx.execute(
+        "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, transaction_kind, income_source_id, income_kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![canonical_id, input.account_id, input.posted_date, input.description.trim(), input.amount_minor, normalized_currency(&input.currency), INCOME_TRANSACTION_KIND, input.income_source_id, income_kind],
+    )?;
+    insert_manual_fingerprint(&tx, &canonical_id, &account)?;
+    insert_manual_provenance(&tx, &canonical_id, &entry_id)?;
+    tx.commit().context("committing manual income")?;
+    let canonical =
+        canonical_transaction(connection, &canonical_id)?.expect("manual income remains queryable");
+    Ok(manual_success(
+        command,
+        vec![canonical],
+        Vec::new(),
+        None,
+        vec![manual_provenance(entry_id)],
+    ))
+}
+
+pub fn create_manual_transfer(
+    connection: &mut Connection,
+    input: ManualTransferInput,
+) -> Result<ManualTransactionResponse> {
+    let command = "transactions add-transfer";
+    let from_account = match validate_manual_account(
+        connection,
+        &input.from_account_id,
+        &input.currency,
+        command,
+    )? {
+        Ok(account) => account,
+        Err(response) => return Ok(response),
+    };
+    let to_account = match validate_manual_account(
+        connection,
+        &input.to_account_id,
+        &input.currency,
+        command,
+    )? {
+        Ok(account) => account,
+        Err(response) => return Ok(response),
+    };
+    if input.from_account_id == input.to_account_id {
+        return Ok(manual_error(
+            command,
+            "validation_failure",
+            "transfer_accounts_must_differ",
+            "Manual transfer accounts must differ.",
+            "to_account_id",
+            serde_json::json!({}),
+        ));
+    }
+    if let Some(response) = validate_manual_fields(
+        command,
+        &input.posted_date,
+        &input.description,
+        input.amount_minor,
+        true,
+    ) {
+        return Ok(response);
+    }
+    let pair_id = manual_entry_id(
+        "transfer",
+        &format!("{}|{}", input.from_account_id, input.to_account_id),
+        &input.posted_date,
+        input.amount_minor,
+        &input.currency,
+        &input.description,
+    );
+    let from_id = canonical_transaction_id(&format!("{pair_id}|from"));
+    let to_id = canonical_transaction_id(&format!("{pair_id}|to"));
+    let tx = connection
+        .transaction()
+        .context("starting manual transfer transaction")?;
+    for (canonical_id, account_id, amount_minor) in [
+        (&from_id, &input.from_account_id, -input.amount_minor),
+        (&to_id, &input.to_account_id, input.amount_minor),
+    ] {
+        tx.execute(
+            "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, transaction_kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![canonical_id, account_id, input.posted_date, input.description.trim(), amount_minor, normalized_currency(&input.currency), OWN_ACCOUNT_TRANSFER_KIND],
+        )?;
+        let account = if account_id == &input.from_account_id {
+            &from_account
+        } else {
+            &to_account
+        };
+        insert_manual_fingerprint(&tx, canonical_id, account)?;
+        insert_manual_provenance(&tx, canonical_id, &format!("{pair_id}|{canonical_id}"))?;
+    }
+    tx.execute(
+        "INSERT INTO manual_transfer_pairs (id, posted_date, amount_minor, currency, from_account_id, to_account_id, from_canonical_transaction_id, to_canonical_transaction_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![pair_id, input.posted_date, input.amount_minor, normalized_currency(&input.currency), input.from_account_id, input.to_account_id, from_id, to_id],
+    )?;
+    tx.commit().context("committing manual transfer")?;
+    let canonical_transactions = vec![
+        canonical_transaction(connection, &from_id)?
+            .expect("manual transfer outflow remains queryable"),
+        canonical_transaction(connection, &to_id)?
+            .expect("manual transfer inflow remains queryable"),
+    ];
+    let provenance = canonical_transactions
+        .iter()
+        .map(|transaction| manual_provenance(format!("{pair_id}|{}", transaction.id)))
+        .collect();
+    Ok(manual_success(
+        command,
+        canonical_transactions,
+        Vec::new(),
+        Some(ManualTransferPair {
+            id: pair_id,
+            transfer_kind: OWN_ACCOUNT_TRANSFER_KIND,
+            posted_date: input.posted_date,
+            amount_minor: input.amount_minor,
+            currency: normalized_currency(&input.currency),
+            from_account,
+            to_account,
+            canonical_transaction_ids: vec![from_id, to_id],
+        }),
+        provenance,
+    ))
+}
+
+fn validate_manual_account(
+    connection: &Connection,
+    account_id: &str,
+    currency: &str,
+    command: &'static str,
+) -> Result<Result<OwnedAccount, ManualTransactionResponse>> {
+    if currency.len() != 3
+        || !currency
+            .chars()
+            .all(|character| character.is_ascii_alphabetic())
+    {
+        return Ok(Err(manual_error(
+            command,
+            "validation_failure",
+            "invalid_currency",
+            "Currency must use a three-letter code.",
+            "currency",
+            serde_json::json!({ "currency": currency }),
+        )));
+    }
+    let Some(account) = owned_account_by_id(connection, account_id)? else {
+        return Ok(Err(manual_error(
+            command,
+            "not_found",
+            "owned_account_not_found",
+            "Owned account was not found.",
+            "account_id",
+            serde_json::json!({ "account_id": account_id }),
+        )));
+    };
+    if !account.currency.eq_ignore_ascii_case(currency) {
+        return Ok(Err(manual_error(
+            command,
+            "validation_failure",
+            "account_currency_mismatch",
+            "Manual transaction currency must match the owned account currency.",
+            "currency",
+            serde_json::json!({ "account_id": account_id, "account_currency": account.currency, "currency": currency }),
+        )));
+    }
+    Ok(Ok(account))
+}
+
+fn validate_manual_fields(
+    command: &'static str,
+    posted_date: &str,
+    description: &str,
+    amount_minor: i64,
+    positive: bool,
+) -> Option<ManualTransactionResponse> {
+    if !is_valid_posted_date(posted_date) {
+        return Some(manual_error(
+            command,
+            "validation_failure",
+            "invalid_posted_date",
+            "Posted date must use YYYY-MM-DD.",
+            "posted_date",
+            serde_json::json!({ "posted_date": posted_date }),
+        ));
+    }
+    if description.trim().is_empty() {
+        return Some(manual_error(
+            command,
+            "validation_failure",
+            "description_required",
+            "Description is required.",
+            "description",
+            serde_json::json!({}),
+        ));
+    }
+    if (positive && amount_minor <= 0) || (!positive && amount_minor >= 0) {
+        return Some(manual_error(
+            command,
+            "validation_failure",
+            "invalid_amount_sign",
+            if positive {
+                "Amount must be positive."
+            } else {
+                "Expense amount must be negative."
+            },
+            "amount_minor",
+            serde_json::json!({ "amount_minor": amount_minor }),
+        ));
+    }
+    None
+}
+
+fn is_valid_posted_date(posted_date: &str) -> bool {
+    let bytes = posted_date.as_bytes();
+    if bytes.len() != 10
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || !bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+    {
+        return false;
+    }
+    let year = posted_date[0..4].parse::<u32>().ok();
+    let month = posted_date[5..7].parse::<u32>().ok();
+    let day = posted_date[8..10].parse::<u32>().ok();
+    let (Some(year), Some(month), Some(day)) = (year, month, day) else {
+        return false;
+    };
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year % 400 == 0 || year % 4 == 0 && year % 100 != 0 => 29,
+        2 => 28,
+        _ => return false,
+    };
+    day >= 1 && day <= max_day
+}
+
+fn insert_manual_provenance(
+    connection: &Connection,
+    canonical_id: &str,
+    entry_id: &str,
+) -> Result<()> {
+    connection.execute("INSERT INTO manual_transaction_provenance (canonical_transaction_id, entry_id, source) VALUES (?1, ?2, 'manual_entry')", params![canonical_id, entry_id])?;
+    Ok(())
+}
+
+fn insert_manual_fingerprint(
+    connection: &Connection,
+    canonical_id: &str,
+    account: &OwnedAccount,
+) -> Result<()> {
+    let canonical = canonical_transaction(connection, canonical_id)?
+        .expect("manual canonical transaction remains queryable before fingerprinting");
+    let account_key = format!(
+        "{}|{}",
+        account.institution.to_ascii_lowercase(),
+        account.label.to_ascii_lowercase()
+    );
+    let fingerprint = Sha256::digest(
+        format!(
+            "{account_key}|{}|{}|{}|{}",
+            canonical.posted_date,
+            canonical.amount_minor,
+            normalized_currency(&canonical.currency),
+            canonical.description.to_ascii_lowercase()
+        )
+        .as_bytes(),
+    );
+    connection.execute(
+        "INSERT INTO transaction_fingerprints (
+            id, fingerprint, canonical_transaction_id, duplicate_status,
+            normalized_account_key, normalized_posted_date, normalized_amount_minor,
+            normalized_currency, normalized_description
+         ) VALUES (?1, ?2, ?3, 'unique', ?4, ?5, ?6, ?7, ?8)",
+        params![
+            fingerprint_row_id(canonical_id),
+            format!("manual_{}", hex_digest(&fingerprint)),
+            canonical_id,
+            account_key,
+            canonical.posted_date,
+            canonical.amount_minor,
+            normalized_currency(&canonical.currency),
+            canonical.description.to_ascii_lowercase(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn manual_entry_id(
+    kind: &str,
+    account_key: &str,
+    posted_date: &str,
+    amount_minor: i64,
+    currency: &str,
+    description: &str,
+) -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after Unix epoch")
+        .as_nanos();
+    let digest = Sha256::digest(
+        format!(
+            "{kind}|{account_key}|{posted_date}|{amount_minor}|{}|{}|{nonce}",
+            normalized_currency(currency),
+            description.trim()
+        )
+        .as_bytes(),
+    );
+    format!("manual_{}", hex_digest(&digest))
+}
+
+fn hex_digest(digest: &[u8]) -> String {
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn manual_provenance(entry_id: String) -> ManualProvenance {
+    ManualProvenance {
+        source: "manual_entry",
+        entry_id,
+    }
+}
+
+fn manual_success(
+    command: &'static str,
+    canonical_transactions: Vec<CanonicalTransaction>,
+    transaction_lines: Vec<TransactionLine>,
+    transfer_pair: Option<ManualTransferPair>,
+    provenance: Vec<ManualProvenance>,
+) -> ManualTransactionResponse {
+    ManualTransactionResponse {
+        schema_version: MANUAL_TRANSACTIONS_SCHEMA_VERSION,
+        command,
+        ok: true,
+        canonical_transactions,
+        transaction_lines,
+        transfer_pair,
+        provenance,
+        errors: Vec::new(),
+    }
+}
+
+pub fn manual_error(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: &'static str,
+    path: &'static str,
+    details: serde_json::Value,
+) -> ManualTransactionResponse {
+    ManualTransactionResponse {
+        schema_version: MANUAL_TRANSACTIONS_SCHEMA_VERSION,
+        command,
+        ok: false,
+        canonical_transactions: Vec::new(),
+        transaction_lines: Vec::new(),
+        transfer_pair: None,
+        provenance: Vec::new(),
+        errors: vec![ReviewError {
+            category,
+            code,
+            message: message.to_string(),
+            path,
+            recoverable: true,
+            details,
+        }],
+    }
+}
+
+fn manual_from_review_error(response: CandidateReviewResponse) -> ManualTransactionResponse {
+    ManualTransactionResponse {
+        schema_version: MANUAL_TRANSACTIONS_SCHEMA_VERSION,
+        command: response.command,
+        ok: false,
+        canonical_transactions: Vec::new(),
+        transaction_lines: Vec::new(),
+        transfer_pair: None,
+        provenance: Vec::new(),
+        errors: response.errors,
+    }
 }
 
 fn insert_transfer_canonical_transaction(

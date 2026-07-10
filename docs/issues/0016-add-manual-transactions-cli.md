@@ -12,12 +12,12 @@ Add CLI/JSON commands to create manual canonical transactions for expenses, inco
 
 ## Acceptance criteria
 
-- [ ] A user can add a manual expense with account, date, amount, currency, description, and category.
-- [ ] A user can add a manual income with account, date, amount, currency, description, and income source/kind.
-- [ ] A user can add a manual transfer between owned accounts without counting it as income or expense.
-- [ ] Manual transactions receive audit/provenance metadata distinct from PDF provenance.
-- [ ] Manual entries appear in the same transaction listing/reporting queries as accepted imported transactions.
-- [ ] Tests cover manual expense, manual income, manual transfer, and invalid/unbalanced input.
+- [x] A user can add a manual expense with account, date, amount, currency, description, and category.
+- [x] A user can add a manual income with account, date, amount, currency, description, and income source/kind.
+- [x] A user can add a manual transfer between owned accounts without counting it as income or expense.
+- [x] Manual transactions receive audit/provenance metadata distinct from PDF provenance.
+- [x] Manual entries appear in the same transaction listing/reporting queries as accepted imported transactions.
+- [x] Tests cover manual expense, manual income, manual transfer, and invalid/unbalanced input.
 
 ## Blocked by
 

@@ -177,6 +177,39 @@ tracky candidates accept-transfer-pair cand_NEQUI_REDACTED cand_RAPPI_REDACTED \
 
 The accepted pair creates balancing canonical transfer legs marked `transaction_kind: "own_account_transfer"` and links both candidates through a transfer-pair record. Do not accept pairs with unresolved accounts, non-owned accounts, mismatched amounts/dates/currencies, or candidates that are already accepted/rejected.
 
+## Manual canonical entries
+
+Manual entries are an explicit non-PDF route for records missing from a supported statement. They do not inspect or import a PDF, and they do not create candidate transactions. Their audit metadata is `source: "manual_entry"`, deliberately distinct from PDF provenance.
+
+Create a manual expense using a registered owned account and an explicit category:
+
+```bash
+tracky transactions add-expense --db /tmp/tracky-review.sqlite \
+  --account-id acct_REDACTED --posted-date 2026-07-09 \
+  --description "REDACTED_MANUAL_PURCHASE" --amount-minor -150000 --currency COP \
+  --category-id cat_REDACTED --json
+```
+
+Create a manual income only with an explicit registered income source and kind:
+
+```bash
+tracky transactions add-income --db /tmp/tracky-review.sqlite \
+  --account-id acct_REDACTED --posted-date 2026-07-09 \
+  --description "REDACTED_MANUAL_INCOME" --amount-minor 500000 --currency COP \
+  --income-source-id incsrc_REDACTED --income-kind salary --json
+```
+
+Create a manual own-account transfer with two distinct registered owned accounts. It creates equal and opposite canonical transfer legs, never income or expense:
+
+```bash
+tracky transactions add-transfer --db /tmp/tracky-review.sqlite \
+  --from-account-id acct_REDACTED_FROM --to-account-id acct_REDACTED_TO \
+  --posted-date 2026-07-09 --description "REDACTED_MANUAL_TRANSFER" \
+  --amount-minor 200000 --currency COP --json
+```
+
+All manual commands require `--json`, a matching account currency, valid signs, and explicit categories/sources. Expenses may use balanced repeated `--line CATEGORY_ID:AMOUNT_MINOR:CURRENCY` values instead of `--category-id`.
+
 ## Status and duplicate interpretation
 
 Candidate statuses:
