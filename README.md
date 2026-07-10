@@ -41,6 +41,28 @@ tracky candidates reject --db /tmp/tracky-review.sqlite cand_REDACTED --json
 
 Only `candidates accept` creates or links a canonical transaction, and it preserves the audit path back to the candidate, provenance, source document, and import batch. `candidates reject` updates review state without deleting provenance or evidence.
 
+### Review large batches safely
+
+```bash
+tracky candidates batch-summary --db /tmp/tracky-review.sqlite \
+  --import-batch-id batch_REDACTED --largest-limit 20 --json
+tracky candidates compare-duplicate cand_REDACTED \
+  --db /tmp/tracky-review.sqlite --json
+tracky candidates suggest-actions --db /tmp/tracky-review.sqlite \
+  --import-batch-id batch_REDACTED --json
+```
+
+These three commands are strictly read-only. Suggestions are deterministic and explain their fingerprint or structured transfer evidence, but they never apply themselves. Apply only explicit candidate ids, preferably after a dry run:
+
+```bash
+tracky candidates apply-actions --db /tmp/tracky-review.sqlite \
+  --action reject-duplicate:cand_DUPLICATE_REDACTED \
+  --action accept-transfer-pair:cand_FROM_REDACTED:cand_TO_REDACTED \
+  --dry-run --json
+```
+
+Without `--dry-run`, Tracky validates the complete action set using the individual reject/transfer rules and commits all actions atomically. Any failed action leaves every candidate unchanged.
+
 ## Canonical finance reports
 
 Summarize an inclusive date range after review:
@@ -57,6 +79,7 @@ The stable JSON report groups totals by currency and includes income, positive e
 - Supply PDF passwords only at runtime, such as with `--password-env`; Tracky records the credential source, not the credential value.
 - Do not commit real PDFs, document credentials, account numbers, emails, addresses, counterparties, long identifiers, or unredacted financial data as fixtures or examples.
 - Treat `possible_duplicate` and `exact_duplicate` signals as review prompts. Tracky flags possible duplicates; it does not auto-merge, auto-accept, or auto-delete them.
+- Batch suggestions are not persisted approvals. `apply-actions` requires explicit candidate ids and never accepts a suggestion silently.
 - Reports count each accepted transfer pair once and never classify its balancing canonical legs as income or expense.
 - Use redacted examples and synthetic identifiers in documentation and tests.
 

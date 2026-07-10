@@ -83,6 +83,32 @@ tracky candidates list --db /tmp/tracky-review.sqlite --status pending_review --
 tracky candidates list --db /tmp/tracky-review.sqlite --status possible_duplicate --json
 ```
 
+For a large batch, summarize and inspect it without opening SQLite for writes:
+
+```bash
+tracky candidates batch-summary --db /tmp/tracky-review.sqlite \
+  --import-batch-id "$BATCH_ID" --largest-limit 20 --json
+
+tracky candidates compare-duplicate cand_REDACTED \
+  --db /tmp/tracky-review.sqlite --json
+
+tracky candidates suggest-actions --db /tmp/tracky-review.sqlite \
+  --import-batch-id "$BATCH_ID" --json
+```
+
+`batch-summary`, `compare-duplicate`, and `suggest-actions` open the existing database read-only. Suggestions are explanations, not decisions: duplicate rejection requires an exact fingerprint match to an already canonical/accepted record, and transfer suggestions reuse the structured owned-account/date/amount/currency/direction/semantic checks. Description text alone never produces an action.
+
+Dry-run explicit actions before applying them:
+
+```bash
+tracky candidates apply-actions --db /tmp/tracky-review.sqlite \
+  --action reject-duplicate:cand_DUPLICATE_REDACTED \
+  --action accept-transfer-pair:cand_FROM_REDACTED:cand_TO_REDACTED \
+  --dry-run --json
+```
+
+Remove `--dry-run` only after inspecting every `action_results[]` entry. Apply preflights the complete set and then writes one SQLite transaction; if one candidate is missing, already reviewed, reused across actions, not an obvious exact duplicate, or fails the individual transfer validation, Tracky applies none of the actions. Deterministic suggestion ids are not persisted or accepted by apply in this slice, so candidate ids must always be explicit.
+
 ### 4. Accept or reject explicitly
 
 Accept only candidates that have been reviewed and whose provenance/evidence still supports the transaction.

@@ -7,16 +7,18 @@ use crate::pdf::{
 };
 use crate::storage::{
     accept_candidate, accept_expense_candidate, accept_income_candidate, accept_transfer_pair,
-    account_registry_error_response, apply_migrations, category_registry_error_response,
-    create_category, create_income_source, create_manual_expense, create_manual_income,
-    create_manual_transfer, duplicate_import_response, finance_report_error_response,
-    find_source_document_by_hash, income_source_registry_error_response,
-    inspect_canonical_transaction, list_canonical_transactions, list_categories,
-    list_income_sources, list_likely_transfer_pairs, list_owned_accounts, list_review_candidates,
-    persist_pdf_import, register_owned_account, reject_candidate,
-    replace_expense_transaction_lines, review_error_response, summarize_finances,
-    transfer_error_response, update_canonical_transaction, AccountRegisterInput,
-    AccountRegistryResponse, CandidateReviewResponse, CategoryCreateInput,
+    account_registry_error_response, apply_batch_actions, apply_migrations,
+    batch_review_error_response, batch_review_error_response_with_dry_run,
+    category_registry_error_response, compare_duplicate_candidate, create_category,
+    create_income_source, create_manual_expense, create_manual_income, create_manual_transfer,
+    duplicate_import_response, finance_report_error_response, find_source_document_by_hash,
+    income_source_registry_error_response, inspect_canonical_transaction,
+    list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
+    list_owned_accounts, list_review_candidates, persist_pdf_import, register_owned_account,
+    reject_candidate, replace_expense_transaction_lines, review_error_response,
+    suggest_batch_actions, summarize_finances, summarize_import_batch, transfer_error_response,
+    update_canonical_transaction, AccountRegisterInput, AccountRegistryResponse,
+    BatchActionRequest, BatchReviewResponse, CandidateReviewResponse, CategoryCreateInput,
     CategoryRegistryResponse, ExpenseLineInput, FinanceReportResponse, ImportPdfResponse,
     IncomeSourceCreateInput, IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput,
     ManualTransactionResponse, ManualTransferInput, TransactionLedgerResponse,
@@ -25,7 +27,7 @@ use crate::storage::{
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -153,6 +155,10 @@ enum AccountCommands {
 #[derive(Debug, Subcommand)]
 enum CandidateCommands {
     List(CandidateListArgs),
+    BatchSummary(CandidateBatchSummaryArgs),
+    CompareDuplicate(CandidateCompareDuplicateArgs),
+    SuggestActions(CandidateSuggestActionsArgs),
+    ApplyActions(CandidateApplyActionsArgs),
     Accept(CandidateActionArgs),
     AcceptIncome(CandidateIncomeAcceptArgs),
     AcceptExpense(CandidateExpenseAcceptArgs),
@@ -441,6 +447,50 @@ struct CandidateListArgs {
 }
 
 #[derive(Debug, Parser)]
+struct CandidateBatchSummaryArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "import-batch-id", value_name = "ID")]
+    import_batch_id: String,
+    #[arg(long = "largest-limit", value_name = "COUNT", default_value_t = 10)]
+    largest_limit: usize,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateCompareDuplicateArgs {
+    #[arg(value_name = "CANDIDATE_ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateSuggestActionsArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "import-batch-id", value_name = "ID")]
+    import_batch_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateApplyActionsArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "action", value_name = "ACTION")]
+    actions: Vec<String>,
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
 struct CandidateActionArgs {
     /// Candidate transaction id.
     #[arg(value_name = "CANDIDATE_ID")]
@@ -618,6 +668,18 @@ where
         },
         Commands::Candidates(candidates) => match candidates.command {
             CandidateCommands::List(args) => candidate_list_command(args, &mut stdout),
+            CandidateCommands::BatchSummary(args) => {
+                candidate_batch_summary_command(args, &mut stdout)
+            }
+            CandidateCommands::CompareDuplicate(args) => {
+                candidate_compare_duplicate_command(args, &mut stdout)
+            }
+            CandidateCommands::SuggestActions(args) => {
+                candidate_suggest_actions_command(args, &mut stdout)
+            }
+            CandidateCommands::ApplyActions(args) => {
+                candidate_apply_actions_command(args, &mut stdout)
+            }
             CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
             CandidateCommands::AcceptIncome(args) => {
                 candidate_accept_income_command(args, &mut stdout)
@@ -1167,6 +1229,200 @@ where
     write_candidate_review_response(stdout, response)
 }
 
+fn candidate_batch_summary_command<W: Write>(
+    args: CandidateBatchSummaryArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if let Some(exit_code) = require_batch_json(
+        args.json,
+        stdout,
+        "candidates batch-summary",
+        Some(&args.import_batch_id),
+    )? {
+        return Ok(exit_code);
+    }
+    let connection = match open_readonly_database(&args.db) {
+        Ok(connection) => connection,
+        Err(_) => {
+            return write_batch_review_response(
+                stdout,
+                database_open_batch_error("candidates batch-summary", Some(&args.import_batch_id)),
+            )
+        }
+    };
+    let response = summarize_import_batch(&connection, &args.import_batch_id, args.largest_limit)
+        .unwrap_or_else(|_| {
+            database_operation_batch_error(
+                "candidates batch-summary",
+                Some(&args.import_batch_id),
+                None,
+            )
+        });
+    write_batch_review_response(stdout, response)
+}
+
+fn candidate_compare_duplicate_command<W: Write>(
+    args: CandidateCompareDuplicateArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if let Some(exit_code) =
+        require_batch_json(args.json, stdout, "candidates compare-duplicate", None)?
+    {
+        return Ok(exit_code);
+    }
+    let connection = match open_readonly_database(&args.db) {
+        Ok(connection) => connection,
+        Err(_) => {
+            return write_batch_review_response(
+                stdout,
+                database_open_batch_error("candidates compare-duplicate", None),
+            )
+        }
+    };
+    let response =
+        compare_duplicate_candidate(&connection, &args.candidate_id).unwrap_or_else(|_| {
+            database_operation_batch_error("candidates compare-duplicate", None, None)
+        });
+    write_batch_review_response(stdout, response)
+}
+
+fn candidate_suggest_actions_command<W: Write>(
+    args: CandidateSuggestActionsArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if let Some(exit_code) = require_batch_json(
+        args.json,
+        stdout,
+        "candidates suggest-actions",
+        Some(&args.import_batch_id),
+    )? {
+        return Ok(exit_code);
+    }
+    let connection = match open_readonly_database(&args.db) {
+        Ok(connection) => connection,
+        Err(_) => {
+            return write_batch_review_response(
+                stdout,
+                database_open_batch_error(
+                    "candidates suggest-actions",
+                    Some(&args.import_batch_id),
+                ),
+            )
+        }
+    };
+    let response = suggest_batch_actions(&connection, &args.import_batch_id).unwrap_or_else(|_| {
+        database_operation_batch_error(
+            "candidates suggest-actions",
+            Some(&args.import_batch_id),
+            None,
+        )
+    });
+    write_batch_review_response(stdout, response)
+}
+
+fn candidate_apply_actions_command<W: Write>(
+    args: CandidateApplyActionsArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_batch_review_response(
+            stdout,
+            batch_review_error_response_with_dry_run(
+                "candidates apply-actions",
+                "validation_failure",
+                "json_output_required",
+                "The candidates apply-actions command currently requires --json.",
+                "command",
+                serde_json::json!({ "flag": "--json" }),
+                args.dry_run,
+            ),
+        );
+    }
+    let actions = match parse_batch_actions(&args.actions, args.dry_run) {
+        Ok(actions) => actions,
+        Err(response) => return write_batch_review_response(stdout, *response),
+    };
+    let mut connection = if args.dry_run {
+        match open_readonly_database(&args.db) {
+            Ok(connection) => connection,
+            Err(_) => {
+                return write_batch_review_response(
+                    stdout,
+                    database_open_batch_error_with_dry_run(args.dry_run),
+                )
+            }
+        }
+    } else {
+        match open_review_database(&args.db) {
+            Ok(connection) => connection,
+            Err(_) => {
+                return write_batch_review_response(
+                    stdout,
+                    database_open_batch_error_with_dry_run(args.dry_run),
+                )
+            }
+        }
+    };
+    let response =
+        apply_batch_actions(&mut connection, &actions, args.dry_run).unwrap_or_else(|_| {
+            database_operation_batch_error("candidates apply-actions", None, Some(args.dry_run))
+        });
+    write_batch_review_response(stdout, response)
+}
+
+fn parse_batch_actions(
+    raw_actions: &[String],
+    dry_run: bool,
+) -> Result<Vec<BatchActionRequest>, Box<BatchReviewResponse>> {
+    raw_actions
+        .iter()
+        .map(|raw_action| parse_batch_action(raw_action, dry_run))
+        .collect()
+}
+
+fn parse_batch_action(
+    raw_action: &str,
+    dry_run: bool,
+) -> Result<BatchActionRequest, Box<BatchReviewResponse>> {
+    let parts = raw_action.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["reject-duplicate" | "reject_duplicate", candidate_id] if !candidate_id.is_empty() => {
+            Ok(BatchActionRequest::reject_duplicate(
+                (*candidate_id).to_string(),
+            ))
+        }
+        ["accept-transfer-pair" | "accept_transfer_pair", from_id, to_id]
+            if !from_id.is_empty() && !to_id.is_empty() =>
+        {
+            Ok(BatchActionRequest::accept_transfer_pair(
+                (*from_id).to_string(),
+                (*to_id).to_string(),
+            ))
+        }
+        ["reject-duplicate" | "reject_duplicate", ..]
+        | ["accept-transfer-pair" | "accept_transfer_pair", ..] => Err(Box::new(
+            batch_review_error_response_with_dry_run(
+                "candidates apply-actions",
+                "validation_failure",
+                "candidate_ids_required",
+                "Batch actions require explicit candidate ids.",
+                "actions",
+                serde_json::json!({ "action": raw_action }),
+                dry_run,
+            ),
+        )),
+        _ => Err(Box::new(batch_review_error_response_with_dry_run(
+            "candidates apply-actions",
+            "validation_failure",
+            "invalid_batch_action",
+            "Batch action must be reject-duplicate:CANDIDATE_ID or accept-transfer-pair:FROM_ID:TO_ID.",
+            "actions",
+            serde_json::json!({ "action": raw_action }),
+            dry_run,
+        ))),
+    }
+}
+
 fn candidate_accept_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>
 where
     W: Write,
@@ -1431,6 +1687,30 @@ where
     )
 }
 
+fn require_batch_json<W: Write>(
+    json: bool,
+    stdout: &mut W,
+    command: &'static str,
+    import_batch_id: Option<&str>,
+) -> Result<Option<i32>> {
+    if json {
+        return Ok(None);
+    }
+    write_batch_review_response(
+        stdout,
+        batch_review_error_response(
+            command,
+            import_batch_id,
+            "validation_failure",
+            "json_output_required",
+            "This candidates batch review command currently requires --json.",
+            "command",
+            serde_json::json!({ "flag": "--json" }),
+        ),
+    )
+    .map(Some)
+}
+
 fn require_transaction_json<W>(
     json: bool,
     stdout: &mut W,
@@ -1540,6 +1820,56 @@ fn open_review_database(db: &Path) -> Result<Connection> {
     Ok(connection)
 }
 
+fn open_readonly_database(db: &Path) -> Result<Connection> {
+    Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening read-only SQLite database {}", db.display()))
+}
+
+fn database_open_batch_error(
+    command: &'static str,
+    import_batch_id: Option<&str>,
+) -> BatchReviewResponse {
+    batch_review_error_response(
+        command,
+        import_batch_id,
+        "storage_failure",
+        "database_open_failed",
+        "SQLite database could not be opened.",
+        "db",
+        serde_json::json!({}),
+    )
+}
+
+fn database_open_batch_error_with_dry_run(dry_run: bool) -> BatchReviewResponse {
+    batch_review_error_response_with_dry_run(
+        "candidates apply-actions",
+        "storage_failure",
+        "database_open_failed",
+        "SQLite database could not be opened.",
+        "db",
+        serde_json::json!({}),
+        dry_run,
+    )
+}
+
+fn database_operation_batch_error(
+    command: &'static str,
+    import_batch_id: Option<&str>,
+    dry_run: Option<bool>,
+) -> BatchReviewResponse {
+    let mut response = batch_review_error_response(
+        command,
+        import_batch_id,
+        "storage_failure",
+        "database_operation_failed",
+        "SQLite could not complete the batch review operation.",
+        "db",
+        serde_json::json!({}),
+    );
+    response.dry_run = dry_run;
+    response
+}
+
 fn write_account_registry_response<W: Write>(
     stdout: &mut W,
     response: AccountRegistryResponse,
@@ -1586,6 +1916,13 @@ fn write_candidate_review_response<W: Write>(
         response,
         "writing candidate review JSON",
     )
+}
+
+fn write_batch_review_response<W: Write>(
+    stdout: &mut W,
+    response: BatchReviewResponse,
+) -> Result<i32> {
+    write_json_response(stdout, response.ok, response, "writing batch review JSON")
 }
 
 fn write_transfer_review_response<W: Write>(

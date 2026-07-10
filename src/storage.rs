@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const REVIEW_FIRST_SCHEMA: &str = include_str!("../migrations/0001_review_first_schema.sql");
@@ -17,6 +18,7 @@ pub const CATEGORY_REGISTRY_SCHEMA_VERSION: &str = "tracky.categories.v1";
 pub const MANUAL_TRANSACTIONS_SCHEMA_VERSION: &str = "tracky.manual-transactions.v1";
 pub const TRANSACTION_LEDGER_SCHEMA_VERSION: &str = "tracky.transactions.v1";
 pub const FINANCE_REPORT_SCHEMA_VERSION: &str = "tracky.finance-report.v1";
+pub const BATCH_REVIEW_SCHEMA_VERSION: &str = "tracky.batch-review.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -310,6 +312,162 @@ pub struct FinanceReportResponse {
     pub category_totals: Vec<CategoryTotal>,
     pub income_source_totals: Vec<IncomeSourceTotal>,
     pub excluded_transfer_totals: Vec<ExcludedTransferTotal>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BatchReviewResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_batch_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<BatchSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<DuplicateComparison>,
+    pub suggestions: Vec<ReviewSuggestion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run: Option<bool>,
+    pub action_results: Vec<BatchActionResult>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BatchSummary {
+    pub total_candidates: usize,
+    pub by_status: Vec<GroupCount>,
+    pub by_duplicate_status: Vec<GroupCount>,
+    pub by_institution: Vec<GroupCount>,
+    pub by_account_resolution: Vec<GroupCount>,
+    pub by_direction_hint: Vec<GroupCount>,
+    pub by_semantic_hint: Vec<GroupCount>,
+    pub largest_amounts: Vec<LargestCandidateAmount>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct GroupCount {
+    pub key: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct LargestCandidateAmount {
+    pub candidate_id: String,
+    pub posted_date: String,
+    pub description: String,
+    pub amount_minor: i64,
+    pub absolute_amount_minor: u64,
+    pub currency: String,
+    pub status: CandidateStatus,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DuplicateComparison {
+    pub candidate: ReviewCandidate,
+    pub matched_candidates: Vec<ReviewCandidate>,
+    pub matched_canonical_transactions: Vec<MatchedCanonicalTransaction>,
+    pub fingerprints: Vec<ReviewFingerprint>,
+    pub duplicate_markers: Vec<ReviewDuplicateMarker>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct MatchedCanonicalTransaction {
+    pub transaction: CanonicalTransaction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<ReviewCandidate>,
+    pub provenance: Vec<TransactionProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReviewFingerprint {
+    pub id: String,
+    pub fingerprint: String,
+    pub candidate_transaction_id: Option<String>,
+    pub canonical_transaction_id: Option<String>,
+    pub duplicate_status: String,
+    pub normalized_account_key: Option<String>,
+    pub normalized_posted_date: String,
+    pub normalized_amount_minor: i64,
+    pub normalized_currency: String,
+    pub normalized_description: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReviewDuplicateMarker {
+    pub id: String,
+    pub candidate_transaction_id: String,
+    pub matched_candidate_transaction_id: Option<String>,
+    pub matched_canonical_transaction_id: Option<String>,
+    pub duplicate_status: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ReviewSuggestion {
+    pub id: String,
+    pub proposed_action: &'static str,
+    pub candidate_ids: Vec<String>,
+    pub reason: &'static str,
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BatchActionKind {
+    RejectDuplicate,
+    AcceptTransferPair,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchActionRequest {
+    kind: BatchActionKind,
+    candidate_ids: Vec<String>,
+}
+
+impl BatchActionRequest {
+    pub fn reject_duplicate(candidate_id: String) -> Self {
+        Self {
+            kind: BatchActionKind::RejectDuplicate,
+            candidate_ids: vec![candidate_id],
+        }
+    }
+
+    pub fn accept_transfer_pair(from_candidate_id: String, to_candidate_id: String) -> Self {
+        Self {
+            kind: BatchActionKind::AcceptTransferPair,
+            candidate_ids: vec![from_candidate_id, to_candidate_id],
+        }
+    }
+
+    fn action(&self) -> &'static str {
+        match self.kind {
+            BatchActionKind::RejectDuplicate => "reject_duplicate",
+            BatchActionKind::AcceptTransferPair => "accept_transfer_pair",
+        }
+    }
+
+    fn candidate_ids(&self) -> &[String] {
+        &self.candidate_ids
+    }
+}
+
+struct PreparedBatchAction {
+    action: &'static str,
+    candidate_ids: Vec<String>,
+    mutation: BatchActionMutation,
+}
+
+enum BatchActionMutation {
+    RejectDuplicate { candidate_id: String },
+    AcceptTransferPair { pair: ReviewTransferPair },
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BatchActionResult {
+    pub action: &'static str,
+    pub candidate_ids: Vec<String>,
+    pub status: &'static str,
+    pub canonical_transaction_ids: Vec<String>,
     pub errors: Vec<ReviewError>,
 }
 
@@ -1777,6 +1935,676 @@ pub fn list_review_candidates(
     Ok(candidates)
 }
 
+pub fn summarize_import_batch(
+    connection: &Connection,
+    import_batch_id: &str,
+    largest_limit: usize,
+) -> Result<BatchReviewResponse> {
+    if largest_limit == 0 {
+        return Ok(batch_review_error_response(
+            "candidates batch-summary",
+            Some(import_batch_id),
+            "validation_failure",
+            "invalid_largest_limit",
+            "Largest amount limit must be greater than zero.",
+            "largest_limit",
+            serde_json::json!({ "largest_limit": largest_limit }),
+        ));
+    }
+    if !import_batch_exists(connection, import_batch_id)? {
+        return Ok(batch_not_found_response(
+            "candidates batch-summary",
+            import_batch_id,
+        ));
+    }
+    let candidates = list_review_candidates(connection, Some(import_batch_id), None)?;
+    let mut by_status = BTreeMap::new();
+    let mut by_duplicate_status = BTreeMap::new();
+    let mut by_institution = BTreeMap::new();
+    let mut by_account_resolution = BTreeMap::new();
+    let mut by_direction_hint = BTreeMap::new();
+    let mut by_semantic_hint = BTreeMap::new();
+    for candidate in &candidates {
+        increment_group(&mut by_status, candidate_status_value(&candidate.status));
+        increment_group(
+            &mut by_duplicate_status,
+            duplicate_status_value(&candidate.duplicate_status.status),
+        );
+        increment_group(
+            &mut by_institution,
+            candidate
+                .institution_hint
+                .as_deref()
+                .or(candidate.institution_id.as_deref())
+                .unwrap_or("unresolved"),
+        );
+        increment_group(
+            &mut by_account_resolution,
+            if candidate.account_id.is_some() {
+                "resolved"
+            } else {
+                "unresolved"
+            },
+        );
+        increment_group(
+            &mut by_direction_hint,
+            candidate.direction_hint.as_deref().unwrap_or("unknown"),
+        );
+        increment_group(
+            &mut by_semantic_hint,
+            candidate.semantic_hint.as_deref().unwrap_or("unknown"),
+        );
+    }
+    let mut largest_amounts = candidates
+        .iter()
+        .map(|candidate| LargestCandidateAmount {
+            candidate_id: candidate.id.clone(),
+            posted_date: candidate.posted_date.clone(),
+            description: candidate.description.clone(),
+            amount_minor: candidate.amount_minor,
+            absolute_amount_minor: candidate.amount_minor.unsigned_abs(),
+            currency: candidate.currency.clone(),
+            status: candidate.status.clone(),
+        })
+        .collect::<Vec<_>>();
+    largest_amounts.sort_by(|left, right| {
+        right
+            .absolute_amount_minor
+            .cmp(&left.absolute_amount_minor)
+            .then(left.candidate_id.cmp(&right.candidate_id))
+    });
+    largest_amounts.truncate(largest_limit);
+    Ok(BatchReviewResponse {
+        schema_version: BATCH_REVIEW_SCHEMA_VERSION,
+        command: "candidates batch-summary",
+        ok: true,
+        import_batch_id: Some(import_batch_id.to_string()),
+        summary: Some(BatchSummary {
+            total_candidates: candidates.len(),
+            by_status: group_counts(by_status),
+            by_duplicate_status: group_counts(by_duplicate_status),
+            by_institution: group_counts(by_institution),
+            by_account_resolution: group_counts(by_account_resolution),
+            by_direction_hint: group_counts(by_direction_hint),
+            by_semantic_hint: group_counts(by_semantic_hint),
+            largest_amounts,
+        }),
+        comparison: None,
+        suggestions: Vec::new(),
+        dry_run: None,
+        action_results: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn compare_duplicate_candidate(
+    connection: &Connection,
+    candidate_id: &str,
+) -> Result<BatchReviewResponse> {
+    let Some(candidate) = find_review_candidate(connection, candidate_id)? else {
+        return Ok(batch_review_error_response(
+            "candidates compare-duplicate",
+            None,
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.",
+            "candidate_id",
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    };
+    let mut matched_candidates = Vec::new();
+    for matched_id in &candidate.duplicate_status.matched_candidate_ids {
+        if let Some(matched) = find_review_candidate(connection, matched_id)? {
+            matched_candidates.push(matched);
+        }
+    }
+    matched_candidates.sort_by(|left, right| left.id.cmp(&right.id));
+
+    let mut matched_canonical_transactions = Vec::new();
+    for matched_id in &candidate.duplicate_status.matched_canonical_transaction_ids {
+        let Some(transaction) = canonical_transaction(connection, matched_id)? else {
+            continue;
+        };
+        let matched_candidate = transaction
+            .created_from_candidate_id
+            .as_deref()
+            .map(|id| find_review_candidate(connection, id))
+            .transpose()?
+            .flatten();
+        let provenance =
+            transaction_provenance_for(connection, &transaction.id, matched_candidate.as_ref())?;
+        matched_canonical_transactions.push(MatchedCanonicalTransaction {
+            transaction,
+            candidate: matched_candidate,
+            provenance,
+        });
+    }
+    matched_canonical_transactions
+        .sort_by(|left, right| left.transaction.id.cmp(&right.transaction.id));
+    let fingerprints = relevant_fingerprints(
+        connection,
+        &candidate,
+        &matched_candidates,
+        &matched_canonical_transactions,
+    )?;
+    let duplicate_markers = relevant_duplicate_markers(connection, candidate_id)?;
+    Ok(BatchReviewResponse {
+        schema_version: BATCH_REVIEW_SCHEMA_VERSION,
+        command: "candidates compare-duplicate",
+        ok: true,
+        import_batch_id: Some(candidate.import_batch_id.clone()),
+        summary: None,
+        comparison: Some(DuplicateComparison {
+            candidate,
+            matched_candidates,
+            matched_canonical_transactions,
+            fingerprints,
+            duplicate_markers,
+        }),
+        suggestions: Vec::new(),
+        dry_run: None,
+        action_results: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn suggest_batch_actions(
+    connection: &Connection,
+    import_batch_id: &str,
+) -> Result<BatchReviewResponse> {
+    if !import_batch_exists(connection, import_batch_id)? {
+        return Ok(batch_not_found_response(
+            "candidates suggest-actions",
+            import_batch_id,
+        ));
+    }
+    let candidates = list_review_candidates(connection, Some(import_batch_id), None)?;
+    let mut suggestions = Vec::new();
+    for candidate in &candidates {
+        if is_obvious_unreviewed_duplicate(connection, candidate)? {
+            let candidate_ids = vec![candidate.id.clone()];
+            suggestions.push(ReviewSuggestion {
+                id: review_suggestion_id("reject_duplicate", &candidate_ids),
+                proposed_action: "reject_duplicate",
+                candidate_ids,
+                reason: "exact_fingerprint_matches_reviewed_record",
+                evidence: serde_json::json!({
+                    "duplicate_status": candidate.duplicate_status.status,
+                    "fingerprint": candidate.duplicate_status.fingerprint,
+                    "matched_candidate_ids": candidate.duplicate_status.matched_candidate_ids,
+                    "matched_canonical_transaction_ids": candidate.duplicate_status.matched_canonical_transaction_ids,
+                    "provenance": candidate.provenance,
+                }),
+            });
+        }
+    }
+    for pair in likely_transfer_pairs_from_candidates(connection, &candidates)? {
+        let candidate_ids = vec![pair.from_candidate.id.clone(), pair.to_candidate.id.clone()];
+        suggestions.push(ReviewSuggestion {
+            id: review_suggestion_id("accept_transfer_pair", &candidate_ids),
+            proposed_action: "accept_transfer_pair",
+            candidate_ids,
+            reason: "owned_accounts_and_transfer_fields_match",
+            evidence: serde_json::json!({
+                "posted_date": pair.posted_date,
+                "amount_minor": pair.amount_minor,
+                "currency": pair.currency,
+                "from_account_id": pair.from_account.id,
+                "to_account_id": pair.to_account.id,
+                "from_semantic_hint": pair.from_candidate.semantic_hint,
+                "to_semantic_hint": pair.to_candidate.semantic_hint,
+                "from_provenance": pair.from_candidate.provenance,
+                "to_provenance": pair.to_candidate.provenance,
+            }),
+        });
+    }
+    suggestions.sort_by(|left, right| {
+        left.proposed_action
+            .cmp(right.proposed_action)
+            .then(left.candidate_ids.cmp(&right.candidate_ids))
+    });
+    Ok(BatchReviewResponse {
+        schema_version: BATCH_REVIEW_SCHEMA_VERSION,
+        command: "candidates suggest-actions",
+        ok: true,
+        import_batch_id: Some(import_batch_id.to_string()),
+        summary: None,
+        comparison: None,
+        suggestions,
+        dry_run: None,
+        action_results: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
+pub fn apply_batch_actions(
+    connection: &mut Connection,
+    actions: &[BatchActionRequest],
+    dry_run: bool,
+) -> Result<BatchReviewResponse> {
+    if actions.is_empty() {
+        return Ok(batch_review_error_response_with_dry_run(
+            "candidates apply-actions",
+            "validation_failure",
+            "actions_required",
+            "At least one explicit --action with candidate ids is required.",
+            "actions",
+            serde_json::json!({}),
+            dry_run,
+        ));
+    }
+    if dry_run {
+        let (_, action_results) = prepare_batch_actions(connection, actions)?;
+        return Ok(batch_action_response(true, action_results));
+    }
+
+    let tx = connection
+        .transaction()
+        .context("starting atomic batch review transaction")?;
+    let (prepared, mut action_results) = prepare_batch_actions(&tx, actions)?;
+    if action_results
+        .iter()
+        .any(|result| !result.errors.is_empty())
+    {
+        return Ok(batch_action_response(false, action_results));
+    }
+    for (prepared, result) in prepared.into_iter().zip(action_results.iter_mut()) {
+        match prepared.mutation {
+            BatchActionMutation::RejectDuplicate { candidate_id } => {
+                tx.execute(
+                    "UPDATE candidate_transactions SET status = 'rejected' WHERE id = ?1",
+                    params![candidate_id],
+                )?;
+            }
+            BatchActionMutation::AcceptTransferPair { pair } => {
+                result.canonical_transaction_ids = apply_transfer_pair_rows(&tx, &pair)?;
+            }
+        }
+        result.status = "applied";
+    }
+    tx.commit().context("committing atomic batch review")?;
+    Ok(batch_action_response(false, action_results))
+}
+
+fn prepare_batch_actions(
+    connection: &Connection,
+    actions: &[BatchActionRequest],
+) -> Result<(Vec<PreparedBatchAction>, Vec<BatchActionResult>)> {
+    let mut seen_candidate_ids = HashSet::new();
+    let mut prepared_actions = Vec::new();
+    let mut action_results = Vec::new();
+    for action in actions {
+        let candidate_ids = action.candidate_ids().to_vec();
+        let reused_id = candidate_ids
+            .iter()
+            .find(|candidate_id| !seen_candidate_ids.insert((*candidate_id).clone()))
+            .cloned();
+        let prepared = if let Some(candidate_id) = reused_id {
+            Err(vec![ReviewError {
+                category: "validation_failure",
+                code: "candidate_reused_in_batch",
+                message: "A candidate id may appear in only one batch action.".to_string(),
+                path: "actions",
+                recoverable: true,
+                details: serde_json::json!({ "candidate_id": candidate_id }),
+            }])
+        } else {
+            preflight_batch_action(connection, action)?
+        };
+        let (result_action, result_candidate_ids, errors) = match prepared {
+            Ok(prepared) => {
+                let result_action = prepared.action;
+                let result_candidate_ids = prepared.candidate_ids.clone();
+                prepared_actions.push(prepared);
+                (result_action, result_candidate_ids, Vec::new())
+            }
+            Err(errors) => (action.action(), candidate_ids, errors),
+        };
+        action_results.push(BatchActionResult {
+            action: result_action,
+            candidate_ids: result_candidate_ids,
+            status: if errors.is_empty() {
+                "validated"
+            } else {
+                "failed"
+            },
+            canonical_transaction_ids: Vec::new(),
+            errors,
+        });
+    }
+    Ok((prepared_actions, action_results))
+}
+
+fn batch_action_response(
+    dry_run: bool,
+    action_results: Vec<BatchActionResult>,
+) -> BatchReviewResponse {
+    if action_results
+        .iter()
+        .any(|result| !result.errors.is_empty())
+    {
+        return BatchReviewResponse {
+            schema_version: BATCH_REVIEW_SCHEMA_VERSION,
+            command: "candidates apply-actions",
+            ok: false,
+            import_batch_id: None,
+            summary: None,
+            comparison: None,
+            suggestions: Vec::new(),
+            dry_run: Some(dry_run),
+            action_results,
+            errors: vec![ReviewError {
+                category: "conflict",
+                code: "batch_preflight_failed",
+                message: "No actions were applied because at least one action failed validation."
+                    .to_string(),
+                path: "actions",
+                recoverable: true,
+                details: serde_json::json!({ "atomic": true }),
+            }],
+        };
+    }
+    BatchReviewResponse {
+        schema_version: BATCH_REVIEW_SCHEMA_VERSION,
+        command: "candidates apply-actions",
+        ok: true,
+        import_batch_id: None,
+        summary: None,
+        comparison: None,
+        suggestions: Vec::new(),
+        dry_run: Some(dry_run),
+        action_results,
+        errors: Vec::new(),
+    }
+}
+
+fn import_batch_exists(connection: &Connection, import_batch_id: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM import_batches WHERE id = ?1",
+            params![import_batch_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|value| value.is_some())
+        .map_err(Into::into)
+}
+
+fn increment_group(groups: &mut BTreeMap<String, usize>, key: &str) {
+    *groups.entry(key.to_string()).or_default() += 1;
+}
+
+fn group_counts(groups: BTreeMap<String, usize>) -> Vec<GroupCount> {
+    groups
+        .into_iter()
+        .map(|(key, count)| GroupCount { key, count })
+        .collect()
+}
+
+fn relevant_fingerprints(
+    connection: &Connection,
+    candidate: &ReviewCandidate,
+    matched_candidates: &[ReviewCandidate],
+    matched_canonical_transactions: &[MatchedCanonicalTransaction],
+) -> Result<Vec<ReviewFingerprint>> {
+    let candidate_ids = matched_candidates
+        .iter()
+        .map(|candidate| candidate.id.as_str())
+        .chain(std::iter::once(candidate.id.as_str()))
+        .collect::<HashSet<_>>();
+    let canonical_ids = matched_canonical_transactions
+        .iter()
+        .map(|matched| matched.transaction.id.as_str())
+        .collect::<HashSet<_>>();
+    let mut statement = connection.prepare(
+        "SELECT id, fingerprint, candidate_transaction_id, canonical_transaction_id,
+                duplicate_status, normalized_account_key, normalized_posted_date,
+                normalized_amount_minor, normalized_currency, normalized_description
+         FROM transaction_fingerprints
+         ORDER BY id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(ReviewFingerprint {
+            id: row.get(0)?,
+            fingerprint: row.get(1)?,
+            candidate_transaction_id: row.get(2)?,
+            canonical_transaction_id: row.get(3)?,
+            duplicate_status: row.get(4)?,
+            normalized_account_key: row.get(5)?,
+            normalized_posted_date: row.get(6)?,
+            normalized_amount_minor: row.get(7)?,
+            normalized_currency: row.get(8)?,
+            normalized_description: row.get(9)?,
+        })
+    })?;
+    let target_fingerprint = candidate.duplicate_status.fingerprint.as_deref();
+    let mut fingerprints = Vec::new();
+    for row in rows {
+        let fingerprint = row?;
+        if target_fingerprint == Some(fingerprint.fingerprint.as_str())
+            || fingerprint
+                .candidate_transaction_id
+                .as_deref()
+                .is_some_and(|id| candidate_ids.contains(id))
+            || fingerprint
+                .canonical_transaction_id
+                .as_deref()
+                .is_some_and(|id| canonical_ids.contains(id))
+        {
+            fingerprints.push(fingerprint);
+        }
+    }
+    Ok(fingerprints)
+}
+
+fn relevant_duplicate_markers(
+    connection: &Connection,
+    candidate_id: &str,
+) -> Result<Vec<ReviewDuplicateMarker>> {
+    let mut statement = connection.prepare(
+        "SELECT id, candidate_transaction_id, matched_candidate_transaction_id,
+                matched_canonical_transaction_id, duplicate_status, reason
+         FROM transaction_duplicate_markers
+         WHERE candidate_transaction_id = ?1 OR matched_candidate_transaction_id = ?1
+         ORDER BY id",
+    )?;
+    let rows = statement.query_map(params![candidate_id], |row| {
+        Ok(ReviewDuplicateMarker {
+            id: row.get(0)?,
+            candidate_transaction_id: row.get(1)?,
+            matched_candidate_transaction_id: row.get(2)?,
+            matched_canonical_transaction_id: row.get(3)?,
+            duplicate_status: row.get(4)?,
+            reason: row.get(5)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn is_obvious_unreviewed_duplicate(
+    connection: &Connection,
+    candidate: &ReviewCandidate,
+) -> Result<bool> {
+    if !is_unreviewed_candidate_status(&candidate.status)
+        || candidate.duplicate_status.status != DuplicateStatusState::ExactDuplicate
+    {
+        return Ok(false);
+    }
+    if !candidate
+        .duplicate_status
+        .matched_canonical_transaction_ids
+        .is_empty()
+    {
+        return Ok(true);
+    }
+    for matched_id in &candidate.duplicate_status.matched_candidate_ids {
+        if find_review_candidate(connection, matched_id)?
+            .is_some_and(|matched| matched.status == CandidateStatus::Accepted)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn review_suggestion_id(action: &str, candidate_ids: &[String]) -> String {
+    let digest = Sha256::digest(format!("{action}|{}", candidate_ids.join("|")).as_bytes());
+    format!(
+        "suggest_{}",
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
+fn preflight_batch_action(
+    connection: &Connection,
+    action: &BatchActionRequest,
+) -> Result<std::result::Result<PreparedBatchAction, Vec<ReviewError>>> {
+    match action.kind {
+        BatchActionKind::RejectDuplicate => {
+            let candidate_id = &action.candidate_ids[0];
+            let Some(candidate) = find_review_candidate(connection, candidate_id)? else {
+                return Ok(Err(vec![candidate_not_found_error(
+                    candidate_id,
+                    "candidate_id",
+                )]));
+            };
+            if let Some(error) = candidate_rejection_error(&candidate) {
+                return Ok(Err(vec![error]));
+            }
+            if !is_obvious_unreviewed_duplicate(connection, &candidate)? {
+                return Ok(Err(vec![ReviewError {
+                    category: "conflict",
+                    code: "candidate_not_obvious_duplicate",
+                    message: "Reject-duplicate requires an exact fingerprint match to a canonical or accepted record."
+                        .to_string(),
+                    path: "candidate.duplicate_status",
+                    recoverable: true,
+                    details: serde_json::json!({
+                        "candidate_id": candidate_id,
+                        "duplicate_status": candidate.duplicate_status.status,
+                        "matched_candidate_ids": candidate.duplicate_status.matched_candidate_ids,
+                        "matched_canonical_transaction_ids": candidate.duplicate_status.matched_canonical_transaction_ids,
+                    }),
+                }]));
+            }
+            Ok(Ok(PreparedBatchAction {
+                action: action.action(),
+                candidate_ids: action.candidate_ids().to_vec(),
+                mutation: BatchActionMutation::RejectDuplicate {
+                    candidate_id: candidate_id.clone(),
+                },
+            }))
+        }
+        BatchActionKind::AcceptTransferPair => {
+            let from_candidate_id = &action.candidate_ids[0];
+            let to_candidate_id = &action.candidate_ids[1];
+            let Some(from_candidate) = find_review_candidate(connection, from_candidate_id)? else {
+                return Ok(Err(vec![candidate_not_found_error(
+                    from_candidate_id,
+                    "from_candidate_id",
+                )]));
+            };
+            let Some(to_candidate) = find_review_candidate(connection, to_candidate_id)? else {
+                return Ok(Err(vec![candidate_not_found_error(
+                    to_candidate_id,
+                    "to_candidate_id",
+                )]));
+            };
+            match build_transfer_pair(connection, from_candidate, to_candidate) {
+                Ok(pair) => Ok(Ok(PreparedBatchAction {
+                    action: action.action(),
+                    candidate_ids: action.candidate_ids().to_vec(),
+                    mutation: BatchActionMutation::AcceptTransferPair { pair },
+                })),
+                Err(error) => Ok(Err(vec![ReviewError {
+                    category: "conflict",
+                    code: error.code(),
+                    message: "Candidates do not form an eligible own-account card payment pair."
+                        .to_string(),
+                    path: "candidate_ids",
+                    recoverable: true,
+                    details: serde_json::json!({
+                        "from_candidate_id": from_candidate_id,
+                        "to_candidate_id": to_candidate_id,
+                        "reason": error.reason(),
+                    }),
+                }])),
+            }
+        }
+    }
+}
+
+fn candidate_not_found_error(candidate_id: &str, path: &'static str) -> ReviewError {
+    ReviewError {
+        category: "not_found",
+        code: "candidate_not_found",
+        message: "Candidate transaction was not found.".to_string(),
+        path,
+        recoverable: true,
+        details: serde_json::json!({ "candidate_id": candidate_id }),
+    }
+}
+
+fn batch_not_found_response(command: &'static str, import_batch_id: &str) -> BatchReviewResponse {
+    batch_review_error_response(
+        command,
+        Some(import_batch_id),
+        "not_found",
+        "import_batch_not_found",
+        "Import batch was not found.",
+        "import_batch_id",
+        serde_json::json!({ "import_batch_id": import_batch_id }),
+    )
+}
+
+pub fn batch_review_error_response(
+    command: &'static str,
+    import_batch_id: Option<&str>,
+    category: &'static str,
+    code: &'static str,
+    message: &str,
+    path: &'static str,
+    details: serde_json::Value,
+) -> BatchReviewResponse {
+    BatchReviewResponse {
+        schema_version: BATCH_REVIEW_SCHEMA_VERSION,
+        command,
+        ok: false,
+        import_batch_id: import_batch_id.map(ToString::to_string),
+        summary: None,
+        comparison: None,
+        suggestions: Vec::new(),
+        dry_run: None,
+        action_results: Vec::new(),
+        errors: vec![ReviewError {
+            category,
+            code,
+            message: message.to_string(),
+            path,
+            recoverable: true,
+            details,
+        }],
+    }
+}
+
+pub fn batch_review_error_response_with_dry_run(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: &str,
+    path: &'static str,
+    details: serde_json::Value,
+    dry_run: bool,
+) -> BatchReviewResponse {
+    let mut response =
+        batch_review_error_response(command, None, category, code, message, path, details);
+    response.dry_run = Some(dry_run);
+    response
+}
+
 pub fn list_likely_transfer_pairs(connection: &Connection) -> Result<TransferReviewResponse> {
     let candidates = list_review_candidates(connection, None, None)?;
     let pairs = likely_transfer_pairs_from_candidates(connection, &candidates)?;
@@ -1840,38 +2668,9 @@ pub fn accept_transfer_pair(
         }
     };
 
-    let from_canonical_id = canonical_transaction_id(from_candidate_id);
-    let to_canonical_id = canonical_transaction_id(to_candidate_id);
-    let transfer_amount = eligible_pair.amount_minor;
-    insert_transfer_canonical_transaction(
-        &tx,
-        &from_canonical_id,
-        from_candidate_id,
-        -transfer_amount,
-    )?;
-    insert_transfer_canonical_transaction(&tx, &to_canonical_id, to_candidate_id, transfer_amount)?;
-    tx.execute(
-        "INSERT INTO canonical_transfer_pairs (
-            id, transfer_kind, posted_date, amount_minor, currency,
-            from_account_id, to_account_id, from_candidate_id, to_candidate_id,
-            from_canonical_transaction_id, to_canonical_transaction_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![
-            eligible_pair.id,
-            CARD_PAYMENT_TRANSFER_KIND,
-            eligible_pair.posted_date,
-            eligible_pair.amount_minor,
-            eligible_pair.currency,
-            eligible_pair.from_account.id,
-            eligible_pair.to_account.id,
-            from_candidate_id,
-            to_candidate_id,
-            from_canonical_id,
-            to_canonical_id,
-        ],
-    )?;
-    mark_candidate_accepted_with_canonical(&tx, from_candidate_id, &from_canonical_id)?;
-    mark_candidate_accepted_with_canonical(&tx, to_candidate_id, &to_canonical_id)?;
+    let canonical_transaction_ids = apply_transfer_pair_rows(&tx, &eligible_pair)?;
+    let from_canonical_id = canonical_transaction_ids[0].clone();
+    let to_canonical_id = canonical_transaction_ids[1].clone();
     tx.commit().context("committing transfer pair accept")?;
 
     let from_candidate = find_review_candidate(connection, from_candidate_id)?
@@ -2412,29 +3211,15 @@ pub fn reject_candidate(
             serde_json::json!({ "candidate_id": candidate_id }),
         ));
     };
-    if candidate.status == CandidateStatus::Accepted {
+    if let Some(error) = candidate_rejection_error(&candidate) {
         return Ok(review_error_response(
             "candidates reject",
-            "conflict",
-            "candidate_already_accepted",
-            "Accepted candidates cannot be rejected without a future reversal command.".to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({
-                "candidate_id": candidate_id,
-                "canonical_transaction_id": candidate.canonical_transaction_id,
-            }),
-        ));
-    }
-    if candidate.status == CandidateStatus::Rejected {
-        return Ok(review_error_response(
-            "candidates reject",
-            "conflict",
-            "candidate_already_rejected",
-            "Candidate transaction was already rejected.".to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id }),
+            error.category,
+            error.code,
+            error.message,
+            error.path,
+            error.recoverable,
+            error.details,
         ));
     }
 
@@ -3208,6 +3993,79 @@ fn insert_transfer_canonical_transaction(
         ],
     )?;
     Ok(())
+}
+
+fn apply_transfer_pair_rows(
+    connection: &Connection,
+    pair: &ReviewTransferPair,
+) -> Result<Vec<String>> {
+    let from_candidate_id = &pair.from_candidate.id;
+    let to_candidate_id = &pair.to_candidate.id;
+    let from_canonical_id = canonical_transaction_id(from_candidate_id);
+    let to_canonical_id = canonical_transaction_id(to_candidate_id);
+    insert_transfer_canonical_transaction(
+        connection,
+        &from_canonical_id,
+        from_candidate_id,
+        -pair.amount_minor,
+    )?;
+    insert_transfer_canonical_transaction(
+        connection,
+        &to_canonical_id,
+        to_candidate_id,
+        pair.amount_minor,
+    )?;
+    connection.execute(
+        "INSERT INTO canonical_transfer_pairs (
+            id, transfer_kind, posted_date, amount_minor, currency,
+            from_account_id, to_account_id, from_candidate_id, to_candidate_id,
+            from_canonical_transaction_id, to_canonical_transaction_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            pair.id,
+            CARD_PAYMENT_TRANSFER_KIND,
+            pair.posted_date,
+            pair.amount_minor,
+            pair.currency,
+            pair.from_account.id,
+            pair.to_account.id,
+            from_candidate_id,
+            to_candidate_id,
+            from_canonical_id,
+            to_canonical_id,
+        ],
+    )?;
+    mark_candidate_accepted_with_canonical(connection, from_candidate_id, &from_canonical_id)?;
+    mark_candidate_accepted_with_canonical(connection, to_candidate_id, &to_canonical_id)?;
+    Ok(vec![from_canonical_id, to_canonical_id])
+}
+
+fn candidate_rejection_error(candidate: &ReviewCandidate) -> Option<ReviewError> {
+    if candidate.status == CandidateStatus::Accepted {
+        return Some(ReviewError {
+            category: "conflict",
+            code: "candidate_already_accepted",
+            message: "Accepted candidates cannot be rejected without a future reversal command."
+                .to_string(),
+            path: "candidate.status",
+            recoverable: true,
+            details: serde_json::json!({
+                "candidate_id": candidate.id,
+                "canonical_transaction_id": candidate.canonical_transaction_id,
+            }),
+        });
+    }
+    if candidate.status == CandidateStatus::Rejected {
+        return Some(ReviewError {
+            category: "conflict",
+            code: "candidate_already_rejected",
+            message: "Candidate transaction was already rejected.".to_string(),
+            path: "candidate.status",
+            recoverable: true,
+            details: serde_json::json!({ "candidate_id": candidate.id }),
+        });
+    }
+    None
 }
 
 fn mark_candidate_accepted_with_canonical(

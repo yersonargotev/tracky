@@ -18,6 +18,9 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky candidates set-expense-lines` | Yes | No new candidates | Replaces the category lines of an accepted canonical expense while preserving candidate provenance |
 | `tracky candidates list-transfer-pairs` | No | No | Never |
 | `tracky candidates accept-transfer-pair` | Yes | No new candidates | Creates two canonical own-account transfer legs from one eligible pair |
+| `tracky candidates batch-summary/compare-duplicate/suggest-actions` | No | No | Never |
+| `tracky candidates apply-actions --dry-run` | No | No | Never |
+| `tracky candidates apply-actions` | Yes, atomically after full preflight | No new candidates | Rejects exact reviewed duplicates or creates validated transfer pairs only when explicit candidate ids are supplied |
 | `tracky transactions add-expense/add-income/add-transfer` | Yes | No | Creates direct manual canonical expense/income rows or two balanced transfer legs with distinct manual provenance |
 
 Out of scope for this contract: parser implementation, SQLite migration internals, TUI review, MCP wrappers, AI fallback, and password storage.
@@ -583,3 +586,46 @@ Because canonical accounts may use different currencies, the report never combin
 ```
 
 An expense split contributes each transaction line once to its category while the canonical transaction contributes once to overall expenses. Own-account transfers and reviewed card-payment pairs never contribute to income, expenses, category totals, or net cash flow. Their positive pair amount is counted once in excluded transfer totals rather than summing or double-counting their balancing canonical legs. Stable report validation codes include `json_output_required`, `invalid_start_date`, `invalid_end_date`, and `invalid_date_range`.
+
+## Batch review ergonomics JSON
+
+Issue 0019 adds stateless commands for reviewing large import batches. Every command requires `--json` and returns `schema_version: "tracky.batch-review.v1"`. Suggestions have deterministic ids for correlation, but are not saved and cannot be applied by id in this slice; explicit candidate ids remain mandatory.
+
+| Command | Writes SQLite? | Purpose |
+| --- | --- | --- |
+| `candidates batch-summary --import-batch-id ID [--largest-limit 10]` | No; opens the existing database read-only | Group one import batch and show the largest absolute movements. |
+| `candidates compare-duplicate CANDIDATE_ID` | No; opens the existing database read-only | Compare the candidate with matched candidates, canonical records, fingerprints, duplicate markers, and redacted provenance/evidence. |
+| `candidates suggest-actions --import-batch-id ID` | No; opens the existing database read-only | Explain obvious duplicate rejections and structurally validated owned-account transfer pairs without applying them. |
+| `candidates apply-actions --action ACTION [--action ACTION ...] --dry-run` | No; opens the existing database read-only | Preflight every explicit action and return per-action validation results. |
+| `candidates apply-actions --action ACTION [--action ACTION ...]` | Yes | Preflight the complete set, then apply all actions in one SQLite transaction or none. |
+
+The batch summary uses deterministic `{ "key", "count" }` arrays for `by_status`, `by_duplicate_status`, `by_institution`, `by_account_resolution`, `by_direction_hint`, and `by_semantic_hint`. `largest_amounts` is ordered by descending `absolute_amount_minor` and then ascending `candidate_id`; each item includes candidate id, date, description, signed and absolute minor amount, currency, and status. `--largest-limit` defaults to 10 and must be greater than zero.
+
+Duplicate comparison returns the source `candidate`, `matched_candidates[]`, `matched_canonical_transactions[]`, `fingerprints[]`, and `duplicate_markers[]`. A matched canonical entry includes its canonical transaction, optional originating candidate, and PDF or manual provenance. Normal agent-facing evidence remains redacted.
+
+Suggested actions use this stable shape:
+
+```json
+{
+  "id": "suggest_REDACTED",
+  "proposed_action": "reject_duplicate",
+  "candidate_ids": ["cand_REDACTED"],
+  "reason": "exact_fingerprint_matches_reviewed_record",
+  "evidence": {
+    "duplicate_status": "exact_duplicate",
+    "fingerprint": "fp_REDACTED",
+    "matched_canonical_transaction_ids": ["txn_REDACTED"]
+  }
+}
+```
+
+`reject_duplicate` is suggested only for an unreviewed exact fingerprint match to a canonical transaction or accepted candidate; a description similarity alone is insufficient. `accept_transfer_pair` is suggested only when the existing individual transfer validation confirms distinct resolved owned accounts plus matching date, absolute amount, currency, direction, and semantic hints.
+
+Apply accepts repeated explicit action values:
+
+- `--action reject-duplicate:CANDIDATE_ID`
+- `--action accept-transfer-pair:FROM_CANDIDATE_ID:TO_CANDIDATE_ID`
+
+Each candidate id may appear in only one action in the submitted set. Every `action_results[]` item reports `action`, `candidate_ids`, `status` (`validated`, `failed`, or `applied`), `canonical_transaction_ids`, and stable `errors`. If any preflight fails, the top-level error is `batch_preflight_failed`, no action is written, and successful preflights remain labelled `validated`, not `applied`. Dry-run always stops after preflight.
+
+Stable validation/error codes include `json_output_required`, `import_batch_not_found`, `invalid_largest_limit`, `candidate_not_found`, `actions_required`, `candidate_ids_required`, `invalid_batch_action`, `candidate_reused_in_batch`, `candidate_not_obvious_duplicate`, `candidate_already_accepted`, `candidate_already_rejected`, the existing `transfer_pair_*` codes, `batch_preflight_failed`, `database_open_failed`, and `database_operation_failed`.

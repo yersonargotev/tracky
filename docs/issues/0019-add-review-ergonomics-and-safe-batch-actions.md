@@ -14,12 +14,12 @@ This should not auto-accept or auto-reject without an explicit apply command and
 
 ## Acceptance criteria
 
-- [ ] A user can get a batch summary grouped by status, duplicate status, institution, account, direction/semantic hint, and largest amounts.
-- [ ] A user can compare a possible duplicate against its matched candidates/canonical transactions as stable JSON.
-- [ ] A user can generate suggested review actions for obvious duplicates and likely transfers without applying them automatically.
-- [ ] Applying any batch action requires explicit candidate ids or a saved suggestion id.
-- [ ] Batch actions preserve the same validation rules as single-candidate review commands.
-- [ ] Tests cover duplicate comparison, suggestion generation, dry-run output, and explicit apply.
+- [x] A user can get a batch summary grouped by status, duplicate status, institution, account, direction/semantic hint, and largest amounts.
+- [x] A user can compare a possible duplicate against its matched candidates/canonical transactions as stable JSON.
+- [x] A user can generate suggested review actions for obvious duplicates and likely transfers without applying them automatically.
+- [x] Applying any batch action requires explicit candidate ids or a saved suggestion id.
+- [x] Batch actions preserve the same validation rules as single-candidate review commands.
+- [x] Tests cover duplicate comparison, suggestion generation, dry-run output, and explicit apply.
 
 ## Blocked by
 
