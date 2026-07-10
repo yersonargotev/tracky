@@ -21,9 +21,13 @@ Resolve the underlying shapes with small, behavior-preserving changes rather tha
 
 ## Acceptance criteria
 
-- [ ] `cargo clippy --all-targets --locked -- -D warnings` passes.
-- [ ] The two expense-line parsing helpers no longer return a disproportionately large error variant by value.
-- [ ] `BatchActionMutation` no longer makes every value pay for the full transfer-pair payload size.
-- [ ] Transaction-ledger response construction no longer requires an eight-argument helper call.
-- [ ] Stable JSON response shapes and CLI behavior remain unchanged.
-- [ ] `cargo fmt --all -- --check`, `cargo build --all-targets --locked`, and `cargo test --all-targets --locked` still pass.
+- [x] `cargo clippy --all-targets --locked -- -D warnings` passes.
+- [x] The two expense-line parsing helpers no longer return a disproportionately large error variant by value.
+- [x] `BatchActionMutation` no longer makes every value pay for the full transfer-pair payload size.
+- [x] Transaction-ledger response construction no longer requires an eight-argument helper call.
+- [x] Stable JSON response shapes and CLI behavior remain unchanged.
+- [x] `cargo fmt --all -- --check`, `cargo build --all-targets --locked`, and `cargo test --all-targets --locked` still pass.
+
+## Reconciliation evidence
+
+Strict Clippy cleanup verified at commit `5cde391`; affected `src/cli.rs` and `src/storage.rs`, with behavior-preserving format/build/test checks.

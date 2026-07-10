@@ -17,15 +17,19 @@ Suggestions must remain deterministic and strictly read-only. Applying one must 
 
 ## Acceptance criteria
 
-- [ ] A selected batch receives a transfer suggestion when either side belongs to that batch and the valid counterpart belongs to another batch.
-- [ ] Cross-batch suggestions include both candidate ids, both import batch ids, and the existing structured transfer evidence.
-- [ ] A pair is emitted at most once per `suggest-actions` response with deterministic ordering and suggestion id.
-- [ ] Reviewed, unresolved, non-owned, currency-mismatched, amount-mismatched, and date-mismatched candidates remain excluded by the existing transfer rules.
-- [ ] The command remains read-only and does not persist approvals or suggestions.
-- [ ] `apply-actions` still requires explicit candidate ids and preserves atomic preflight/apply behavior.
-- [ ] Synthetic integration tests use two separate import batches and cover the real cross-document shape without committing sensitive PDFs.
+- [x] A selected batch receives a transfer suggestion when either side belongs to that batch and the valid counterpart belongs to another batch.
+- [x] Cross-batch suggestions include both candidate ids, both import batch ids, and the existing structured transfer evidence.
+- [x] A pair is emitted at most once per `suggest-actions` response with deterministic ordering and suggestion id.
+- [x] Reviewed, unresolved, non-owned, currency-mismatched, amount-mismatched, and date-mismatched candidates remain excluded by the existing transfer rules.
+- [x] The command remains read-only and does not persist approvals or suggestions.
+- [x] `apply-actions` still requires explicit candidate ids and preserves atomic preflight/apply behavior.
+- [x] Synthetic integration tests use two separate import batches and cover the real cross-document shape without committing sensitive PDFs.
 
 ## Blocked by
 
 - `0012-review-own-account-transfers.md`
 - `0019-add-review-ergonomics-and-safe-batch-actions.md`
+
+## Reconciliation evidence
+
+Cross-batch suggestion implementation and synthetic two-batch integration test: `src/storage.rs`, `tests/batch_review_cli.rs`; commit `96e1d39`.

@@ -14,14 +14,18 @@ This issue is documentation-first: no parser or SQLite implementation is require
 
 ## Acceptance criteria
 
-- [ ] A contract document exists under `docs/` and describes the JSON shape for `pdf inspect` and `import pdf`.
-- [ ] The contract includes `CandidateTransaction`, `SourceDocument`, `ImportBatch`, `Provenance`, extractor/parser status, and duplicate status concepts.
-- [ ] Candidate statuses include `pending_review`, `possible_duplicate`, `accepted`, and `rejected`.
-- [ ] The contract specifies that imports create candidates only and never canonical transactions directly.
-- [ ] The contract specifies runtime-only password handling and no password persistence.
-- [ ] The contract includes stable error categories for extractor failure, parser failure, validation failure, and duplicate source document.
-- [ ] The contract uses domain vocabulary from `CONTEXT.md` and respects the review-first ADR.
+- [x] A contract document exists under `docs/` and describes the JSON shape for `pdf inspect` and `import pdf`.
+- [x] The contract includes `CandidateTransaction`, `SourceDocument`, `ImportBatch`, `Provenance`, extractor/parser status, and duplicate status concepts.
+- [x] Candidate statuses include `pending_review`, `possible_duplicate`, `accepted`, and `rejected`.
+- [x] The contract specifies that imports create candidates only and never canonical transactions directly.
+- [x] The contract specifies runtime-only password handling and no password persistence.
+- [x] The contract includes stable error categories for extractor failure, parser failure, validation failure, and duplicate source document.
+- [x] The contract uses domain vocabulary from `CONTEXT.md` and respects the review-first ADR.
 
 ## Blocked by
 
 None - can start immediately.
+
+## Reconciliation evidence
+
+Contract: `docs/contracts/review-first-pdf-import-json.md`; introduced by `5d3b398` and refined by subsequent import/review commits.

@@ -1,6 +1,10 @@
 # Tracky local issues
 
-These local Markdown issues are ordered for the review-first PDF import milestone.
+These Markdown files are the local tracker for the review-first PDF import milestone. Issue numbers preserve dependency order; the sections below describe current state.
+
+## Completed slices
+
+A slice is **completed** when every acceptance criterion in its issue file is checked (`[x]`) and the implementation/evidence is present in the repository history. This tracker has no `done` label: checked criteria plus the evidence section in the issue file are the completion record. The `ready-for-agent` label remains visible on completed files because it means “specified and ready for an implementation agent,” not “unfinished.”
 
 1. `0001-define-review-first-import-contract.md` — contract first.
 2. `0002-extract-pdf-inspection-core.md` — productize spike logic behind reusable seams.
@@ -10,23 +14,28 @@ These local Markdown issues are ordered for the review-first PDF import mileston
 6. `0006-flag-possible-duplicate-candidates.md` — transaction-level duplicate signals.
 7. `0007-add-candidate-review-cli.md` — accept/reject path to canonical transactions.
 8. `0008-document-agent-workflow-and-next-slices.md` — usage docs and next slices.
-9. `0009-add-user-facing-command-reference.md` — repository-level command reference for the review-first CLI path.
-10. `0010-normalize-rappi-card-statement-semantics.md` — make RappiCard purchase/payment candidates safe to review.
-11. `0011-add-owned-account-registry.md` — register user-owned accounts for resolution and transfer logic.
-12. `0012-review-own-account-transfers.md` — review Nequi ↔ card payments as transfers, not expenses/income.
-13. `0013-accept-income-with-source.md` — accept inflows with explicit income source/kind metadata.
-14. `0014-accept-expenses-with-categories.md` — accept purchase candidates as categorized expenses.
-15. `0015-support-transaction-splits.md` — split one canonical transaction across multiple category lines.
-16. `0016-add-manual-transactions-cli.md` — add manual expenses, income, and transfers when PDFs miss data.
-17. `0017-add-transaction-list-and-edit-review-cli.md` — inspect and safely correct canonical ledger metadata.
-18. `0018-add-monthly-finance-reports.md` — report income, expenses, transfers, net, and category totals.
-19. `0019-add-review-ergonomics-and-safe-batch-actions.md` — summarize batches, compare duplicates, and apply safe explicit actions.
-20. `0020-add-tui-review-mvp.md` — wrap the CLI-backed review/report flows in a minimal TUI.
-21. `0021-add-export-backup-and-import-safety.md` — backup, integrity-check, and export the local SQLite ledger.
-22. `0022-close-generic-candidate-accept-review-bypass.md` — require typed review metadata instead of legacy generic promotion.
-23. `0023-suggest-cross-batch-transfer-actions.md` — include valid transfer counterparts from other PDF import batches.
-24. `0024-restore-strict-clippy-cleanliness.md` — clear strict Clippy failures before adding the TUI surface.
-25. `0025-reconcile-completed-issue-metadata.md` — make historical issue completion state reliable.
+9. `0009-add-user-facing-command-reference.md` — repository-level command reference.
+10. `0010-normalize-rappi-card-statement-semantics.md` — safe RappiCard semantics.
+11. `0011-add-owned-account-registry.md` — register user-owned accounts.
+12. `0012-review-own-account-transfers.md` — review own-account transfers/card payments.
+13. `0013-accept-income-with-source.md` — typed income review.
+14. `0014-accept-expenses-with-categories.md` — typed expense review.
+15. `0015-support-transaction-splits.md` — split transaction lines.
+16. `0016-add-manual-transactions-cli.md` — manual ledger entries.
+17. `0017-add-transaction-list-and-edit-review-cli.md` — ledger inspection/editing.
+18. `0018-add-monthly-finance-reports.md` — monthly finance reports.
+19. `0019-add-review-ergonomics-and-safe-batch-actions.md` — safe batch review actions.
+20. `0022-close-generic-candidate-accept-review-bypass.md` — typed review guardrails.
+21. `0023-suggest-cross-batch-transfer-actions.md` — cross-batch transfer suggestions.
+22. `0024-restore-strict-clippy-cleanliness.md` — strict Clippy cleanliness.
+23. `0025-reconcile-completed-issue-metadata.md` — tracker metadata reconciliation.
+
+## Pending queue
+
+These issues retain unchecked criteria and are not represented as completed:
+
+1. `0020-add-tui-review-mvp.md` — minimal TUI review surface; intentionally not started in this slice.
+2. `0021-add-export-backup-and-import-safety.md` — backup, integrity, and export commands.
 
 Implementation should proceed in dependency order unless a later issue's blockers have already been satisfied by another change.
 
