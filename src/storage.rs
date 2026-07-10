@@ -408,6 +408,7 @@ pub struct ReviewSuggestion {
     pub id: String,
     pub proposed_action: &'static str,
     pub candidate_ids: Vec<String>,
+    pub import_batch_ids: Vec<String>,
     pub reason: &'static str,
     pub evidence: serde_json::Value,
 }
@@ -2119,6 +2120,7 @@ pub fn suggest_batch_actions(
         ));
     }
     let candidates = list_review_candidates(connection, Some(import_batch_id), None)?;
+    let all_candidates = list_review_candidates(connection, None, None)?;
     let mut suggestions = Vec::new();
     for candidate in &candidates {
         if is_obvious_unreviewed_duplicate(connection, candidate)? {
@@ -2127,6 +2129,7 @@ pub fn suggest_batch_actions(
                 id: review_suggestion_id("reject_duplicate", &candidate_ids),
                 proposed_action: "reject_duplicate",
                 candidate_ids,
+                import_batch_ids: vec![candidate.import_batch_id.clone()],
                 reason: "exact_fingerprint_matches_reviewed_record",
                 evidence: serde_json::json!({
                     "duplicate_status": candidate.duplicate_status.status,
@@ -2138,12 +2141,21 @@ pub fn suggest_batch_actions(
             });
         }
     }
-    for pair in likely_transfer_pairs_from_candidates(connection, &candidates)? {
+    for pair in likely_transfer_pairs_from_candidates(connection, &all_candidates)? {
+        if pair.from_candidate.import_batch_id != import_batch_id
+            && pair.to_candidate.import_batch_id != import_batch_id
+        {
+            continue;
+        }
         let candidate_ids = vec![pair.from_candidate.id.clone(), pair.to_candidate.id.clone()];
         suggestions.push(ReviewSuggestion {
             id: review_suggestion_id("accept_transfer_pair", &candidate_ids),
             proposed_action: "accept_transfer_pair",
             candidate_ids,
+            import_batch_ids: vec![
+                pair.from_candidate.import_batch_id.clone(),
+                pair.to_candidate.import_batch_id.clone(),
+            ],
             reason: "owned_accounts_and_transfer_fields_match",
             evidence: serde_json::json!({
                 "posted_date": pair.posted_date,
@@ -2163,6 +2175,7 @@ pub fn suggest_batch_actions(
             .cmp(right.proposed_action)
             .then(left.candidate_ids.cmp(&right.candidate_ids))
     });
+    suggestions.dedup_by(|left, right| left.id == right.id);
     Ok(BatchReviewResponse {
         schema_version: BATCH_REVIEW_SCHEMA_VERSION,
         command: "candidates suggest-actions",

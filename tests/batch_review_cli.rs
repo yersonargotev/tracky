@@ -314,6 +314,30 @@ fn fixture() -> Fixture {
     }
 }
 
+fn add_cross_batch_transfer_candidate(fixture: &Fixture) -> String {
+    let mut connection = Connection::open(&fixture.db_path).expect("reopen fixture db");
+    let mut response = inspect_response();
+    response.source_document.id = "srcdoc_29292929292929292929292929".to_string();
+    response.source_document.content_sha256 =
+        "2929292929292929292929292929292929292929292929292929292929292929".to_string();
+    response.candidates = response
+        .candidates
+        .into_iter()
+        .filter(|candidate| candidate.id == "cand_transfer_to")
+        .map(|mut candidate| {
+            candidate.id = "cand_cross_batch_to".to_string();
+            candidate.source_document_id = response.source_document.id.clone();
+            candidate.provenance.source_document_id = response.source_document.id.clone();
+            candidate
+        })
+        .collect();
+    persist_pdf_import(&mut connection, response)
+        .expect("persist cross-batch fixture")
+        .import_batch
+        .expect("cross-batch import batch")
+        .id
+}
+
 fn run(args: &[&str]) -> Output {
     Command::new(tracky())
         .args(args)
@@ -453,6 +477,59 @@ fn batch_summary_compare_and_suggest_are_complete_deterministic_and_read_only() 
         before,
         "read-only commands must not change SQLite"
     );
+}
+
+#[test]
+fn suggest_actions_includes_unique_cross_batch_transfer_with_both_batches() {
+    let fixture = fixture();
+    let other_batch_id = add_cross_batch_transfer_candidate(&fixture);
+    let db = fixture.db_path.to_str().unwrap();
+    let before = fs::read(&fixture.db_path).expect("read db before cross-batch suggestion");
+
+    let suggestions = run(&[
+        "candidates",
+        "suggest-actions",
+        "--db",
+        db,
+        "--import-batch-id",
+        &fixture.batch_id,
+        "--json",
+    ]);
+    assert!(suggestions.status.success());
+    let suggestions = json(&suggestions);
+    let transfers = suggestions["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|suggestion| suggestion["proposed_action"] == "accept_transfer_pair")
+        .collect::<Vec<_>>();
+    assert_eq!(transfers.len(), 2);
+    let cross_batch = transfers
+        .iter()
+        .find(|suggestion| {
+            suggestion["candidate_ids"]
+                == serde_json::json!(["cand_transfer_from", "cand_cross_batch_to"])
+        })
+        .expect("cross-batch transfer suggestion");
+    assert_eq!(
+        cross_batch["import_batch_ids"],
+        serde_json::json!([fixture.batch_id, other_batch_id])
+    );
+    assert_eq!(cross_batch["evidence"]["posted_date"], "2026-06-15");
+    assert_eq!(cross_batch["evidence"]["amount_minor"], 4000);
+    assert_eq!(
+        cross_batch["id"],
+        "suggest_0eab60ae7590bad915dc4727779fd147"
+    );
+    assert_eq!(
+        transfers
+            .iter()
+            .filter(|suggestion| suggestion["candidate_ids"]
+                == serde_json::json!(["cand_transfer_from", "cand_cross_batch_to"]))
+            .count(),
+        1
+    );
+    assert_eq!(fs::read(&fixture.db_path).unwrap(), before);
 }
 
 #[test]

@@ -51,7 +51,7 @@ tracky candidates suggest-actions --db /tmp/tracky-review.sqlite \
   --import-batch-id batch_REDACTED --json
 ```
 
-These three commands are strictly read-only. Suggestions are deterministic and explain their fingerprint or structured transfer evidence, but they never apply themselves. Apply only explicit candidate ids, preferably after a dry run:
+These three commands are strictly read-only. Suggestions are deterministic and explain their fingerprint or structured transfer evidence; transfer suggestions include valid pairs when either side belongs to the selected batch, even when the candidates came from different import batches. They never apply themselves. Apply only explicit candidate ids, preferably after a dry run:
 
 ```bash
 tracky candidates apply-actions --db /tmp/tracky-review.sqlite \

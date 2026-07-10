@@ -595,7 +595,7 @@ Issue 0019 adds stateless commands for reviewing large import batches. Every com
 | --- | --- | --- |
 | `candidates batch-summary --import-batch-id ID [--largest-limit 10]` | No; opens the existing database read-only | Group one import batch and show the largest absolute movements. |
 | `candidates compare-duplicate CANDIDATE_ID` | No; opens the existing database read-only | Compare the candidate with matched candidates, canonical records, fingerprints, duplicate markers, and redacted provenance/evidence. |
-| `candidates suggest-actions --import-batch-id ID` | No; opens the existing database read-only | Explain obvious duplicate rejections and structurally validated owned-account transfer pairs without applying them. |
+| `candidates suggest-actions --import-batch-id ID` | No; opens the existing database read-only | Explain obvious duplicate rejections and structurally validated owned-account transfer pairs without applying them. A transfer pair is included when either candidate belongs to the selected batch, including pairs spanning two import batches. |
 | `candidates apply-actions --action ACTION [--action ACTION ...] --dry-run` | No; opens the existing database read-only | Preflight every explicit action and return per-action validation results. |
 | `candidates apply-actions --action ACTION [--action ACTION ...]` | Yes | Preflight the complete set, then apply all actions in one SQLite transaction or none. |
 
@@ -610,6 +610,7 @@ Suggested actions use this stable shape:
   "id": "suggest_REDACTED",
   "proposed_action": "reject_duplicate",
   "candidate_ids": ["cand_REDACTED"],
+  "import_batch_ids": ["batch_REDACTED"],
   "reason": "exact_fingerprint_matches_reviewed_record",
   "evidence": {
     "duplicate_status": "exact_duplicate",
@@ -618,6 +619,8 @@ Suggested actions use this stable shape:
   }
 }
 ```
+
+Transfer suggestions contain both candidate ids and their aligned `import_batch_ids`, plus the structured transfer evidence (`posted_date`, `amount_minor`, `currency`, account ids, semantic hints, and redacted provenance for both candidates). Suggestion ids remain stable for the ordered candidate pair; suggestions are never persisted.
 
 `reject_duplicate` is suggested only for an unreviewed exact fingerprint match to a canonical transaction or accepted candidate; a description similarity alone is insufficient. `accept_transfer_pair` is suggested only when the existing individual transfer validation confirms distinct resolved owned accounts plus matching date, absolute amount, currency, direction, and semantic hints.
 
