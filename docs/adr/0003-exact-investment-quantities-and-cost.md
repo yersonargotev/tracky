@@ -6,6 +6,8 @@ Persisted quantities accept at most 38 digits in total and 18 fractional places.
 
 An effective rate is exposed as an exact ratio (`cost_minor_numerator` / `quantity_denominator`) rather than as a rounded decimal. It exists only for allocation records that contain both sides.
 
+CDT lifecycle principal, gross interest, capitalized interest, returned principal, withholding, other deductions, and net cash use the same signed-safe `i64` minor-unit representation with one explicit currency. Agreed CDT rates are non-negative canonical decimal strings in `TEXT`, with the same maximum of 38 total digits and 18 fractional places; signs, exponent notation, `NaN`, infinity, and values outside those limits are rejected. Rates are recorded contractual data only: Tracky does not use them to estimate daily accrual or persist any `f64` result.
+
 Allocations use append-only revisions and a separate active head. Positions are queries over active revisions grouped by account, instrument, and cost currency; they are never edited as standalone balances. A fee has a stable, durable component identity shared with the canonical expense side and is stored separately from principal. It is either `capitalized` into same-currency historical cost with no expense link, or `separate` and linked to one matching canonical expense. Component treatment and expense linkage are immutable across revisions; historical uniqueness and expense-side conflict checks reject reuse and double counting even after replacement.
 
 ## Consequences
@@ -15,3 +17,4 @@ Allocations use append-only revisions and a separate active head. Positions are 
 - Replacements preserve old revisions, correction reason, provenance source, and the replaced revision link.
 - One typed allocation action may validate and commit multiple instrument legs atomically.
 - Legacy canonical rows keep their original pending-allocation storage column; transaction list/inspect derive pending, partial, or full status from active allocation principal so old databases remain compatible.
+- CDT positions are derived from active append-only lifecycle operations anchored to consumed `fixed_income` allocations. Unchanged renewal principal is not another contribution; additional principal requires another allocation, and capitalized interest remains a reinvested return.

@@ -3755,6 +3755,21 @@ pub fn create_manual_expense(
                 serde_json::json!({ "fee_component_id": component_id }),
             ));
         }
+        let is_cdt_deduction = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM cdt_operation_revisions WHERE deduction_component_id = ?1)",
+            params![component_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if is_cdt_deduction {
+            return Ok(manual_error(
+                command,
+                "conflict",
+                "fee_double_count_conflict",
+                "A CDT deduction cannot also be recorded as an independent expense.",
+                "investment_fee_component_id",
+                serde_json::json!({ "fee_component_id": component_id }),
+            ));
+        }
     }
     let entry_id = manual_entry_id(
         "expense",
@@ -4114,7 +4129,7 @@ fn validate_manual_fields(
     None
 }
 
-fn is_valid_posted_date(posted_date: &str) -> bool {
+pub(crate) fn is_valid_posted_date(posted_date: &str) -> bool {
     let bytes = posted_date.as_bytes();
     if bytes.len() != 10
         || bytes[4] != b'-'

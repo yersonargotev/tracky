@@ -228,6 +228,61 @@ CREATE TABLE IF NOT EXISTS investment_allocation_heads (
     current_revision_id TEXT NOT NULL UNIQUE REFERENCES investment_allocation_revisions(id)
 );
 
+CREATE TABLE IF NOT EXISTS cdt_positions (
+    id TEXT PRIMARY KEY,
+    instrument_id TEXT NOT NULL REFERENCES investment_instruments(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    constituent_allocation_id TEXT NOT NULL UNIQUE REFERENCES investment_allocation_heads(allocation_id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS cdt_operation_revisions (
+    id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    cdt_position_id TEXT NOT NULL REFERENCES cdt_positions(id),
+    operation_type TEXT NOT NULL CHECK (operation_type IN ('constitution', 'renewal', 'redemption')),
+    effective_date TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    principal_before_minor INTEGER NOT NULL CHECK (principal_before_minor >= 0),
+    principal_after_minor INTEGER NOT NULL CHECK (principal_after_minor >= 0),
+    principal_returned_minor INTEGER NOT NULL DEFAULT 0 CHECK (principal_returned_minor >= 0),
+    external_capital_minor INTEGER NOT NULL DEFAULT 0 CHECK (external_capital_minor >= 0),
+    capitalized_interest_minor INTEGER NOT NULL DEFAULT 0 CHECK (capitalized_interest_minor >= 0),
+    gross_interest_minor INTEGER NOT NULL DEFAULT 0 CHECK (gross_interest_minor >= 0),
+    withholding_minor INTEGER NOT NULL DEFAULT 0 CHECK (withholding_minor >= 0),
+    other_deductions_minor INTEGER NOT NULL DEFAULT 0 CHECK (other_deductions_minor >= 0),
+    net_cash_received_minor INTEGER NOT NULL DEFAULT 0 CHECK (net_cash_received_minor >= 0),
+    funding_allocation_id TEXT REFERENCES investment_allocation_heads(allocation_id),
+    maturity_date TEXT NOT NULL,
+    agreed_rate TEXT,
+    payment_mode TEXT,
+    payment_periodicity TEXT,
+    renewal_terms TEXT,
+    contract_identifier TEXT,
+    allows_partial_redemption INTEGER NOT NULL DEFAULT 0 CHECK (allows_partial_redemption IN (0, 1)),
+    deduction_component_id TEXT,
+    deduction_expense_transaction_id TEXT REFERENCES canonical_transactions(id),
+    provenance_source TEXT NOT NULL CHECK (provenance_source IN ('manual_entry')),
+    correction_reason TEXT,
+    replaces_revision_id TEXT REFERENCES cdt_operation_revisions(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (operation_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS cdt_operation_heads (
+    operation_id TEXT PRIMARY KEY,
+    current_revision_id TEXT NOT NULL UNIQUE REFERENCES cdt_operation_revisions(id)
+);
+
+CREATE TABLE IF NOT EXISTS investment_allocation_consumptions (
+    allocation_id TEXT PRIMARY KEY REFERENCES investment_allocation_heads(allocation_id),
+    consumer_kind TEXT NOT NULL CHECK (consumer_kind IN ('cdt_constitution', 'cdt_additional_capital')),
+    cdt_position_id TEXT NOT NULL REFERENCES cdt_positions(id),
+    cdt_operation_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
@@ -246,5 +301,12 @@ CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_to_candidate ON canonica
 CREATE INDEX IF NOT EXISTS idx_investment_instruments_provider ON investment_instruments(provider, provider_identifier);
 CREATE INDEX IF NOT EXISTS idx_investment_allocation_revisions_contribution ON investment_allocation_revisions(contribution_transaction_id);
 CREATE INDEX IF NOT EXISTS idx_investment_allocation_revisions_instrument ON investment_allocation_revisions(instrument_id);
+CREATE INDEX IF NOT EXISTS idx_cdt_positions_instrument ON cdt_positions(instrument_id);
+CREATE INDEX IF NOT EXISTS idx_cdt_positions_account ON cdt_positions(account_id);
+CREATE INDEX IF NOT EXISTS idx_cdt_operation_revisions_position ON cdt_operation_revisions(cdt_position_id);
+CREATE INDEX IF NOT EXISTS idx_cdt_funding_allocation ON cdt_operation_revisions(funding_allocation_id);
+CREATE INDEX IF NOT EXISTS idx_cdt_deduction_component ON cdt_operation_revisions(deduction_component_id);
+CREATE INDEX IF NOT EXISTS idx_cdt_deduction_expense ON cdt_operation_revisions(deduction_expense_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_investment_allocation_consumptions_position ON investment_allocation_consumptions(cdt_position_id);
 
 PRAGMA user_version = 1;

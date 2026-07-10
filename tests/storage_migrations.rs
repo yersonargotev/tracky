@@ -62,6 +62,35 @@ fn migrations_create_investment_instrument_and_append_only_allocation_tables() {
 }
 
 #[test]
+fn migrations_create_append_only_cdt_lifecycle_tables() {
+    let (_dir, connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+                'cdt_positions',
+                'cdt_operation_revisions',
+                'cdt_operation_heads',
+                'investment_allocation_consumptions'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count CDT lifecycle tables");
+    assert_eq!(count, 4);
+    let allocation_claim_is_primary_key: i64 = connection
+        .query_row(
+            "SELECT pk FROM pragma_table_info('investment_allocation_consumptions')
+             WHERE name = 'allocation_id'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read durable allocation claim key");
+    assert_eq!(allocation_claim_is_primary_key, 1);
+}
+
+#[test]
 fn migrations_add_duplicate_count_to_existing_import_batches() {
     let (_dir, connection) = temporary_database();
     connection

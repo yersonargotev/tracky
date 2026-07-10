@@ -1,3 +1,8 @@
+use crate::cdt::{
+    cdt_error, constitute_cdt, inspect_cdt, list_cdts, redeem_cdt, renew_cdt,
+    replace_cdt_operation, CdtConstitutionInput, CdtOperationReplacement,
+    CdtOperationReplacementInput, CdtRedemptionInput, CdtRenewalInput, CdtResponse, CdtTermsInput,
+};
 use crate::investments::{
     allocate_contribution, create_instrument, inspect_contribution, inspect_instrument,
     list_instruments, list_positions, replace_allocation, AllocationInput, AllocationLegInput,
@@ -94,6 +99,167 @@ enum Commands {
     Reports(ReportsCommand),
     Instruments(InstrumentsCommand),
     Investments(InvestmentsCommand),
+    Cdts(CdtsCommand),
+}
+
+#[derive(Debug, Parser)]
+struct CdtsCommand {
+    #[command(subcommand)]
+    command: CdtCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum CdtCommands {
+    Constitute(CdtConstituteArgs),
+    Renew(CdtRenewArgs),
+    Redeem(CdtRedeemArgs),
+    ReplaceOperation(CdtReplaceOperationArgs),
+    List(CdtListArgs),
+    Inspect(CdtInspectArgs),
+}
+
+#[derive(Debug, Parser)]
+struct CdtConstituteArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "allocation-id")]
+    allocation_id: String,
+    #[arg(long = "principal-minor")]
+    principal_minor: i64,
+    #[arg(long)]
+    currency: String,
+    #[arg(long = "constitution-date")]
+    constitution_date: String,
+    #[command(flatten)]
+    terms: CdtTermsArgs,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, clap::Args)]
+struct CdtTermsArgs {
+    #[arg(long = "maturity-date")]
+    maturity_date: String,
+    #[arg(long = "agreed-rate")]
+    agreed_rate: Option<String>,
+    #[arg(long = "payment-mode")]
+    payment_mode: Option<String>,
+    #[arg(long = "payment-periodicity")]
+    payment_periodicity: Option<String>,
+    #[arg(long = "renewal-terms")]
+    renewal_terms: Option<String>,
+    #[arg(long = "contract-identifier")]
+    contract_identifier: Option<String>,
+    #[arg(long = "allows-partial-redemption", action = clap::ArgAction::Set, default_value_t = false)]
+    allows_partial_redemption: bool,
+}
+
+impl From<CdtTermsArgs> for CdtTermsInput {
+    fn from(args: CdtTermsArgs) -> Self {
+        Self {
+            maturity_date: args.maturity_date,
+            agreed_rate: args.agreed_rate,
+            payment_mode: args.payment_mode,
+            payment_periodicity: args.payment_periodicity,
+            renewal_terms: args.renewal_terms,
+            contract_identifier: args.contract_identifier,
+            allows_partial_redemption: args.allows_partial_redemption,
+        }
+    }
+}
+
+#[derive(Debug, Parser)]
+struct CdtRenewArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "position-id")]
+    position_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long = "additional-allocation-id")]
+    additional_allocation_id: Option<String>,
+    #[arg(long = "external-capital-minor", default_value_t = 0)]
+    external_capital_minor: i64,
+    #[arg(long = "capitalized-interest-minor", default_value_t = 0)]
+    capitalized_interest_minor: i64,
+    #[arg(long = "gross-interest-minor", default_value_t = 0)]
+    gross_interest_minor: i64,
+    #[arg(long = "withholding-minor", default_value_t = 0)]
+    withholding_minor: i64,
+    #[arg(long = "other-deductions-minor", default_value_t = 0)]
+    other_deductions_minor: i64,
+    #[arg(long = "net-cash-received-minor", default_value_t = 0)]
+    net_cash_received_minor: i64,
+    #[arg(long = "deduction-component-id")]
+    deduction_component_id: Option<String>,
+    #[arg(long = "deduction-expense-transaction-id")]
+    deduction_expense_transaction_id: Option<String>,
+    #[command(flatten)]
+    terms: CdtTermsArgs,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CdtRedeemArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "position-id")]
+    position_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long = "principal-returned-minor")]
+    principal_returned_minor: i64,
+    #[arg(long = "gross-interest-minor", default_value_t = 0)]
+    gross_interest_minor: i64,
+    #[arg(long = "withholding-minor", default_value_t = 0)]
+    withholding_minor: i64,
+    #[arg(long = "other-deductions-minor", default_value_t = 0)]
+    other_deductions_minor: i64,
+    #[arg(long = "net-cash-received-minor")]
+    net_cash_received_minor: i64,
+    #[arg(long = "deduction-component-id")]
+    deduction_component_id: Option<String>,
+    #[arg(long = "deduction-expense-transaction-id")]
+    deduction_expense_transaction_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CdtReplaceOperationArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "operation-id")]
+    operation_id: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long = "replacement-json", value_name = "JSON")]
+    replacement_json: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CdtListArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "as-of", value_name = "YYYY-MM-DD")]
+    as_of: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CdtInspectArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "position-id")]
+    position_id: String,
+    #[arg(long = "as-of", value_name = "YYYY-MM-DD")]
+    as_of: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -919,7 +1085,189 @@ where
             }
             InvestmentCommands::Positions(args) => investment_positions_command(args, &mut stdout),
         },
+        Commands::Cdts(cdts) => match cdts.command {
+            CdtCommands::Constitute(args) => cdt_constitute_command(args, &mut stdout),
+            CdtCommands::Renew(args) => cdt_renew_command(args, &mut stdout),
+            CdtCommands::Redeem(args) => cdt_redeem_command(args, &mut stdout),
+            CdtCommands::ReplaceOperation(args) => cdt_replace_operation_command(args, &mut stdout),
+            CdtCommands::List(args) => cdt_list_command(args, &mut stdout),
+            CdtCommands::Inspect(args) => cdt_inspect_command(args, &mut stdout),
+        },
     }
+}
+
+fn cdt_constitute_command<W: Write>(args: CdtConstituteArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_cdt_response(
+            stdout,
+            cdt_error(
+                "cdts constitute",
+                "json_output_required",
+                "The CDT constitute command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    write_cdt_response(
+        stdout,
+        constitute_cdt(
+            &mut connection,
+            CdtConstitutionInput {
+                allocation_id: args.allocation_id,
+                principal_minor: args.principal_minor,
+                currency: args.currency,
+                constitution_date: args.constitution_date,
+                terms: args.terms.into(),
+            },
+        )?,
+    )
+}
+
+fn cdt_renew_command<W: Write>(args: CdtRenewArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_cdt_response(
+            stdout,
+            cdt_error(
+                "cdts renew",
+                "json_output_required",
+                "The CDT renew command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    write_cdt_response(
+        stdout,
+        renew_cdt(
+            &mut connection,
+            CdtRenewalInput {
+                position_id: args.position_id,
+                effective_date: args.effective_date,
+                additional_allocation_id: args.additional_allocation_id,
+                external_capital_minor: args.external_capital_minor,
+                capitalized_interest_minor: args.capitalized_interest_minor,
+                gross_interest_minor: args.gross_interest_minor,
+                withholding_minor: args.withholding_minor,
+                other_deductions_minor: args.other_deductions_minor,
+                net_cash_received_minor: args.net_cash_received_minor,
+                deduction_component_id: args.deduction_component_id,
+                deduction_expense_transaction_id: args.deduction_expense_transaction_id,
+                terms: args.terms.into(),
+            },
+        )?,
+    )
+}
+
+fn cdt_redeem_command<W: Write>(args: CdtRedeemArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_cdt_response(
+            stdout,
+            cdt_error(
+                "cdts redeem",
+                "json_output_required",
+                "The CDT redeem command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    write_cdt_response(
+        stdout,
+        redeem_cdt(
+            &mut connection,
+            CdtRedemptionInput {
+                position_id: args.position_id,
+                effective_date: args.effective_date,
+                principal_returned_minor: args.principal_returned_minor,
+                gross_interest_minor: args.gross_interest_minor,
+                withholding_minor: args.withholding_minor,
+                other_deductions_minor: args.other_deductions_minor,
+                net_cash_received_minor: args.net_cash_received_minor,
+                deduction_component_id: args.deduction_component_id,
+                deduction_expense_transaction_id: args.deduction_expense_transaction_id,
+            },
+        )?,
+    )
+}
+
+fn cdt_replace_operation_command<W: Write>(
+    args: CdtReplaceOperationArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_cdt_response(
+            stdout,
+            cdt_error(
+                "cdts replace-operation",
+                "json_output_required",
+                "The CDT replace-operation command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let replacement = match serde_json::from_str::<CdtOperationReplacement>(&args.replacement_json)
+    {
+        Ok(replacement) => replacement,
+        Err(_) => {
+            return write_cdt_response(
+                stdout,
+                cdt_error(
+                    "cdts replace-operation",
+                    "invalid_replacement_json",
+                    "Replacement JSON must contain one complete typed CDT operation revision.",
+                    "replacement_json",
+                ),
+            )
+        }
+    };
+    let mut connection = open_review_database(&args.db)?;
+    write_cdt_response(
+        stdout,
+        replace_cdt_operation(
+            &mut connection,
+            CdtOperationReplacementInput {
+                operation_id: args.operation_id,
+                reason: args.reason,
+                replacement,
+            },
+        )?,
+    )
+}
+
+fn cdt_list_command<W: Write>(args: CdtListArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_cdt_response(
+            stdout,
+            cdt_error(
+                "cdts list",
+                "json_output_required",
+                "The CDT list command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_cdt_response(stdout, list_cdts(&connection, &args.as_of)?)
+}
+
+fn cdt_inspect_command<W: Write>(args: CdtInspectArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_cdt_response(
+            stdout,
+            cdt_error(
+                "cdts inspect",
+                "json_output_required",
+                "The CDT inspect command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_cdt_response(
+        stdout,
+        inspect_cdt(&connection, &args.position_id, &args.as_of, "cdts inspect")?,
+    )
 }
 
 fn investment_allocate_command<W: Write>(
@@ -2395,6 +2743,10 @@ fn write_investment_response<W: Write>(
         response,
         "writing investment allocation JSON",
     )
+}
+
+fn write_cdt_response<W: Write>(stdout: &mut W, response: CdtResponse) -> Result<i32> {
+    write_json_response(stdout, response.ok, response, "writing CDT lifecycle JSON")
 }
 
 fn investment_cli_json_error(command: &'static str) -> InvestmentResponse {

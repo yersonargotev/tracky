@@ -239,6 +239,29 @@ pub fn replace_allocation(
             "allocation_id",
         ));
     };
+    let consumed_by_cdt: bool = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM investment_allocation_consumptions WHERE allocation_id = ?1)",
+        params![input.allocation_id],
+        |row| row.get(0),
+    )?;
+    if consumed_by_cdt
+        && (input.allocation.instrument_id != current.instrument_id
+            || input.allocation.cash_amount_minor != current.cash_amount_minor
+            || !input
+                .allocation
+                .cash_currency
+                .trim()
+                .eq_ignore_ascii_case(&current.cash_currency)
+            || canonical_exact_decimal(&input.allocation.acquired_quantity, false).as_deref()
+                != Some(current.acquired_quantity.as_str()))
+    {
+        return Ok(investment_error(
+            command,
+            "allocation_consumed_by_cdt",
+            "Instrument, principal, currency, and quantity of CDT funding are immutable after consumption.",
+            "allocation_id",
+        ));
+    }
     let validated = match validate_allocation(
         connection,
         command,
@@ -541,7 +564,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn valid_currency(value: &str) -> bool {
+pub(crate) fn valid_currency(value: &str) -> bool {
     value.len() == 3 && value.bytes().all(|byte| byte.is_ascii_uppercase())
 }
 
@@ -1108,6 +1131,10 @@ impl ExactDecimal {
     }
 
     fn parse(value: &str) -> Option<Self> {
+        Self::parse_with_zero(value, false)
+    }
+
+    fn parse_with_zero(value: &str, allow_zero: bool) -> Option<Self> {
         let value = value.trim();
         if value.is_empty() || value.starts_with(['-', '+']) || value.contains(['e', 'E']) {
             return None;
@@ -1126,7 +1153,7 @@ impl ExactDecimal {
         }
         let digits = format!("{integer}{fraction}");
         let coefficient = digits.parse::<i128>().ok()?;
-        if coefficient == 0 {
+        if coefficient == 0 && !allow_zero {
             return None;
         }
         Some(
@@ -1176,4 +1203,8 @@ impl ExactDecimal {
             format!("{}.{}", &digits[..split], &digits[split..])
         }
     }
+}
+
+pub(crate) fn canonical_exact_decimal(value: &str, allow_zero: bool) -> Option<String> {
+    ExactDecimal::parse_with_zero(value, allow_zero).map(|decimal| decimal.canonical())
 }

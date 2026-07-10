@@ -26,6 +26,8 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky instruments create/list/inspect` | Create only | No | Never; manages stable investment-instrument identities |
 | `tracky investments allocate/replace-allocation` | Yes | No | Links confirmed contribution principal to exact acquired quantities with append-only audit revisions |
 | `tracky investments inspect-contribution/positions` | No | No | Never; derives remaining principal and historical-cost positions |
+| `tracky cdts constitute/renew/redeem/replace-operation` | Yes | No | Records an exact append-only CDT lifecycle anchored to confirmed fixed-income allocations |
+| `tracky cdts list/inspect` | No | No | Never; derives CDT principal, status, terms, components, history, and provenance |
 
 Out of scope for this contract: parser implementation, SQLite migration internals, TUI review, MCP wrappers, AI fallback, and password storage.
 
@@ -62,6 +64,20 @@ Each allocation preserves `cash_amount_minor`, `cash_currency`, canonical-string
 ```
 
 `investments positions [--account-id ID]` returns positions grouped by account, instrument, and cost currency with exact `quantity`, `accumulated_cost_minor`, `cost_currency`, and `latest_contributing_operation_id`. It performs no market valuation or implicit currency conversion.
+
+## CDT lifecycle JSON
+
+All commands in this section require `--json` and return `schema_version: "tracky.cdts.v1"`. Monetary components are exact `i64` minor units paired with the position currency. Optional `--agreed-rate` values are canonical non-negative decimal strings with at most 38 total digits and 18 fractional places; exponent notation and `f64` persistence are forbidden.
+
+`cdts constitute` requires an active `fixed_income` `--allocation-id`, an exactly matching positive `--principal-minor` and `--currency`, `--constitution-date`, and a later `--maturity-date`. Optional terms are `--agreed-rate`, `--payment-mode`, `--payment-periodicity`, `--renewal-terms`, `--contract-identifier`, and `--allows-partial-redemption true|false`. The allocation becomes the immutable funding anchor and receives a database-enforced single-consumer claim in the same transaction; the command creates no expense.
+
+`cdts renew` requires a position, effective date on or after current maturity, and new maturity. Unchanged principal needs no funding flags. Positive `--external-capital-minor` requires an unused matching `--additional-allocation-id`; `--capitalized-interest-minor` increases principal without becoming external capital. Renewal cash must reconcile exactly as `net cash = gross interest - capitalized interest - withholding - other deductions`.
+
+`cdts redeem` records positive returned principal up to current principal plus gross interest, withholding, other deductions, and net cash. It enforces `net cash = principal returned + gross interest - withholding - other deductions`; partial redemption additionally requires the active contract to allow it. Returned principal is never inserted as canonical income. Interest and deductions remain explicit operation components, so the existing finance report is not polluted and issue 0032 can aggregate them later without reconstructing net cash.
+
+Positive other deductions require `--deduction-component-id`. An optional `--deduction-expense-transaction-id` must reference the matching canonical expense carrying that same durable component identity. Allocation fees and CDT deductions cannot reuse an identity, preventing one component from being represented both as capitalized cost and an independent expense.
+
+`cdts replace-operation --operation-id ID --reason TEXT --replacement-json JSON` appends one complete typed revision and advances only that operation's active head after replaying principal and maturity continuity. Funding allocation, external-capital amount, and durable deduction identity/amount are immutable across revisions. `cdts list --as-of YYYY-MM-DD` and `cdts inspect --position-id ID --as-of YYYY-MM-DD` derive `active`, `matured`, `renewed`, or `redeemed` and expose active `operations[]` plus complete `operation_history[]` with revision links and manual provenance.
 
 ## Top-level responses
 

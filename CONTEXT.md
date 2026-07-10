@@ -62,6 +62,14 @@ Detalle confirmado que vincula parte del principal de un aporte con una cantidad
 
 Cantidad y costo acumulados derivados de asignaciones activas por cuenta, instrumento y moneda del costo. No es un saldo editable ni una valoración de mercado.
 
+### Posición CDT
+
+Principal vigente y términos contractuales derivados de la constitución y de las renovaciones o redenciones activas de un instrumento `fixed_income`. Conserva por separado capital externo, interés capitalizado, interés bruto, principal retornado, retenciones, otras deducciones y efectivo neto; nunca es un saldo editable.
+
+### Operación CDT
+
+Evento append-only de constitución, renovación o redención. Cada corrección crea una revisión y mueve un active head, de modo que el historial, la asignación o aporte financiador y la provenance manual sigan reconstruibles.
+
 ### Documento fuente
 
 Un archivo importado, como un extracto bancario PDF, del que se extraen transacciones candidatas. Debe tener una huella de archivo para evitar reimportaciones exactas.
