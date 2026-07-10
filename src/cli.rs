@@ -10,14 +10,16 @@ use crate::storage::{
     account_registry_error_response, apply_migrations, category_registry_error_response,
     create_category, create_income_source, create_manual_expense, create_manual_income,
     create_manual_transfer, duplicate_import_response, find_source_document_by_hash,
-    income_source_registry_error_response, list_categories, list_income_sources,
-    list_likely_transfer_pairs, list_owned_accounts, list_review_candidates, persist_pdf_import,
-    register_owned_account, reject_candidate, replace_expense_transaction_lines,
-    review_error_response, transfer_error_response, AccountRegisterInput, AccountRegistryResponse,
-    CandidateReviewResponse, CategoryCreateInput, CategoryRegistryResponse, ExpenseLineInput,
-    ImportPdfResponse, IncomeSourceCreateInput, IncomeSourceRegistryResponse, ManualExpenseInput,
-    ManualIncomeInput, ManualTransactionResponse, ManualTransferInput, TransferReviewResponse,
-    IMPORT_PDF_SCHEMA_VERSION,
+    income_source_registry_error_response, inspect_canonical_transaction,
+    list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
+    list_owned_accounts, list_review_candidates, persist_pdf_import, register_owned_account,
+    reject_candidate, replace_expense_transaction_lines, review_error_response,
+    transfer_error_response, update_canonical_transaction, AccountRegisterInput,
+    AccountRegistryResponse, CandidateReviewResponse, CategoryCreateInput,
+    CategoryRegistryResponse, ExpenseLineInput, ImportPdfResponse, IncomeSourceCreateInput,
+    IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput, ManualTransactionResponse,
+    ManualTransferInput, TransactionLedgerResponse, TransactionListFilter, TransactionUpdateInput,
+    TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -168,6 +170,59 @@ enum TransactionCommands {
     AddExpense(ManualExpenseArgs),
     AddIncome(ManualIncomeArgs),
     AddTransfer(ManualTransferArgs),
+    List(TransactionListArgs),
+    Inspect(TransactionInspectArgs),
+    Update(TransactionUpdateArgs),
+}
+
+#[derive(Debug, Parser)]
+struct TransactionListArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "start-date", value_name = "YYYY-MM-DD")]
+    start_date: Option<String>,
+    #[arg(long = "end-date", value_name = "YYYY-MM-DD")]
+    end_date: Option<String>,
+    #[arg(long = "account-id", value_name = "ID")]
+    account_id: Option<String>,
+    #[arg(long = "category-id", value_name = "ID")]
+    category_id: Option<String>,
+    #[arg(long = "income-source-id", value_name = "ID")]
+    income_source_id: Option<String>,
+    #[arg(long = "type", value_name = "TYPE")]
+    transaction_kind: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct TransactionInspectArgs {
+    #[arg(value_name = "TRANSACTION_ID")]
+    transaction_id: String,
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct TransactionUpdateArgs {
+    #[arg(value_name = "TRANSACTION_ID")]
+    transaction_id: String,
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long, value_name = "TEXT")]
+    description: Option<String>,
+    #[arg(long = "category-id", value_name = "ID")]
+    category_id: Option<String>,
+    #[arg(long = "line", value_name = "CATEGORY_ID:AMOUNT_MINOR:CURRENCY")]
+    lines: Vec<String>,
+    #[arg(long = "income-source-id", value_name = "ID")]
+    income_source_id: Option<String>,
+    #[arg(long = "income-kind", value_name = "KIND")]
+    income_kind: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -571,6 +626,9 @@ where
             TransactionCommands::AddExpense(args) => manual_expense_command(args, &mut stdout),
             TransactionCommands::AddIncome(args) => manual_income_command(args, &mut stdout),
             TransactionCommands::AddTransfer(args) => manual_transfer_command(args, &mut stdout),
+            TransactionCommands::List(args) => transaction_list_command(args, &mut stdout),
+            TransactionCommands::Inspect(args) => transaction_inspect_command(args, &mut stdout),
+            TransactionCommands::Update(args) => transaction_update_command(args, &mut stdout),
         },
     }
 }
@@ -941,6 +999,89 @@ where
     write_manual_transaction_response(stdout, response)
 }
 
+fn transaction_list_command<W: Write>(args: TransactionListArgs, stdout: &mut W) -> Result<i32> {
+    if let Some(exit_code) = require_transaction_json(args.json, stdout, "transactions list")? {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    let response = list_canonical_transactions(
+        &connection,
+        TransactionListFilter {
+            start_date: args.start_date.as_deref(),
+            end_date: args.end_date.as_deref(),
+            account_id: args.account_id.as_deref(),
+            category_id: args.category_id.as_deref(),
+            income_source_id: args.income_source_id.as_deref(),
+            transaction_kind: args.transaction_kind.as_deref(),
+        },
+    )?;
+    write_transaction_ledger_response(stdout, response)
+}
+
+fn transaction_inspect_command<W: Write>(
+    args: TransactionInspectArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if let Some(exit_code) = require_transaction_json(args.json, stdout, "transactions inspect")? {
+        return Ok(exit_code);
+    }
+    let connection = open_review_database(&args.db)?;
+    write_transaction_ledger_response(
+        stdout,
+        inspect_canonical_transaction(&connection, &args.transaction_id)?,
+    )
+}
+
+fn transaction_update_command<W: Write>(
+    args: TransactionUpdateArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if let Some(exit_code) = require_transaction_json(args.json, stdout, "transactions update")? {
+        return Ok(exit_code);
+    }
+    let expense_lines = if args.category_id.is_some() || !args.lines.is_empty() {
+        match expense_lines_from_args(args.category_id, args.lines, "transactions update") {
+            Ok(lines) => Some(lines),
+            Err(response) => {
+                return write_transaction_ledger_response(
+                    stdout,
+                    transaction_ledger_from_candidate_response(response),
+                )
+            }
+        }
+    } else {
+        None
+    };
+    if args.description.is_none()
+        && args.income_source_id.is_none()
+        && args.income_kind.is_none()
+        && expense_lines.is_none()
+    {
+        return write_transaction_ledger_response(
+            stdout,
+            transaction_ledger_cli_error(
+                "transactions update",
+                "update_fields_required",
+                "Provide at least one supported update field.",
+            ),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    write_transaction_ledger_response(
+        stdout,
+        update_canonical_transaction(
+            &mut connection,
+            &args.transaction_id,
+            TransactionUpdateInput {
+                description: args.description,
+                income_source_id: args.income_source_id,
+                income_kind: args.income_kind,
+                expense_lines,
+            },
+        )?,
+    )
+}
+
 fn candidate_list_command<W>(args: CandidateListArgs, stdout: &mut W) -> Result<i32>
 where
     W: Write,
@@ -1241,6 +1382,43 @@ where
     )
 }
 
+fn require_transaction_json<W>(
+    json: bool,
+    stdout: &mut W,
+    command: &'static str,
+) -> Result<Option<i32>>
+where
+    W: Write,
+{
+    if json {
+        return Ok(None);
+    }
+    write_transaction_ledger_response(
+        stdout,
+        TransactionLedgerResponse {
+            schema_version: crate::storage::TRANSACTION_LEDGER_SCHEMA_VERSION,
+            command,
+            ok: false,
+            canonical_transaction: None,
+            canonical_transactions: Vec::new(),
+            candidate: None,
+            transaction_lines: Vec::new(),
+            provenance: Vec::new(),
+            edits: Vec::new(),
+            transfer: None,
+            errors: vec![crate::storage::ReviewError {
+                category: "validation_failure",
+                code: "json_output_required",
+                message: format!("The {command} command currently requires --json."),
+                path: "command",
+                recoverable: true,
+                details: serde_json::json!({ "flag": "--json" }),
+            }],
+        },
+    )
+    .map(Some)
+}
+
 fn require_transfer_json<W>(
     json: bool,
     stdout: &mut W,
@@ -1383,6 +1561,63 @@ fn write_manual_transaction_response<W: Write>(
         response,
         "writing manual transaction JSON",
     )
+}
+
+fn write_transaction_ledger_response<W: Write>(
+    stdout: &mut W,
+    response: TransactionLedgerResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing transaction ledger JSON",
+    )
+}
+
+fn transaction_ledger_cli_error(
+    command: &'static str,
+    code: &'static str,
+    message: &'static str,
+) -> TransactionLedgerResponse {
+    TransactionLedgerResponse {
+        schema_version: crate::storage::TRANSACTION_LEDGER_SCHEMA_VERSION,
+        command,
+        ok: false,
+        canonical_transaction: None,
+        canonical_transactions: Vec::new(),
+        candidate: None,
+        transaction_lines: Vec::new(),
+        provenance: Vec::new(),
+        edits: Vec::new(),
+        transfer: None,
+        errors: vec![crate::storage::ReviewError {
+            category: "validation_failure",
+            code,
+            message: message.to_string(),
+            path: "command",
+            recoverable: true,
+            details: serde_json::json!({}),
+        }],
+    }
+}
+
+fn transaction_ledger_from_candidate_response(
+    response: CandidateReviewResponse,
+) -> TransactionLedgerResponse {
+    TransactionLedgerResponse {
+        schema_version: crate::storage::TRANSACTION_LEDGER_SCHEMA_VERSION,
+        command: "transactions update",
+        ok: false,
+        canonical_transaction: None,
+        canonical_transactions: Vec::new(),
+        candidate: None,
+        transaction_lines: Vec::new(),
+        provenance: Vec::new(),
+        edits: Vec::new(),
+        transfer: None,
+        errors: response.errors,
+    }
 }
 
 fn manual_from_candidate_response(response: CandidateReviewResponse) -> ManualTransactionResponse {

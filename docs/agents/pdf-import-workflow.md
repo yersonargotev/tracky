@@ -268,3 +268,15 @@ After the CLI path is documented and usable, likely follow-up slices are:
 - SQLite ADR: `docs/adr/0002-sqlite-canonical-store.md`
 - JSON contract: `docs/contracts/review-first-pdf-import-json.md`
 - Milestone PRD: `docs/prd/review-first-pdf-import.md`
+
+## Review canonical ledger entries
+
+Use canonical ledger commands after acceptance or manual entry; they do not delete or rewrite PDF evidence:
+
+```bash
+tracky transactions list --db /tmp/tracky-review.sqlite --start-date 2026-07-01 --end-date 2026-07-31 --type expense --json
+tracky transactions inspect txn_REDACTED --db /tmp/tracky-review.sqlite --json
+tracky transactions update txn_REDACTED --db /tmp/tracky-review.sqlite --line cat_food:-120000:COP --line cat_home:-30000:COP --json
+```
+
+Updates retain the original candidate/source-document provenance or manual-entry provenance. Transfer legs may have their description corrected, but cannot be reclassified as income or expenses. Expense line updates must remain balanced in the canonical amount and currency.

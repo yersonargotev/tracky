@@ -508,3 +508,17 @@ Both commands return `schema_version: "tracky.transfer-review.v1"` and machine-r
 - posted date, absolute amount, and currency match.
 
 Accepted pairs set both candidates to `accepted`, create two canonical rows with `transaction_kind: "own_account_transfer"`, normalize the canonical leg amounts to a balancing transfer outflow/inflow pair, and preserve each candidate's provenance link. Reports must treat these rows as transfers/card payments, not income or expense.
+
+## Canonical transaction ledger JSON
+
+`tracky transactions list/inspect/update --json` uses `tracky.transactions.v1`. These commands operate only on canonical transactions and never delete records, source documents, candidates, provenance, or fingerprints.
+
+| Command | Purpose |
+| --- | --- |
+| `transactions list` | Lists canonical transactions; optional `--start-date`, `--end-date`, `--account-id`, `--category-id`, `--income-source-id`, and `--type` filters compose with AND semantics. |
+| `transactions inspect TRANSACTION_ID` | Returns one canonical transaction, its PDF candidate link when present, manual or PDF provenance, category split lines, and transfer-pair metadata. |
+| `transactions update TRANSACTION_ID` | Safely updates `--description`, income metadata (`--income-source-id`, `--income-kind`), one expense `--category-id`, or balanced repeated expense `--line` values. |
+
+A successful inspection/update returns `canonical_transaction`, optional `candidate`, `transaction_lines`, `provenance`, and optional `transfer`. A list returns `canonical_transactions[]`. Manual provenance remains `{ "source": "manual_entry", "entry_id": "..." }`; imported records retain their candidate provenance and redacted evidence.
+
+`update` refuses empty descriptions, missing income sources, unsupported income kinds, unbalanced/mismatched expense lines, and category/income changes to transfer legs. It does not change a transaction kind, candidate link, or provenance. Every successful update writes an append-only `edits[]` audit record with before/after change data and timestamp, returned by inspect/update.

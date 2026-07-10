@@ -15,6 +15,7 @@ pub const ACCOUNT_REGISTRY_SCHEMA_VERSION: &str = "tracky.accounts.v1";
 pub const INCOME_SOURCE_REGISTRY_SCHEMA_VERSION: &str = "tracky.income-sources.v1";
 pub const CATEGORY_REGISTRY_SCHEMA_VERSION: &str = "tracky.categories.v1";
 pub const MANUAL_TRANSACTIONS_SCHEMA_VERSION: &str = "tracky.manual-transactions.v1";
+pub const TRANSACTION_LEDGER_SCHEMA_VERSION: &str = "tracky.transactions.v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -218,6 +219,64 @@ pub struct TransactionLine {
     pub line_kind: String,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransactionProvenance {
+    pub source: String,
+    pub entry_id: Option<String>,
+    pub candidate_provenance: Option<ReviewProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransactionTransferMetadata {
+    pub id: String,
+    pub transfer_kind: String,
+    pub from_account_id: String,
+    pub to_account_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransactionEdit {
+    pub id: String,
+    pub changed_fields: serde_json::Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct TransactionLedgerResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_transaction: Option<CanonicalTransaction>,
+    pub canonical_transactions: Vec<CanonicalTransaction>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<ReviewCandidate>,
+    pub transaction_lines: Vec<TransactionLine>,
+    pub provenance: Vec<TransactionProvenance>,
+    pub edits: Vec<TransactionEdit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<TransactionTransferMetadata>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TransactionListFilter<'a> {
+    pub start_date: Option<&'a str>,
+    pub end_date: Option<&'a str>,
+    pub account_id: Option<&'a str>,
+    pub category_id: Option<&'a str>,
+    pub income_source_id: Option<&'a str>,
+    pub transaction_kind: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TransactionUpdateInput {
+    pub description: Option<String>,
+    pub income_source_id: Option<String>,
+    pub income_kind: Option<String>,
+    pub expense_lines: Option<Vec<ExpenseLineInput>>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExpenseLineInput {
     pub category_id: String,
@@ -405,7 +464,14 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
             from_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
             to_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-        );",
+        );
+        CREATE TABLE IF NOT EXISTS canonical_transaction_edits (
+            id TEXT PRIMARY KEY,
+            canonical_transaction_id TEXT NOT NULL REFERENCES canonical_transactions(id),
+            changed_fields_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_canonical_transaction_edits_canonical ON canonical_transaction_edits(canonical_transaction_id);",
     )
 }
 
@@ -3394,6 +3460,362 @@ fn hydrate_duplicate_matches(
         }
     }
     Ok(())
+}
+
+pub fn list_canonical_transactions(
+    connection: &Connection,
+    filter: TransactionListFilter<'_>,
+) -> Result<TransactionLedgerResponse> {
+    let mut sql = "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor, transaction_kind, income_source_id, income_kind, created_from_candidate_id FROM canonical_transactions WHERE 1 = 1".to_string();
+    let mut values: Vec<String> = Vec::new();
+    if let Some(value) = filter.start_date {
+        sql.push_str(" AND posted_date >= ?");
+        values.push(value.to_string());
+    }
+    if let Some(value) = filter.end_date {
+        sql.push_str(" AND posted_date <= ?");
+        values.push(value.to_string());
+    }
+    if let Some(value) = filter.account_id {
+        sql.push_str(" AND account_id = ?");
+        values.push(value.to_string());
+    }
+    if let Some(value) = filter.income_source_id {
+        sql.push_str(" AND income_source_id = ?");
+        values.push(value.to_string());
+    }
+    if let Some(value) = filter.transaction_kind {
+        sql.push_str(" AND transaction_kind = ?");
+        values.push(value.to_string());
+    }
+    if let Some(value) = filter.category_id {
+        sql.push_str(" AND EXISTS (SELECT 1 FROM transaction_lines tl WHERE tl.canonical_transaction_id = canonical_transactions.id AND tl.category_id = ?)");
+        values.push(value.to_string());
+    }
+    sql.push_str(" ORDER BY posted_date, id");
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(values.iter()),
+        canonical_transaction_from_row,
+    )?;
+    let canonical_transactions = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(transaction_ledger_success(
+        "transactions list",
+        None,
+        canonical_transactions,
+        None,
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        None,
+    ))
+}
+
+pub fn inspect_canonical_transaction(
+    connection: &Connection,
+    canonical_id: &str,
+) -> Result<TransactionLedgerResponse> {
+    let Some(canonical) = canonical_transaction(connection, canonical_id)? else {
+        return Ok(transaction_ledger_error(
+            "transactions inspect",
+            "not_found",
+            "canonical_transaction_not_found",
+            "Canonical transaction was not found.",
+            "transaction_id",
+            serde_json::json!({ "transaction_id": canonical_id }),
+        ));
+    };
+    let candidate = match canonical.created_from_candidate_id.as_deref() {
+        Some(id) => find_review_candidate(connection, id)?,
+        None => None,
+    };
+    let provenance = transaction_provenance_for(connection, canonical_id, candidate.as_ref())?;
+    let edits = transaction_edits_for(connection, canonical_id)?;
+    let transfer = transaction_transfer_for(connection, canonical_id)?;
+    let lines = transaction_lines_for_canonical(connection, canonical_id)?;
+    Ok(transaction_ledger_success(
+        "transactions inspect",
+        Some(canonical),
+        Vec::new(),
+        candidate,
+        lines,
+        provenance,
+        edits,
+        transfer,
+    ))
+}
+
+pub fn update_canonical_transaction(
+    connection: &mut Connection,
+    canonical_id: &str,
+    input: TransactionUpdateInput,
+) -> Result<TransactionLedgerResponse> {
+    let command = "transactions update";
+    let Some(canonical) = canonical_transaction(connection, canonical_id)? else {
+        return Ok(transaction_ledger_error(
+            command,
+            "not_found",
+            "canonical_transaction_not_found",
+            "Canonical transaction was not found.",
+            "transaction_id",
+            serde_json::json!({ "transaction_id": canonical_id }),
+        ));
+    };
+    let kind = canonical.transaction_kind.as_deref().unwrap_or("");
+    if kind == OWN_ACCOUNT_TRANSFER_KIND
+        && (input.income_source_id.is_some()
+            || input.income_kind.is_some()
+            || input.expense_lines.is_some())
+    {
+        return Ok(transaction_ledger_error(
+            command,
+            "conflict",
+            "transfer_classification_immutable",
+            "Transfers cannot be converted into income or expenses.",
+            "transaction_kind",
+            serde_json::json!({ "transaction_id": canonical_id }),
+        ));
+    }
+    if (input.income_source_id.is_some() || input.income_kind.is_some())
+        && kind != INCOME_TRANSACTION_KIND
+    {
+        return Ok(transaction_ledger_error(
+            command,
+            "conflict",
+            "canonical_transaction_not_income",
+            "Only income transactions can update income metadata.",
+            "transaction_kind",
+            serde_json::json!({ "transaction_id": canonical_id, "transaction_kind": kind }),
+        ));
+    }
+    if input.expense_lines.is_some() && kind != EXPENSE_TRANSACTION_KIND {
+        return Ok(transaction_ledger_error(
+            command,
+            "conflict",
+            "canonical_transaction_not_expense",
+            "Only expense transactions can update category lines.",
+            "transaction_kind",
+            serde_json::json!({ "transaction_id": canonical_id, "transaction_kind": kind }),
+        ));
+    }
+    if input
+        .description
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Ok(transaction_ledger_error(
+            command,
+            "validation_failure",
+            "description_required",
+            "Description cannot be empty.",
+            "description",
+            serde_json::json!({}),
+        ));
+    }
+    if let Some(source_id) = input.income_source_id.as_deref() {
+        if income_source_by_id(connection, source_id)?.is_none() {
+            return Ok(transaction_ledger_error(
+                command,
+                "not_found",
+                "income_source_not_found",
+                "Income source was not found.",
+                "income_source_id",
+                serde_json::json!({ "income_source_id": source_id }),
+            ));
+        }
+    }
+    if let Some(income_kind) = input.income_kind.as_deref() {
+        if !INCOME_KINDS.contains(&income_kind.trim().to_ascii_lowercase().as_str()) {
+            return Ok(transaction_ledger_error(
+                command,
+                "validation_failure",
+                "invalid_income_kind",
+                "Income kind is not supported.",
+                "income_kind",
+                serde_json::json!({ "income_kind": income_kind, "allowed_income_kinds": INCOME_KINDS }),
+            ));
+        }
+    }
+    let previous_lines = transaction_lines_for_canonical(connection, canonical_id)?;
+    let audit_change = serde_json::json!({
+        "before": { "description": canonical.description, "income_source_id": canonical.income_source_id, "income_kind": canonical.income_kind, "transaction_lines": previous_lines },
+        "after": { "description": input.description.as_deref().map(str::trim).unwrap_or(&canonical.description), "income_source_id": input.income_source_id.as_deref().or(canonical.income_source_id.as_deref()), "income_kind": input.income_kind.as_deref().map(|value| value.trim().to_ascii_lowercase()).or(canonical.income_kind.clone()), "transaction_lines_replaced": input.expense_lines.is_some() }
+    });
+    let tx = connection
+        .transaction()
+        .context("starting canonical transaction update")?;
+    if let Some(description) = input.description.as_deref() {
+        tx.execute(
+            "UPDATE canonical_transactions SET description = ?1 WHERE id = ?2",
+            params![description.trim(), canonical_id],
+        )?;
+    }
+    if let Some(source_id) = input.income_source_id.as_deref() {
+        tx.execute(
+            "UPDATE canonical_transactions SET income_source_id = ?1 WHERE id = ?2",
+            params![source_id, canonical_id],
+        )?;
+    }
+    if let Some(income_kind) = input.income_kind.as_deref() {
+        tx.execute(
+            "UPDATE canonical_transactions SET income_kind = ?1 WHERE id = ?2",
+            params![income_kind.trim().to_ascii_lowercase(), canonical_id],
+        )?;
+    }
+    if let Some(lines) = input.expense_lines.as_deref() {
+        let lines = normalized_expense_lines(lines, canonical.amount_minor, &canonical.currency);
+        if let Some(response) = validate_expense_lines(
+            &tx,
+            command,
+            canonical.amount_minor,
+            &canonical.currency,
+            &lines,
+        )? {
+            return Ok(transaction_ledger_from_review_error(response));
+        }
+        tx.execute(
+            "DELETE FROM transaction_lines WHERE canonical_transaction_id = ?1",
+            params![canonical_id],
+        )?;
+        insert_expense_lines(&tx, canonical_id, &lines)?;
+    }
+    tx.execute(
+        "INSERT INTO canonical_transaction_edits (id, canonical_transaction_id, changed_fields_json) VALUES (printf('edit_%s_%s', ?1, lower(hex(randomblob(8)))), ?1, ?2)",
+        params![canonical_id, audit_change.to_string()],
+    )?;
+    tx.commit()
+        .context("committing canonical transaction update")?;
+    inspect_canonical_transaction(connection, canonical_id).map(|mut response| {
+        response.command = command;
+        response
+    })
+}
+
+fn canonical_transaction_from_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CanonicalTransaction> {
+    Ok(CanonicalTransaction {
+        id: row.get(0)?,
+        account_id: row.get(1)?,
+        posted_date: row.get(2)?,
+        description: row.get(3)?,
+        amount_minor: row.get(4)?,
+        currency: row.get(5)?,
+        balance_minor: row.get(6)?,
+        transaction_kind: row.get(7)?,
+        income_source_id: row.get(8)?,
+        income_kind: row.get(9)?,
+        created_from_candidate_id: row.get(10)?,
+    })
+}
+
+fn transaction_provenance_for(
+    connection: &Connection,
+    canonical_id: &str,
+    candidate: Option<&ReviewCandidate>,
+) -> Result<Vec<TransactionProvenance>> {
+    if let Some(candidate) = candidate {
+        return Ok(vec![TransactionProvenance {
+            source: "pdf_import".to_string(),
+            entry_id: None,
+            candidate_provenance: Some(candidate.provenance.clone()),
+        }]);
+    }
+    connection.query_row("SELECT entry_id, source FROM manual_transaction_provenance WHERE canonical_transaction_id = ?1", params![canonical_id], |row| Ok(TransactionProvenance { source: row.get(1)?, entry_id: Some(row.get(0)?), candidate_provenance: None })).optional().map(|value| value.into_iter().collect()).map_err(Into::into)
+}
+
+fn transaction_transfer_for(
+    connection: &Connection,
+    canonical_id: &str,
+) -> Result<Option<TransactionTransferMetadata>> {
+    connection.query_row("SELECT id, transfer_kind, from_account_id, to_account_id FROM canonical_transfer_pairs WHERE from_canonical_transaction_id = ?1 OR to_canonical_transaction_id = ?1 UNION ALL SELECT id, 'own_account_transfer', from_account_id, to_account_id FROM manual_transfer_pairs WHERE from_canonical_transaction_id = ?1 OR to_canonical_transaction_id = ?1 LIMIT 1", params![canonical_id], |row| Ok(TransactionTransferMetadata { id: row.get(0)?, transfer_kind: row.get(1)?, from_account_id: row.get(2)?, to_account_id: row.get(3)? })).optional().map_err(Into::into)
+}
+
+fn transaction_edits_for(
+    connection: &Connection,
+    canonical_id: &str,
+) -> Result<Vec<TransactionEdit>> {
+    let mut statement = connection.prepare("SELECT id, changed_fields_json, created_at FROM canonical_transaction_edits WHERE canonical_transaction_id = ?1 ORDER BY created_at, id")?;
+    let rows = statement.query_map(params![canonical_id], |row| {
+        Ok(TransactionEdit {
+            id: row.get(0)?,
+            changed_fields: serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(1)?)
+                .unwrap_or(serde_json::json!({})),
+            created_at: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn transaction_ledger_success(
+    command: &'static str,
+    canonical_transaction: Option<CanonicalTransaction>,
+    canonical_transactions: Vec<CanonicalTransaction>,
+    candidate: Option<ReviewCandidate>,
+    transaction_lines: Vec<TransactionLine>,
+    provenance: Vec<TransactionProvenance>,
+    edits: Vec<TransactionEdit>,
+    transfer: Option<TransactionTransferMetadata>,
+) -> TransactionLedgerResponse {
+    TransactionLedgerResponse {
+        schema_version: TRANSACTION_LEDGER_SCHEMA_VERSION,
+        command,
+        ok: true,
+        canonical_transaction,
+        canonical_transactions,
+        candidate,
+        transaction_lines,
+        provenance,
+        edits,
+        transfer,
+        errors: Vec::new(),
+    }
+}
+fn transaction_ledger_error(
+    command: &'static str,
+    category: &'static str,
+    code: &'static str,
+    message: &'static str,
+    path: &'static str,
+    details: serde_json::Value,
+) -> TransactionLedgerResponse {
+    TransactionLedgerResponse {
+        schema_version: TRANSACTION_LEDGER_SCHEMA_VERSION,
+        command,
+        ok: false,
+        canonical_transaction: None,
+        canonical_transactions: Vec::new(),
+        candidate: None,
+        transaction_lines: Vec::new(),
+        provenance: Vec::new(),
+        edits: Vec::new(),
+        transfer: None,
+        errors: vec![ReviewError {
+            category,
+            code,
+            message: message.to_string(),
+            path,
+            recoverable: true,
+            details,
+        }],
+    }
+}
+pub fn transaction_ledger_from_review_error(
+    response: CandidateReviewResponse,
+) -> TransactionLedgerResponse {
+    TransactionLedgerResponse {
+        schema_version: TRANSACTION_LEDGER_SCHEMA_VERSION,
+        command: "transactions update",
+        ok: false,
+        canonical_transaction: None,
+        canonical_transactions: Vec::new(),
+        candidate: None,
+        transaction_lines: Vec::new(),
+        provenance: Vec::new(),
+        edits: Vec::new(),
+        transfer: None,
+        errors: response.errors,
+    }
 }
 
 fn canonical_transaction(
