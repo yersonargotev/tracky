@@ -277,11 +277,54 @@ CREATE TABLE IF NOT EXISTS cdt_operation_heads (
 
 CREATE TABLE IF NOT EXISTS investment_allocation_consumptions (
     allocation_id TEXT PRIMARY KEY REFERENCES investment_allocation_heads(allocation_id),
-    consumer_kind TEXT NOT NULL CHECK (consumer_kind IN ('cdt_constitution', 'cdt_additional_capital')),
-    cdt_position_id TEXT NOT NULL REFERENCES cdt_positions(id),
-    cdt_operation_id TEXT NOT NULL,
+    consumer_kind TEXT NOT NULL CHECK (consumer_kind IN ('cdt_constitution', 'cdt_additional_capital', 'brokerage_deposit')),
+    cdt_position_id TEXT REFERENCES cdt_positions(id),
+    consumer_operation_id TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
+
+CREATE TABLE IF NOT EXISTS brokerage_accounts (
+    account_id TEXT PRIMARY KEY REFERENCES accounts(id),
+    opened_date TEXT NOT NULL,
+    provenance_source TEXT NOT NULL CHECK (provenance_source = 'manual_entry'),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS brokerage_operation_revisions (
+    id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    account_id TEXT NOT NULL REFERENCES brokerage_accounts(account_id),
+    operation_type TEXT NOT NULL CHECK (operation_type IN ('deposit','buy','sell','dividend','withdrawal')),
+    effective_date TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    instrument_id TEXT REFERENCES investment_instruments(id),
+    quantity TEXT,
+    gross_amount_minor INTEGER NOT NULL DEFAULT 0 CHECK (gross_amount_minor >= 0),
+    historical_cost_minor INTEGER NOT NULL DEFAULT 0 CHECK (historical_cost_minor >= 0),
+    realized_result_minor INTEGER NOT NULL DEFAULT 0,
+    fee_minor INTEGER NOT NULL DEFAULT 0 CHECK (fee_minor >= 0),
+    fee_treatment TEXT CHECK (fee_treatment IN ('capitalized','separate')),
+    withholding_minor INTEGER NOT NULL DEFAULT 0 CHECK (withholding_minor >= 0),
+    other_deductions_minor INTEGER NOT NULL DEFAULT 0 CHECK (other_deductions_minor >= 0),
+    net_cash_minor INTEGER NOT NULL DEFAULT 0,
+    funding_allocation_id TEXT REFERENCES investment_allocation_heads(allocation_id),
+    destination_account_id TEXT REFERENCES accounts(id),
+    linked_transaction_id TEXT REFERENCES canonical_transactions(id),
+    component_id TEXT,
+    provenance_source TEXT NOT NULL CHECK (provenance_source = 'manual_entry'),
+    correction_reason TEXT,
+    replaces_revision_id TEXT REFERENCES brokerage_operation_revisions(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (operation_id, revision)
+);
+
+CREATE TABLE IF NOT EXISTS brokerage_operation_heads (
+    operation_id TEXT PRIMARY KEY,
+    current_revision_id TEXT NOT NULL UNIQUE REFERENCES brokerage_operation_revisions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_brokerage_component ON brokerage_operation_revisions(component_id) WHERE component_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_brokerage_account ON brokerage_operation_revisions(account_id);
 
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);

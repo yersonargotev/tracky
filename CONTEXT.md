@@ -89,3 +89,11 @@ El origen económico de un ingreso, como empleador, cliente freelance, dividendo
 ### Credencial de documento
 
 Una contraseña u otro secreto necesario para abrir un documento fuente protegido. Tracky puede recibirla en tiempo de ejecución desde CLI, prompt interactivo o variables de entorno cargadas desde un archivo `.env`, pero no la almacena como dato canónico en la versión inicial.
+
+### Cuenta de brokerage
+
+Cuenta propia de custodia cuya caja disponible por moneda y posiciones en instrumentos `security` se derivan de operaciones activas. Un depósito consume capital externo confirmado una sola vez; compras, ventas, dividendos y retiros cambian la composición de ese capital sin crear saldos editables.
+
+### Operación de brokerage
+
+Evento append-only de depósito, compra, venta, dividendo o retiro. Conserva cantidades exactas, costo histórico, producto bruto, resultado realizado, fees, retenciones, otras deducciones, efectivo neto y provenance; una corrección crea otra revisión y mueve el active head.

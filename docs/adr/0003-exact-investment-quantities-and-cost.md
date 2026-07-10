@@ -18,3 +18,7 @@ Allocations use append-only revisions and a separate active head. Positions are 
 - One typed allocation action may validate and commit multiple instrument legs atomically.
 - Legacy canonical rows keep their original pending-allocation storage column; transaction list/inspect derive pending, partial, or full status from active allocation principal so old databases remain compatible.
 - CDT positions are derived from active append-only lifecycle operations anchored to consumed `fixed_income` allocations. Unchanged renewal principal is not another contribution; additional principal requires another allocation, and capitalized interest remains a reinvested return.
+
+### Brokerage disposals
+
+Brokerage quantities use the same canonical decimal representation, internally scaled to at most nine fractional digits. Cash, cost, proceeds, realized results, fees, dividends, withholding and deductions remain `i64` minor units. Security sales use deterministic moving weighted-average historical cost: a partial disposal assigns `accumulated_cost_minor * sold_quantity / held_quantity`, truncating only the indivisible minor-unit remainder; a final disposal receives the complete remaining cost. This is portfolio bookkeeping, not a tax-lot or tax calculation.

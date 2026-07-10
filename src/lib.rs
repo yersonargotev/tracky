@@ -1,3 +1,4 @@
+pub mod brokerage;
 pub mod cdt;
 pub mod cli;
 pub mod investments;

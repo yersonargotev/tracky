@@ -317,7 +317,15 @@ pub struct FinanceReportResponse {
     pub income_source_totals: Vec<IncomeSourceTotal>,
     pub excluded_transfer_totals: Vec<ExcludedTransferTotal>,
     pub investment_contribution_totals: Vec<InvestmentContributionTotal>,
+    pub brokerage_dividend_totals: Vec<BrokerageDividendTotal>,
     pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct BrokerageDividendTotal {
+    pub currency: String,
+    pub gross_dividends_minor: i64,
+    pub dividend_count: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -3770,6 +3778,21 @@ pub fn create_manual_expense(
                 serde_json::json!({ "fee_component_id": component_id }),
             ));
         }
+        let is_brokerage_component = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM brokerage_operation_heads h JOIN brokerage_operation_revisions r ON r.id = h.current_revision_id WHERE r.component_id = ?1)",
+            params![component_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if is_brokerage_component {
+            return Ok(manual_error(
+                command,
+                "conflict",
+                "fee_double_count_conflict",
+                "The investment fee component is already used by a brokerage operation.",
+                "investment_fee_component_id",
+                serde_json::json!({ "fee_component_id": component_id }),
+            ));
+        }
     }
     let entry_id = manual_entry_id(
         "expense",
@@ -4804,6 +4827,8 @@ pub fn summarize_finances(
     let income_source_totals = finance_income_source_totals(connection, start_date, end_date)?;
     let investment_contribution_totals =
         finance_investment_contribution_totals(connection, start_date, end_date)?;
+    let brokerage_dividend_totals =
+        finance_brokerage_dividend_totals(connection, start_date, end_date)?;
     Ok(FinanceReportResponse {
         schema_version: FINANCE_REPORT_SCHEMA_VERSION,
         command: "reports summary",
@@ -4814,8 +4839,25 @@ pub fn summarize_finances(
         income_source_totals,
         excluded_transfer_totals,
         investment_contribution_totals,
+        brokerage_dividend_totals,
         errors: Vec::new(),
     })
+}
+
+fn finance_brokerage_dividend_totals(
+    connection: &Connection,
+    start_date: &str,
+    end_date: &str,
+) -> Result<Vec<BrokerageDividendTotal>> {
+    let mut statement = connection.prepare("SELECT r.currency, SUM(r.gross_amount_minor), COUNT(*) FROM brokerage_operation_heads h JOIN brokerage_operation_revisions r ON r.id=h.current_revision_id WHERE r.operation_type='dividend' AND r.effective_date BETWEEN ?1 AND ?2 GROUP BY r.currency ORDER BY r.currency")?;
+    let rows = statement.query_map(params![start_date, end_date], |row| {
+        Ok(BrokerageDividendTotal {
+            currency: row.get(0)?,
+            gross_dividends_minor: row.get(1)?,
+            dividend_count: row.get(2)?,
+        })
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 fn finance_investment_contribution_totals(
@@ -5006,6 +5048,7 @@ fn finance_report_error(
         income_source_totals: Vec::new(),
         excluded_transfer_totals: Vec::new(),
         investment_contribution_totals: Vec::new(),
+        brokerage_dividend_totals: Vec::new(),
         errors: vec![ReviewError {
             category: "validation_failure",
             code,

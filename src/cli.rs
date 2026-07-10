@@ -1,3 +1,8 @@
+use crate::brokerage::{
+    self, BrokerageBuyInput, BrokerageDepositInput, BrokerageDividendInput, BrokerageOpenInput,
+    BrokerageOperationReplacement, BrokerageReplacementInput, BrokerageResponse,
+    BrokerageSellInput, BrokerageWithdrawalInput,
+};
 use crate::cdt::{
     cdt_error, constitute_cdt, inspect_cdt, list_cdts, redeem_cdt, renew_cdt,
     replace_cdt_operation, CdtConstitutionInput, CdtOperationReplacement,
@@ -100,6 +105,176 @@ enum Commands {
     Instruments(InstrumentsCommand),
     Investments(InvestmentsCommand),
     Cdts(CdtsCommand),
+    Brokerages(BrokeragesCommand),
+}
+
+#[derive(Debug, Parser)]
+struct BrokeragesCommand {
+    #[command(subcommand)]
+    command: BrokerageCommands,
+}
+#[derive(Debug, Subcommand)]
+enum BrokerageCommands {
+    Open(BrokerageOpenArgs),
+    Deposit(BrokerageDepositArgs),
+    Buy(BrokerageBuyArgs),
+    Sell(BrokerageSellArgs),
+    Dividend(BrokerageDividendArgs),
+    Withdraw(BrokerageWithdrawArgs),
+    ReplaceOperation(BrokerageReplaceArgs),
+    List(BrokerageListArgs),
+    Inspect(BrokerageInspectArgs),
+}
+#[derive(Debug, Parser)]
+struct BrokerageOpenArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "opened-date")]
+    opened_date: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageDepositArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "allocation-id")]
+    allocation_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long = "amount-minor")]
+    amount_minor: i64,
+    #[arg(long)]
+    currency: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageBuyArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "instrument-id")]
+    instrument_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long)]
+    quantity: String,
+    #[arg(long = "gross-amount-minor")]
+    gross_amount_minor: i64,
+    #[arg(long = "fee-minor", default_value_t = 0)]
+    fee_minor: i64,
+    #[arg(long = "fee-treatment", default_value = "capitalized")]
+    fee_treatment: String,
+    #[arg(long = "component-id")]
+    component_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageSellArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "instrument-id")]
+    instrument_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long)]
+    quantity: String,
+    #[arg(long = "gross-proceeds-minor")]
+    gross_proceeds_minor: i64,
+    #[arg(long = "fee-minor", default_value_t = 0)]
+    fee_minor: i64,
+    #[arg(long = "withholding-minor", default_value_t = 0)]
+    withholding_minor: i64,
+    #[arg(long = "other-deductions-minor", default_value_t = 0)]
+    other_deductions_minor: i64,
+    #[arg(long = "net-cash-minor")]
+    net_cash_minor: i64,
+    #[arg(long = "component-id")]
+    component_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageDividendArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "instrument-id")]
+    instrument_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long = "gross-dividend-minor")]
+    gross_dividend_minor: i64,
+    #[arg(long = "fee-minor", default_value_t = 0)]
+    fee_minor: i64,
+    #[arg(long = "withholding-minor", default_value_t = 0)]
+    withholding_minor: i64,
+    #[arg(long = "other-deductions-minor", default_value_t = 0)]
+    other_deductions_minor: i64,
+    #[arg(long = "net-cash-minor")]
+    net_cash_minor: i64,
+    #[arg(long = "component-id")]
+    component_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageWithdrawArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
+    #[arg(long = "amount-minor")]
+    amount_minor: i64,
+    #[arg(long)]
+    currency: String,
+    #[arg(long = "destination-account-id")]
+    destination_account_id: Option<String>,
+    #[arg(long = "linked-transaction-id")]
+    linked_transaction_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageReplaceArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "operation-id")]
+    operation_id: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long = "replacement-json")]
+    replacement_json: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageListArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct BrokerageInspectArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1085,6 +1260,157 @@ where
             }
             InvestmentCommands::Positions(args) => investment_positions_command(args, &mut stdout),
         },
+        Commands::Brokerages(x) => match x.command {
+            BrokerageCommands::Open(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| {
+                    brokerage::open_brokerage(
+                        c,
+                        BrokerageOpenInput {
+                            account_id: a.account_id,
+                            opened_date: a.opened_date,
+                        },
+                    )
+                },
+                &mut stdout,
+            ),
+            BrokerageCommands::Deposit(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| {
+                    brokerage::deposit(
+                        c,
+                        BrokerageDepositInput {
+                            account_id: a.account_id,
+                            allocation_id: a.allocation_id,
+                            effective_date: a.effective_date,
+                            amount_minor: a.amount_minor,
+                            currency: a.currency,
+                        },
+                    )
+                },
+                &mut stdout,
+            ),
+            BrokerageCommands::Buy(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| {
+                    brokerage::buy(
+                        c,
+                        BrokerageBuyInput {
+                            account_id: a.account_id,
+                            instrument_id: a.instrument_id,
+                            effective_date: a.effective_date,
+                            quantity: a.quantity,
+                            gross_amount_minor: a.gross_amount_minor,
+                            fee_minor: a.fee_minor,
+                            fee_treatment: a.fee_treatment,
+                            component_id: a.component_id,
+                        },
+                    )
+                },
+                &mut stdout,
+            ),
+            BrokerageCommands::Sell(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| {
+                    brokerage::sell(
+                        c,
+                        BrokerageSellInput {
+                            account_id: a.account_id,
+                            instrument_id: a.instrument_id,
+                            effective_date: a.effective_date,
+                            quantity: a.quantity,
+                            gross_proceeds_minor: a.gross_proceeds_minor,
+                            fee_minor: a.fee_minor,
+                            withholding_minor: a.withholding_minor,
+                            other_deductions_minor: a.other_deductions_minor,
+                            net_cash_minor: a.net_cash_minor,
+                            component_id: a.component_id,
+                        },
+                    )
+                },
+                &mut stdout,
+            ),
+            BrokerageCommands::Dividend(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| {
+                    brokerage::dividend(
+                        c,
+                        BrokerageDividendInput {
+                            account_id: a.account_id,
+                            instrument_id: a.instrument_id,
+                            effective_date: a.effective_date,
+                            gross_dividend_minor: a.gross_dividend_minor,
+                            fee_minor: a.fee_minor,
+                            withholding_minor: a.withholding_minor,
+                            other_deductions_minor: a.other_deductions_minor,
+                            net_cash_minor: a.net_cash_minor,
+                            component_id: a.component_id,
+                        },
+                    )
+                },
+                &mut stdout,
+            ),
+            BrokerageCommands::Withdraw(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| {
+                    brokerage::withdraw(
+                        c,
+                        BrokerageWithdrawalInput {
+                            account_id: a.account_id,
+                            effective_date: a.effective_date,
+                            amount_minor: a.amount_minor,
+                            currency: a.currency,
+                            destination_account_id: a.destination_account_id,
+                            linked_transaction_id: a.linked_transaction_id,
+                        },
+                    )
+                },
+                &mut stdout,
+            ),
+            BrokerageCommands::ReplaceOperation(a) => {
+                let replacement = match serde_json::from_str::<BrokerageOperationReplacement>(
+                    &a.replacement_json,
+                ) {
+                    Ok(x) => x,
+                    Err(_) => {
+                        return write_brokerage_response(
+                            &mut stdout,
+                            brokerage_cli_error("invalid_replacement_json", "replacement_json"),
+                        )
+                    }
+                };
+                brokerage_command(
+                    &a.db,
+                    a.json,
+                    |c| {
+                        brokerage::replace_operation(
+                            c,
+                            BrokerageReplacementInput {
+                                operation_id: a.operation_id,
+                                reason: a.reason,
+                                replacement,
+                            },
+                        )
+                    },
+                    &mut stdout,
+                )
+            }
+            BrokerageCommands::List(a) => {
+                brokerage_command(&a.db, a.json, |c| brokerage::list(c), &mut stdout)
+            }
+            BrokerageCommands::Inspect(a) => brokerage_command(
+                &a.db,
+                a.json,
+                |c| brokerage::inspect_account(c, &a.account_id),
+                &mut stdout,
+            ),
+        },
         Commands::Cdts(cdts) => match cdts.command {
             CdtCommands::Constitute(args) => cdt_constitute_command(args, &mut stdout),
             CdtCommands::Renew(args) => cdt_renew_command(args, &mut stdout),
@@ -1094,6 +1420,45 @@ where
             CdtCommands::Inspect(args) => cdt_inspect_command(args, &mut stdout),
         },
     }
+}
+
+fn brokerage_command<W: Write, F>(db: &Path, json: bool, f: F, stdout: &mut W) -> Result<i32>
+where
+    F: FnOnce(&mut Connection) -> Result<BrokerageResponse>,
+{
+    if !json {
+        return write_brokerage_response(
+            stdout,
+            brokerage_cli_error("json_output_required", "command"),
+        );
+    }
+    let mut c = open_review_database(db)?;
+    write_brokerage_response(stdout, f(&mut c)?)
+}
+fn brokerage_cli_error(code: &'static str, path: &'static str) -> BrokerageResponse {
+    BrokerageResponse {
+        schema_version: brokerage::BROKERAGE_SCHEMA_VERSION,
+        command: "brokerages",
+        ok: false,
+        accounts: Vec::new(),
+        operation_history: Vec::new(),
+        errors: vec![crate::storage::ReviewError {
+            category: "validation_failure",
+            code,
+            message: code.replace('_', " "),
+            path,
+            recoverable: true,
+            details: serde_json::json!({}),
+        }],
+    }
+}
+fn write_brokerage_response<W: Write>(stdout: &mut W, response: BrokerageResponse) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing brokerage lifecycle JSON",
+    )
 }
 
 fn cdt_constitute_command<W: Write>(args: CdtConstituteArgs, stdout: &mut W) -> Result<i32> {

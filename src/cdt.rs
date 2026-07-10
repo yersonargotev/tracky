@@ -874,7 +874,7 @@ fn claim_allocation(
 ) -> rusqlite::Result<bool> {
     Ok(connection.execute(
         "INSERT OR IGNORE INTO investment_allocation_consumptions (
-            allocation_id, consumer_kind, cdt_position_id, cdt_operation_id
+            allocation_id, consumer_kind, cdt_position_id, consumer_operation_id
          ) VALUES (?1, ?2, ?3, ?4)",
         params![allocation_id, consumer_kind, position_id, operation_id],
     )? == 1)

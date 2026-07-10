@@ -1,0 +1,378 @@
+use serde_json::Value;
+use std::process::Command;
+fn run(args: &[&str]) -> Value {
+    let o = Command::new(env!("CARGO_BIN_EXE_tracky"))
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        o.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&o.stderr),
+        String::from_utf8_lossy(&o.stdout)
+    );
+    serde_json::from_slice(&o.stdout).unwrap()
+}
+fn fail(args: &[&str]) -> Value {
+    let o = Command::new(env!("CARGO_BIN_EXE_tracky"))
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(!o.status.success());
+    serde_json::from_slice(&o.stdout).unwrap()
+}
+fn account(db: &str, label: &str) -> String {
+    run(&[
+        "accounts",
+        "register",
+        "--db",
+        db,
+        "--institution",
+        "Synthetic",
+        "--label",
+        label,
+        "--account-type",
+        "wallet",
+        "--currency",
+        "COP",
+        "--json",
+    ])["account"]["id"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+fn instrument(db: &str, name: &str, kind: &str) -> String {
+    run(&[
+        "instruments",
+        "create",
+        "--db",
+        db,
+        "--name",
+        name,
+        "--type",
+        kind,
+        "--denomination-currency",
+        "COP",
+        "--provider",
+        "Synthetic",
+        "--provider-identifier",
+        name,
+        "--json",
+    ])["instrument"]["id"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+fn setup() -> (tempfile::TempDir, String, String, String) {
+    let d = tempfile::tempdir().unwrap();
+    let db = d.path().join("tracky.sqlite").to_str().unwrap().to_string();
+    let source = account(&db, "Source");
+    let brokerage = account(&db, "Brokerage");
+    let cash = instrument(&db, "COP-CASH", "fiat_currency");
+    let contribution = run(&[
+        "transactions",
+        "add-investment",
+        "--db",
+        &db,
+        "--account-id",
+        &source,
+        "--posted-date",
+        "2026-01-01",
+        "--description",
+        "Brokerage capital",
+        "--amount-minor",
+        "-100000",
+        "--currency",
+        "COP",
+        "--json",
+    ])["canonical_transactions"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let allocation = run(&[
+        "investments",
+        "allocate",
+        "--db",
+        &db,
+        "--contribution-id",
+        &contribution,
+        "--instrument-id",
+        &cash,
+        "--cash-amount-minor",
+        "100000",
+        "--cash-currency",
+        "COP",
+        "--quantity",
+        "1000",
+        "--json",
+    ])["allocations"][0]["allocation_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    run(&[
+        "brokerages",
+        "open",
+        "--db",
+        &db,
+        "--account-id",
+        &brokerage,
+        "--opened-date",
+        "2026-01-01",
+        "--json",
+    ]);
+    run(&[
+        "brokerages",
+        "deposit",
+        "--db",
+        &db,
+        "--account-id",
+        &brokerage,
+        "--allocation-id",
+        &allocation,
+        "--effective-date",
+        "2026-01-02",
+        "--amount-minor",
+        "100000",
+        "--currency",
+        "COP",
+        "--json",
+    ]);
+    (d, db, brokerage, allocation)
+}
+#[test]
+fn complete_lifecycle_derives_cash_position_income_and_realized_result() {
+    let (_d, db, b, a) = setup();
+    assert_eq!(
+        fail(&[
+            "brokerages",
+            "deposit",
+            "--db",
+            &db,
+            "--account-id",
+            &b,
+            "--allocation-id",
+            &a,
+            "--effective-date",
+            "2026-01-02",
+            "--amount-minor",
+            "100000",
+            "--currency",
+            "COP",
+            "--json"
+        ])["ok"],
+        false
+    );
+    let sec = instrument(&db, "SEC", "security");
+    let bought = run(&[
+        "brokerages",
+        "buy",
+        "--db",
+        &db,
+        "--account-id",
+        &b,
+        "--instrument-id",
+        &sec,
+        "--effective-date",
+        "2026-01-03",
+        "--quantity",
+        "10.5",
+        "--gross-amount-minor",
+        "60000",
+        "--fee-minor",
+        "1000",
+        "--fee-treatment",
+        "capitalized",
+        "--component-id",
+        "fee-buy",
+        "--json",
+    ]);
+    assert_eq!(bought["accounts"][0]["cash"][0]["available_minor"], 39000);
+    assert_eq!(
+        bought["accounts"][0]["positions"][0]["historical_cost_minor"],
+        61000
+    );
+    let sold = run(&[
+        "brokerages",
+        "sell",
+        "--db",
+        &db,
+        "--account-id",
+        &b,
+        "--instrument-id",
+        &sec,
+        "--effective-date",
+        "2026-01-04",
+        "--quantity",
+        "5.25",
+        "--gross-proceeds-minor",
+        "40000",
+        "--fee-minor",
+        "500",
+        "--withholding-minor",
+        "500",
+        "--other-deductions-minor",
+        "0",
+        "--net-cash-minor",
+        "39000",
+        "--component-id",
+        "fee-sell",
+        "--json",
+    ]);
+    assert_eq!(sold["accounts"][0]["positions"][0]["quantity"], "5.25");
+    assert_eq!(
+        sold["accounts"][0]["active_operations"][2]["historical_cost_minor"],
+        30500
+    );
+    assert_eq!(
+        sold["accounts"][0]["active_operations"][2]["realized_result_minor"],
+        9500
+    );
+    let div = run(&[
+        "brokerages",
+        "dividend",
+        "--db",
+        &db,
+        "--account-id",
+        &b,
+        "--instrument-id",
+        &sec,
+        "--effective-date",
+        "2026-01-05",
+        "--gross-dividend-minor",
+        "5000",
+        "--withholding-minor",
+        "1000",
+        "--net-cash-minor",
+        "4000",
+        "--component-id",
+        "dividend-deduction",
+        "--json",
+    ]);
+    assert_eq!(div["accounts"][0]["cash"][0]["gross_dividends_minor"], 5000);
+    let dividend_operation = div["accounts"][0]["active_operations"][3]["operation_id"]
+        .as_str()
+        .unwrap();
+    let replacement = format!(
+        r#"{{"operation_type":"dividend","effective_date":"2026-01-05","currency":"COP","instrument_id":"{sec}","gross_amount_minor":6000,"fee_minor":0,"withholding_minor":1000,"other_deductions_minor":0,"net_cash_minor":5000,"component_id":"dividend-deduction"}}"#
+    );
+    let corrected = run(&[
+        "brokerages",
+        "replace-operation",
+        "--db",
+        &db,
+        "--operation-id",
+        dividend_operation,
+        "--reason",
+        "Correct synthetic dividend",
+        "--replacement-json",
+        &replacement,
+        "--json",
+    ]);
+    assert_eq!(
+        corrected["operation_history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|operation| operation["operation_id"] == dividend_operation)
+            .count(),
+        2
+    );
+    let report = run(&[
+        "reports",
+        "summary",
+        "--db",
+        &db,
+        "--start-date",
+        "2026-01-01",
+        "--end-date",
+        "2026-01-31",
+        "--json",
+    ]);
+    assert_eq!(
+        report["brokerage_dividend_totals"][0]["gross_dividends_minor"],
+        6000
+    );
+    let end = run(&[
+        "brokerages",
+        "withdraw",
+        "--db",
+        &db,
+        "--account-id",
+        &b,
+        "--effective-date",
+        "2026-01-06",
+        "--amount-minor",
+        "10000",
+        "--currency",
+        "COP",
+        "--json",
+    ]);
+    assert_eq!(end["accounts"][0]["cash"][0]["available_minor"], 73000);
+    assert_eq!(
+        end["accounts"][0]["cash"][0]["external_capital_minor"],
+        100000
+    )
+}
+#[test]
+fn rejects_insufficient_cash_position_and_bad_net_without_mutation() {
+    let (_d, db, b, _) = setup();
+    let sec = instrument(&db, "SEC2", "security");
+    assert_eq!(
+        fail(&[
+            "brokerages",
+            "buy",
+            "--db",
+            &db,
+            "--account-id",
+            &b,
+            "--instrument-id",
+            &sec,
+            "--effective-date",
+            "2026-01-03",
+            "--quantity",
+            "1",
+            "--gross-amount-minor",
+            "100001",
+            "--json"
+        ])["errors"][0]["code"],
+        "insufficient_cash"
+    );
+    assert_eq!(
+        fail(&[
+            "brokerages",
+            "sell",
+            "--db",
+            &db,
+            "--account-id",
+            &b,
+            "--instrument-id",
+            &sec,
+            "--effective-date",
+            "2026-01-03",
+            "--quantity",
+            "1",
+            "--gross-proceeds-minor",
+            "10",
+            "--net-cash-minor",
+            "9",
+            "--json"
+        ])["errors"][0]["code"],
+        "net_reconciliation_failed"
+    );
+    let x = run(&[
+        "brokerages",
+        "inspect",
+        "--db",
+        &db,
+        "--account-id",
+        &b,
+        "--json",
+    ]);
+    assert_eq!(
+        x["accounts"][0]["active_operations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    )
+}
