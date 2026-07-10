@@ -36,7 +36,16 @@ These issues retain unchecked criteria and are not represented as completed:
 
 1. `0020-add-tui-review-mvp.md` — minimal TUI review surface; intentionally not started in this slice.
 2. `0021-add-export-backup-and-import-safety.md` — backup, integrity, and export commands.
+3. `0026-accept-investment-contributions-pending-allocation.md` — typed investment contribution review with explicit pending allocation.
+4. `0027-track-instruments-and-multi-currency-positions-at-cost.md` — instrument registry, allocation, and historical-cost positions.
+5. `0028-track-complete-cdt-lifecycle.md` — CDT constitution, renewal, income, withholding, and redemption.
+6. `0029-track-complete-brokerage-investment-lifecycle.md` — brokerage cash, securities, income, costs, and withdrawals.
+7. `0030-reconcile-investment-positions-and-dated-valuations.md` — dated provider snapshots and reviewed reconciliation.
+8. `0031-import-and-reconcile-investment-provider-documents.md` — review-first trii, Wenia, and CDT document adapters.
+9. `0032-add-consolidated-monthly-investment-reports.md` — monthly investment flows, positions, and valuation freshness.
+10. `0033-extend-export-backup-and-integrity-for-investments.md` — operational safety for investment data.
+11. `0034-add-investment-review-and-reporting-to-tui.md` — investment workflow in the shared TUI model.
 
-Implementation should proceed in dependency order unless a later issue's blockers have already been satisfied by another change.
+Implementation should proceed from the dependency frontier: any issue whose listed blockers are complete may start. The investment-tracking expansion is grounded in `docs/research/investment-tracking-model.md`; provider adapters additionally require representative, user-authorized artifacts or privacy-safe fixtures derived from them.
 
 The agent-facing workflow for the implemented PDF inspect/import/review path is documented in `docs/agents/pdf-import-workflow.md`.
