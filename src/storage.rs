@@ -216,6 +216,13 @@ pub struct TransactionLine {
     pub line_kind: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpenseLineInput {
+    pub category_id: String,
+    pub amount_minor: i64,
+    pub currency: String,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ReviewError {
     pub category: &'static str,
@@ -1867,7 +1874,7 @@ pub fn accept_income_candidate(
 pub fn accept_expense_candidate(
     connection: &mut Connection,
     candidate_id: &str,
-    category_id: &str,
+    expense_lines: &[ExpenseLineInput],
 ) -> Result<CandidateReviewResponse> {
     let tx = connection
         .transaction()
@@ -1921,17 +1928,6 @@ pub fn accept_expense_candidate(
             serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
         ));
     }
-    if category_by_id(&tx, category_id)?.is_none() {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "not_found",
-            "category_not_found",
-            "Expense category was not found.".to_string(),
-            "category_id",
-            true,
-            serde_json::json!({ "category_id": category_id }),
-        ));
-    }
     if !is_expense_candidate_shape(&candidate) {
         return Ok(review_error_response(
             "candidates accept-expense",
@@ -1963,6 +1959,20 @@ pub fn accept_expense_candidate(
 
     let canonical_id = canonical_transaction_id(candidate_id);
     let expense_amount_minor = expense_amount_minor(&candidate);
+    let expense_lines = normalized_expense_lines(
+        expense_lines,
+        expense_amount_minor,
+        candidate.currency.as_str(),
+    );
+    if let Some(response) = validate_expense_lines(
+        &tx,
+        "candidates accept-expense",
+        expense_amount_minor,
+        candidate.currency.as_str(),
+        &expense_lines,
+    )? {
+        return Ok(response);
+    }
     tx.execute(
         "INSERT INTO canonical_transactions (
             id, account_id, posted_date, description, amount_minor, currency,
@@ -1979,19 +1989,7 @@ pub fn accept_expense_candidate(
             candidate_id
         ],
     )?;
-    tx.execute(
-        "INSERT INTO transaction_lines (
-            id, canonical_transaction_id, category_id, amount_minor, currency, line_kind
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![
-            transaction_line_id(&canonical_id, category_id, EXPENSE_LINE_KIND),
-            canonical_id.as_str(),
-            category_id,
-            expense_amount_minor,
-            candidate.currency.as_str(),
-            EXPENSE_LINE_KIND,
-        ],
-    )?;
+    insert_expense_lines(&tx, &canonical_id, &expense_lines)?;
     mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
     tx.commit().context("committing expense candidate accept")?;
 
@@ -2003,6 +2001,91 @@ pub fn accept_expense_candidate(
     Ok(CandidateReviewResponse {
         schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
         command: "candidates accept-expense",
+        ok: true,
+        candidate: Some(candidate),
+        candidates: Vec::new(),
+        canonical_transaction: Some(canonical_transaction),
+        transaction_lines,
+        errors: Vec::new(),
+    })
+}
+
+pub fn replace_expense_transaction_lines(
+    connection: &mut Connection,
+    candidate_id: &str,
+    expense_lines: &[ExpenseLineInput],
+) -> Result<CandidateReviewResponse> {
+    let tx = connection
+        .transaction()
+        .context("starting expense line update transaction")?;
+    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
+        return Ok(review_error_response(
+            "candidates set-expense-lines",
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.".to_string(),
+            "candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    };
+    let Some(canonical_id) = candidate.canonical_transaction_id.as_deref() else {
+        return Ok(review_error_response(
+            "candidates set-expense-lines",
+            "conflict",
+            "candidate_not_accepted_as_expense",
+            "Only an accepted expense candidate can have its lines updated.".to_string(),
+            "candidate.status",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
+        ));
+    };
+    let Some(canonical) = canonical_transaction(&tx, canonical_id)? else {
+        return Ok(review_error_response(
+            "candidates set-expense-lines",
+            "not_found",
+            "canonical_transaction_not_found",
+            "Canonical transaction was not found.".to_string(),
+            "candidate.canonical_transaction_id",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id, "canonical_transaction_id": canonical_id }),
+        ));
+    };
+    if canonical.transaction_kind.as_deref() != Some(EXPENSE_TRANSACTION_KIND) {
+        return Ok(review_error_response(
+            "candidates set-expense-lines",
+            "conflict",
+            "canonical_transaction_not_expense",
+            "Only canonical expense transactions can have expense lines.".to_string(),
+            "canonical_transaction.transaction_kind",
+            true,
+            serde_json::json!({ "canonical_transaction_id": canonical_id, "transaction_kind": canonical.transaction_kind }),
+        ));
+    }
+    if let Some(response) = validate_expense_lines(
+        &tx,
+        "candidates set-expense-lines",
+        canonical.amount_minor,
+        &canonical.currency,
+        expense_lines,
+    )? {
+        return Ok(response);
+    }
+    tx.execute(
+        "DELETE FROM transaction_lines WHERE canonical_transaction_id = ?1",
+        params![canonical_id],
+    )?;
+    insert_expense_lines(&tx, canonical_id, expense_lines)?;
+    tx.commit().context("committing expense line update")?;
+
+    let candidate = find_review_candidate(connection, candidate_id)?
+        .expect("expense line candidate remains queryable");
+    let canonical_transaction = canonical_transaction(connection, canonical_id)?
+        .expect("expense line canonical transaction remains queryable");
+    let transaction_lines = transaction_lines_for_canonical(connection, canonical_id)?;
+    Ok(CandidateReviewResponse {
+        schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
+        command: "candidates set-expense-lines",
         ok: true,
         candidate: Some(candidate),
         candidates: Vec::new(),
@@ -2788,6 +2871,143 @@ fn transaction_lines_for_canonical(
         lines.push(row?);
     }
     Ok(lines)
+}
+
+fn validate_expense_lines(
+    connection: &Connection,
+    command: &'static str,
+    canonical_amount_minor: i64,
+    canonical_currency: &str,
+    lines: &[ExpenseLineInput],
+) -> Result<Option<CandidateReviewResponse>> {
+    if lines.is_empty() {
+        return Ok(Some(review_error_response(
+            command,
+            "validation_failure",
+            "expense_lines_required",
+            "At least one categorized expense line is required.".to_string(),
+            "lines",
+            true,
+            serde_json::json!({}),
+        )));
+    }
+    let mut total = 0_i64;
+    let mut category_ids = std::collections::HashSet::new();
+    for line in lines {
+        if line.category_id.trim().is_empty() {
+            return Ok(Some(review_error_response(
+                command,
+                "validation_failure",
+                "expense_line_category_required",
+                "Each expense line requires a category.".to_string(),
+                "lines.category_id",
+                true,
+                serde_json::json!({}),
+            )));
+        }
+        if !category_ids.insert(&line.category_id) {
+            return Ok(Some(review_error_response(
+                command,
+                "validation_failure",
+                "duplicate_expense_line_category",
+                "Each expense line must use a distinct category.".to_string(),
+                "lines.category_id",
+                true,
+                serde_json::json!({ "category_id": line.category_id }),
+            )));
+        }
+        if category_by_id(connection, &line.category_id)?.is_none() {
+            return Ok(Some(review_error_response(
+                command,
+                "not_found",
+                "category_not_found",
+                "Expense category was not found.".to_string(),
+                "lines.category_id",
+                true,
+                serde_json::json!({ "category_id": line.category_id }),
+            )));
+        }
+        if !line.currency.eq_ignore_ascii_case(canonical_currency) {
+            return Ok(Some(review_error_response(
+                command,
+                "validation_failure",
+                "expense_line_currency_mismatch",
+                "Expense line currency must match the canonical transaction currency.".to_string(),
+                "lines.currency",
+                true,
+                serde_json::json!({ "expected_currency": canonical_currency, "actual_currency": line.currency }),
+            )));
+        }
+        total = match total.checked_add(line.amount_minor) {
+            Some(total) => total,
+            None => {
+                return Ok(Some(review_error_response(
+                    command,
+                    "validation_failure",
+                    "expense_lines_total_overflow",
+                    "Expense line totals overflow minor units.".to_string(),
+                    "lines.amount_minor",
+                    true,
+                    serde_json::json!({}),
+                )));
+            }
+        };
+    }
+    if total != canonical_amount_minor {
+        return Ok(Some(review_error_response(
+            command,
+            "validation_failure",
+            "expense_lines_unbalanced",
+            "Expense line total must equal the canonical transaction amount.".to_string(),
+            "lines.amount_minor",
+            true,
+            serde_json::json!({
+                "canonical_amount_minor": canonical_amount_minor,
+                "lines_total_minor": total,
+            }),
+        )));
+    }
+    Ok(None)
+}
+
+fn normalized_expense_lines(
+    lines: &[ExpenseLineInput],
+    canonical_amount_minor: i64,
+    canonical_currency: &str,
+) -> Vec<ExpenseLineInput> {
+    if let [line] = lines {
+        if line.amount_minor == 0 && line.currency.is_empty() {
+            return vec![ExpenseLineInput {
+                category_id: line.category_id.clone(),
+                amount_minor: canonical_amount_minor,
+                currency: canonical_currency.to_string(),
+            }];
+        }
+    }
+    lines.to_vec()
+}
+
+fn insert_expense_lines(
+    connection: &Connection,
+    canonical_id: &str,
+    lines: &[ExpenseLineInput],
+) -> Result<()> {
+    for line in lines {
+        connection.execute(
+            "INSERT INTO transaction_lines (
+                id, canonical_transaction_id, category_id, amount_minor, currency, line_kind
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                transaction_line_id(canonical_id, &line.category_id, EXPENSE_LINE_KIND),
+                canonical_id,
+                line.category_id,
+                line.amount_minor,
+                line.currency.to_ascii_uppercase(),
+                EXPENSE_LINE_KIND,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn canonical_transaction_id(candidate_id: &str) -> String {

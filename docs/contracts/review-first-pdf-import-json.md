@@ -14,7 +14,8 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky income-sources create/list` | Yes for create, no for list | No | Never |
 | `tracky candidates accept-income` | Yes | No new candidates | Creates one canonical income transaction from one eligible candidate |
 | `tracky categories create/list` | Yes for create, no for list | No | Never |
-| `tracky candidates accept-expense` | Yes | No new candidates | Creates one canonical expense transaction and one category line from one eligible candidate |
+| `tracky candidates accept-expense` | Yes | No new candidates | Creates one canonical expense transaction and one or more balanced category lines from one eligible candidate |
+| `tracky candidates set-expense-lines` | Yes | No new candidates | Replaces the category lines of an accepted canonical expense while preserving candidate provenance |
 | `tracky candidates list-transfer-pairs` | No | No | Never |
 | `tracky candidates accept-transfer-pair` | Yes | No new candidates | Creates two canonical own-account transfer legs from one eligible pair |
 
@@ -337,7 +338,9 @@ Stable refusal codes include `candidate_not_income_eligible`, `candidate_possibl
 }
 ```
 
-`tracky candidates accept-expense CANDIDATE_ID --category-id ID --json` uses `tracky.candidate-review.v1`. It accepts only unreviewed purchase/outflow candidates with an explicit category. The first slice creates one canonical transaction with `transaction_kind: "expense"` and one `transaction_lines[]` entry whose `amount_minor` equals the canonical transaction amount and whose `category_id` is the selected category.
+`tracky candidates accept-expense CANDIDATE_ID --category-id ID --json` uses `tracky.candidate-review.v1`. It accepts only unreviewed purchase/outflow candidates with an explicit category and keeps the single-line form for compatibility. A split uses repeated `--line CATEGORY_ID:AMOUNT_MINOR:CURRENCY` values; it creates one canonical transaction with `transaction_kind: "expense"` and stable `transaction_lines[]` entries containing `id`, `canonical_transaction_id`, `category_id`, `category_name`, `amount_minor`, `currency`, and `line_kind`.
+
+Every split line must use an existing distinct category and the canonical transaction currency; the minor-unit sum must equal the canonical transaction amount. `tracky candidates set-expense-lines CANDIDATE_ID --line ... --json` replaces those lines only after the candidate has been accepted as an expense. It leaves the canonical transaction, candidate, source document, and provenance links intact. Stable split validation codes include `expense_lines_required`, `expense_lines_unbalanced`, `expense_line_currency_mismatch`, `expense_line_category_required`, and `category_not_found`.
 
 Eligible first-slice expense candidates are:
 

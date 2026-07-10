@@ -14,12 +14,12 @@ The slice should be verifiable through CLI/JSON and SQLite tests; no TUI is requ
 
 ## Acceptance criteria
 
-- [ ] A user can create or update transaction lines so multiple lines belong to one canonical transaction.
-- [ ] The sum of split lines must equal the canonical transaction amount in minor units.
-- [ ] Tracky rejects splits with missing categories, wrong currency, or unbalanced totals.
-- [ ] Existing single-line categorized expenses continue to work.
-- [ ] JSON output exposes split lines in a stable shape.
-- [ ] Tests cover balanced split, unbalanced rejection, and audit/provenance retention.
+- [x] A user can create or update transaction lines so multiple lines belong to one canonical transaction.
+- [x] The sum of split lines must equal the canonical transaction amount in minor units.
+- [x] Tracky rejects splits with missing categories, wrong currency, or unbalanced totals.
+- [x] Existing single-line categorized expenses continue to work.
+- [x] JSON output exposes split lines in a stable shape.
+- [x] Tests cover balanced split, unbalanced rejection, and audit/provenance retention.
 
 ## Blocked by
 

@@ -11,10 +11,11 @@ use crate::storage::{
     create_category, create_income_source, duplicate_import_response, find_source_document_by_hash,
     income_source_registry_error_response, list_categories, list_income_sources,
     list_likely_transfer_pairs, list_owned_accounts, list_review_candidates, persist_pdf_import,
-    register_owned_account, reject_candidate, review_error_response, transfer_error_response,
-    AccountRegisterInput, AccountRegistryResponse, CandidateReviewResponse, CategoryCreateInput,
-    CategoryRegistryResponse, ImportPdfResponse, IncomeSourceCreateInput,
-    IncomeSourceRegistryResponse, TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
+    register_owned_account, reject_candidate, replace_expense_transaction_lines,
+    review_error_response, transfer_error_response, AccountRegisterInput, AccountRegistryResponse,
+    CandidateReviewResponse, CategoryCreateInput, CategoryRegistryResponse, ExpenseLineInput,
+    ImportPdfResponse, IncomeSourceCreateInput, IncomeSourceRegistryResponse,
+    TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -135,6 +136,7 @@ enum CandidateCommands {
     Accept(CandidateActionArgs),
     AcceptIncome(CandidateIncomeAcceptArgs),
     AcceptExpense(CandidateExpenseAcceptArgs),
+    SetExpenseLines(CandidateExpenseLinesArgs),
     Reject(CandidateActionArgs),
     ListTransferPairs(CandidateTransferListArgs),
     AcceptTransferPair(CandidateTransferAcceptArgs),
@@ -313,9 +315,36 @@ struct CandidateExpenseAcceptArgs {
     #[arg(long, value_name = "PATH")]
     db: PathBuf,
 
-    /// Expense category id created via `categories create`.
+    /// Expense category id created via `categories create`. Omit when using --line.
     #[arg(long = "category-id", value_name = "ID")]
-    category_id: String,
+    category_id: Option<String>,
+
+    /// Categorized expense line as CATEGORY_ID:AMOUNT_MINOR:CURRENCY. Repeat for a split.
+    #[arg(long = "line", value_name = "CATEGORY_ID:AMOUNT_MINOR:CURRENCY")]
+    lines: Vec<String>,
+
+    /// Emit machine-readable JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct CandidateExpenseLinesArgs {
+    /// Accepted expense candidate transaction id.
+    #[arg(value_name = "CANDIDATE_ID")]
+    candidate_id: String,
+
+    /// SQLite database path.
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+
+    /// Categorized expense line as CATEGORY_ID:AMOUNT_MINOR:CURRENCY. Repeat for a split.
+    #[arg(
+        long = "line",
+        required = true,
+        value_name = "CATEGORY_ID:AMOUNT_MINOR:CURRENCY"
+    )]
+    lines: Vec<String>,
 
     /// Emit machine-readable JSON.
     #[arg(long)]
@@ -422,6 +451,9 @@ where
             }
             CandidateCommands::AcceptExpense(args) => {
                 candidate_accept_expense_command(args, &mut stdout)
+            }
+            CandidateCommands::SetExpenseLines(args) => {
+                candidate_set_expense_lines_command(args, &mut stdout)
             }
             CandidateCommands::Reject(args) => candidate_reject_command(args, &mut stdout),
             CandidateCommands::ListTransferPairs(args) => {
@@ -815,10 +847,110 @@ where
     {
         return Ok(exit_code);
     }
+    let lines =
+        match expense_lines_from_args(args.category_id, args.lines, "candidates accept-expense") {
+            Ok(lines) => lines,
+            Err(response) => return write_candidate_review_response(stdout, response),
+        };
     let mut connection = open_review_database(&args.db)?;
-    let response =
-        accept_expense_candidate(&mut connection, &args.candidate_id, &args.category_id)?;
+    let response = accept_expense_candidate(&mut connection, &args.candidate_id, &lines)?;
     write_candidate_review_response(stdout, response)
+}
+
+fn candidate_set_expense_lines_command<W>(
+    args: CandidateExpenseLinesArgs,
+    stdout: &mut W,
+) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) =
+        require_candidate_json(args.json, stdout, "candidates set-expense-lines")?
+    {
+        return Ok(exit_code);
+    }
+    let lines = match expense_lines_from_args(None, args.lines, "candidates set-expense-lines") {
+        Ok(lines) => lines,
+        Err(response) => return write_candidate_review_response(stdout, response),
+    };
+    let mut connection = open_review_database(&args.db)?;
+    let response = replace_expense_transaction_lines(&mut connection, &args.candidate_id, &lines)?;
+    write_candidate_review_response(stdout, response)
+}
+
+fn expense_lines_from_args(
+    category_id: Option<String>,
+    raw_lines: Vec<String>,
+    command: &'static str,
+) -> Result<Vec<ExpenseLineInput>, CandidateReviewResponse> {
+    if category_id.is_some() && !raw_lines.is_empty() {
+        return Err(review_error_response(
+            command,
+            "validation_failure",
+            "expense_category_or_lines_required",
+            "Use either --category-id or one or more --line values, not both.".to_string(),
+            "category_id",
+            true,
+            serde_json::json!({}),
+        ));
+    }
+    if let Some(category_id) = category_id {
+        return Ok(vec![ExpenseLineInput {
+            category_id,
+            amount_minor: 0,
+            currency: String::new(),
+        }]);
+    }
+    if raw_lines.is_empty() {
+        return Err(review_error_response(
+            command,
+            "validation_failure",
+            "expense_lines_required",
+            "Provide --category-id or at least one --line value.".to_string(),
+            "lines",
+            true,
+            serde_json::json!({}),
+        ));
+    }
+    raw_lines
+        .into_iter()
+        .map(|raw_line| parse_expense_line(&raw_line, command))
+        .collect()
+}
+
+fn parse_expense_line(
+    raw_line: &str,
+    command: &'static str,
+) -> Result<ExpenseLineInput, CandidateReviewResponse> {
+    let Some((category_id, remainder)) = raw_line.split_once(':') else {
+        return Err(invalid_expense_line_response(command, raw_line));
+    };
+    let Some((amount_minor, currency)) = remainder.split_once(':') else {
+        return Err(invalid_expense_line_response(command, raw_line));
+    };
+    let Ok(amount_minor) = amount_minor.parse::<i64>() else {
+        return Err(invalid_expense_line_response(command, raw_line));
+    };
+    if category_id.trim().is_empty() || currency.trim().is_empty() {
+        return Err(invalid_expense_line_response(command, raw_line));
+    }
+    Ok(ExpenseLineInput {
+        category_id: category_id.to_string(),
+        amount_minor,
+        currency: currency.to_ascii_uppercase(),
+    })
+}
+
+fn invalid_expense_line_response(command: &'static str, raw_line: &str) -> CandidateReviewResponse {
+    review_error_response(
+        command,
+        "validation_failure",
+        "invalid_expense_line",
+        "Expense lines must use CATEGORY_ID:AMOUNT_MINOR:CURRENCY.".to_string(),
+        "lines",
+        true,
+        serde_json::json!({ "line": raw_line }),
+    )
 }
 
 fn candidate_reject_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>

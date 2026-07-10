@@ -1439,3 +1439,161 @@ fn candidate_review_cli_refuses_non_expense_transfer_like_card_payment_or_alread
         "candidate_possible_own_account_transfer"
     );
 }
+
+#[test]
+fn candidate_review_cli_supports_balanced_expense_splits_and_preserves_audit_links() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_split_expense",
+            description: "COMPRA MIXTA REDACTADA",
+            amount_minor: -2_500_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist split expense candidate");
+    drop(connection);
+    create_category_cli(db, "Food");
+    create_category_cli(db, "Household");
+    create_category_cli(db, "Delivery");
+
+    let accept = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-expense",
+            "cand_split_expense",
+            "--db",
+            db,
+            "--line",
+            "cat_food:-1500000:COP",
+            "--line",
+            "cat_household:-1000000:COP",
+            "--json",
+        ])
+        .output()
+        .expect("accept balanced split");
+    assert!(accept.status.success());
+    let accepted: serde_json::Value = serde_json::from_slice(&accept.stdout).expect("split json");
+    assert_eq!(accepted["transaction_lines"].as_array().unwrap().len(), 2);
+    assert_eq!(accepted["transaction_lines"][0]["category_name"], "Food");
+    assert_eq!(
+        accepted["transaction_lines"][1]["category_name"],
+        "Household"
+    );
+    assert_eq!(
+        accepted["candidate"]["provenance"]["canonical_transaction_id"],
+        accepted["canonical_transaction"]["id"]
+    );
+
+    let update = Command::new(tracky())
+        .args([
+            "candidates",
+            "set-expense-lines",
+            "cand_split_expense",
+            "--db",
+            db,
+            "--line",
+            "cat_food:-1200000:COP",
+            "--line",
+            "cat_household:-1000000:COP",
+            "--line",
+            "cat_delivery:-300000:COP",
+            "--json",
+        ])
+        .output()
+        .expect("update split");
+    assert!(update.status.success());
+    let updated: serde_json::Value =
+        serde_json::from_slice(&update.stdout).expect("updated split json");
+    assert_eq!(updated["command"], "candidates set-expense-lines");
+    assert_eq!(updated["transaction_lines"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        updated["candidate"]["provenance"]["canonical_transaction_id"],
+        updated["canonical_transaction"]["id"]
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    let audit: (i64, i64) = connection
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM transaction_lines WHERE canonical_transaction_id = (SELECT canonical_transaction_id FROM candidate_transactions WHERE id = 'cand_split_expense')),
+                (SELECT COUNT(*) FROM provenance WHERE candidate_transaction_id = 'cand_split_expense' AND canonical_transaction_id IS NOT NULL)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read split audit");
+    assert_eq!(audit, (3, 1));
+}
+
+#[test]
+fn candidate_review_cli_refuses_unbalanced_missing_category_and_wrong_currency_splits() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet");
+    for (candidate_id, hash) in [
+        ("cand_unbalanced_split", "ce"),
+        ("cand_missing_category_split", "cf"),
+        ("cand_wrong_currency_split", "d0"),
+    ] {
+        persist_pdf_import(
+            &mut connection,
+            transfer_inspect_response(TransferCandidateFixture {
+                hash: &hash.repeat(32),
+                institution: "nequi",
+                account_label: "Nequi wallet",
+                candidate_id,
+                description: "COMPRA REDACTADA",
+                amount_minor: -2_500_000,
+                direction_hint: DirectionHint::Outflow,
+                semantic_hint: SemanticHint::BankMovement,
+            }),
+        )
+        .expect("persist split refusal candidate");
+    }
+    drop(connection);
+    create_category_cli(db, "Food");
+
+    for (candidate_id, lines, expected_code) in [
+        (
+            "cand_unbalanced_split",
+            vec!["cat_food:-2400000:COP"],
+            "expense_lines_unbalanced",
+        ),
+        (
+            "cand_missing_category_split",
+            vec!["cat_missing:-2500000:COP"],
+            "category_not_found",
+        ),
+        (
+            "cand_wrong_currency_split",
+            vec!["cat_food:-2500000:USD"],
+            "expense_line_currency_mismatch",
+        ),
+    ] {
+        let mut command = Command::new(tracky());
+        command.args(["candidates", "accept-expense", candidate_id, "--db", db]);
+        for line in lines {
+            command.args(["--line", line]);
+        }
+        let output = command
+            .args(["--json"])
+            .output()
+            .expect("reject invalid split");
+        assert!(!output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("refusal json");
+        assert_eq!(json["errors"][0]["code"], expected_code);
+    }
+}

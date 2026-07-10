@@ -134,7 +134,30 @@ tracky candidates accept-expense cand_PURCHASE_REDACTED \
   --json
 ```
 
-`accept-expense` creates a canonical transaction marked `transaction_kind: "expense"` and exactly one transaction line with the selected `category_id`. The line amount reconciles exactly with the canonical transaction amount. Nequi purchase outflows remain negative; RappiCard `card_charge` rows are accepted as card expenses and normalized to a negative outflow amount even if the source statement amount was positive. Income/inflows, `card_payment` rows, likely own-account transfers, missing categories, and already accepted/rejected candidates are refused.
+`accept-expense` creates a canonical transaction marked `transaction_kind: "expense"` with one or more categorized transaction lines. The compatible `--category-id` form creates exactly one line; split lines must collectively reconcile with the canonical transaction amount. Nequi purchase outflows remain negative; RappiCard `card_charge` rows are accepted as card expenses and normalized to a negative outflow amount even if the source statement amount was positive. Income/inflows, `card_payment` rows, likely own-account transfers, missing categories, and already accepted/rejected candidates are refused.
+
+For a mixed purchase, create a balanced split explicitly instead of using `--category-id`:
+
+```bash
+tracky candidates accept-expense cand_PURCHASE_REDACTED \
+  --db /tmp/tracky-review.sqlite \
+  --line cat_food:-1500000:COP \
+  --line cat_delivery:-300000:COP \
+  --json
+```
+
+To correct a previously accepted expense, replace all of its lines through its candidate id. The canonical transaction and provenance remain intact:
+
+```bash
+tracky candidates set-expense-lines cand_PURCHASE_REDACTED \
+  --db /tmp/tracky-review.sqlite \
+  --line cat_food:-1200000:COP \
+  --line cat_delivery:-300000:COP \
+  --line cat_household:-500000:COP \
+  --json
+```
+
+Each line must name an existing distinct category, use the canonical currency, and collectively sum to the canonical amount in minor units.
 
 ### 7. Review likely own-account transfer/card-payment pairs
 
