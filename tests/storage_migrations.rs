@@ -43,6 +43,25 @@ fn migrations_create_review_first_tables() {
 }
 
 #[test]
+fn migrations_create_investment_instrument_and_append_only_allocation_tables() {
+    let (_dir, connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+
+    let count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN (
+                'investment_instruments',
+                'investment_allocation_revisions',
+                'investment_allocation_heads'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count investment tables");
+    assert_eq!(count, 3);
+}
+
+#[test]
 fn migrations_add_duplicate_count_to_existing_import_batches() {
     let (_dir, connection) = temporary_database();
     connection
@@ -146,6 +165,14 @@ fn migrations_add_pending_investment_allocation_to_existing_canonical_ledger() {
         )
         .expect("read nullable allocation status");
     assert_eq!(allocation_status, None);
+    let fee_component_id: Option<String> = connection
+        .query_row(
+            "SELECT investment_fee_component_id FROM canonical_transactions WHERE id = 'txn_legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read nullable investment fee component");
+    assert_eq!(fee_component_id, None);
 }
 
 #[test]

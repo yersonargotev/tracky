@@ -23,8 +23,45 @@ This document defines the stable JSON contract for the future `tracky pdf inspec
 | `tracky candidates apply-actions --dry-run` | No | No | Never |
 | `tracky candidates apply-actions` | Yes, atomically after full preflight | No new candidates | Rejects exact reviewed duplicates or creates validated transfer pairs only when explicit candidate ids are supplied |
 | `tracky transactions add-expense/add-income/add-investment/add-transfer` | Yes | No | Creates direct manual canonical expense, income, or pending-allocation investment rows, or two balanced transfer legs, with distinct manual provenance |
+| `tracky instruments create/list/inspect` | Create only | No | Never; manages stable investment-instrument identities |
+| `tracky investments allocate/replace-allocation` | Yes | No | Links confirmed contribution principal to exact acquired quantities with append-only audit revisions |
+| `tracky investments inspect-contribution/positions` | No | No | Never; derives remaining principal and historical-cost positions |
 
 Out of scope for this contract: parser implementation, SQLite migration internals, TUI review, MCP wrappers, AI fallback, and password storage.
+
+## Investment instruments, allocations, and positions JSON
+
+All commands in this section require `--json` and return `schema_version: "tracky.investments.v1"`.
+
+`instruments create` accepts `--name`, `--type`, `--denomination-currency`, `--provider`, and optional `--provider-identifier`. Supported types are `fiat_currency`, `dollar_referenced_digital_asset`, `security`, `fixed_income`, and `generic`. `instruments list` returns `instruments[]`; `instruments inspect --instrument-id ID` returns one `instrument`.
+
+`investments allocate` accepts a confirmed `--contribution-id` plus either one leg through `--instrument-id`, positive `--cash-amount-minor`, matching `--cash-currency`, and positive plain-decimal `--quantity`, or one JSON array through `--allocations-json`. Every leg is validated before the set commits, so an invalid leg leaves the complete action unapplied. Optional fees require `--fee-amount-minor`, `--fee-currency`, `--fee-treatment capitalized|separate`, and `--fee-component-id`; `separate` additionally requires `--fee-expense-transaction-id` referencing a matching canonical expense created with the same `transactions add-expense --investment-fee-component-id`. The durable component identity prevents that expense from being capitalized and prevents a capitalized component from later being created as a linked expense. The response always includes active `allocations[]`, complete `allocation_history[]`, `allocation_status`, and `unallocated_amount_minor`.
+
+`investments replace-allocation` accepts the same economic fields plus `--allocation-id` and required `--reason`. It appends a revision and atomically advances the active head; it never overwrites history. Over-allocation or incompatible input returns `ok: false` without a revision or head change.
+
+Each allocation preserves `cash_amount_minor`, `cash_currency`, canonical-string `acquired_quantity`, `instrument_id`, fee fields, provenance source, and an exact `effective_rate` ratio:
+
+```json
+{
+  "cash_amount_minor": 600000,
+  "cash_currency": "COP",
+  "acquired_quantity": "150.125",
+  "instrument_id": "instr_example",
+  "fee_amount_minor": 1000,
+  "fee_currency": "COP",
+  "fee_treatment": "capitalized",
+  "fee_component_id": "fee_component_example",
+  "fee_expense_transaction_id": null,
+  "effective_rate": {
+    "cost_minor_numerator": 600000,
+    "cost_currency": "COP",
+    "quantity_denominator": "150.125",
+    "instrument_id": "instr_example"
+  }
+}
+```
+
+`investments positions [--account-id ID]` returns positions grouped by account, instrument, and cost currency with exact `quantity`, `accumulated_cost_minor`, `cost_currency`, and `latest_contributing_operation_id`. It performs no market valuation or implicit currency conversion.
 
 ## Top-level responses
 
@@ -364,7 +401,7 @@ Manual entry is an explicit route outside PDF inspection/import. All commands re
 
 | Command | Writes storage? | Canonical result |
 | --- | --- | --- |
-| `tracky transactions add-expense --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor NEGATIVE --currency CODE --category-id ID --json` | Yes | One `expense` canonical transaction and one categorized line. `--line CATEGORY_ID:AMOUNT_MINOR:CURRENCY` may be repeated for a balanced split instead of `--category-id`. |
+| `tracky transactions add-expense --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor NEGATIVE --currency CODE --category-id ID [--investment-fee-component-id ID] --json` | Yes | One `expense` canonical transaction and one categorized line. `--line CATEGORY_ID:AMOUNT_MINOR:CURRENCY` may be repeated for a balanced split instead of `--category-id`. The optional fee identity cannot reference a capitalized component. |
 | `tracky transactions add-income --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor POSITIVE --currency CODE --income-source-id ID --income-kind KIND --json` | Yes | One `income` canonical transaction. |
 | `tracky transactions add-investment --db <PATH> --account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor NEGATIVE --currency CODE --json` | Yes | One `investment_contribution` canonical transaction with `investment_allocation_status: "pending_allocation"`. |
 | `tracky transactions add-transfer --db <PATH> --from-account-id ID --to-account-id ID --posted-date YYYY-MM-DD --description TEXT --amount-minor POSITIVE --currency CODE --json` | Yes | Two balancing `own_account_transfer` canonical legs and one manual transfer-pair record. |

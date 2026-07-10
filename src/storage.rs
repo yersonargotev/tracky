@@ -210,6 +210,8 @@ pub struct CanonicalTransaction {
     pub income_source_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub income_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub investment_fee_component_id: Option<String>,
     pub created_from_candidate_id: Option<String>,
 }
 
@@ -515,6 +517,7 @@ pub struct ManualExpenseInput {
     pub amount_minor: i64,
     pub currency: String,
     pub lines: Vec<ExpenseLineInput>,
+    pub investment_fee_component_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -620,6 +623,12 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
     )?;
     add_column_if_missing(
         connection,
+        "canonical_transactions",
+        "investment_fee_component_id",
+        "ALTER TABLE canonical_transactions ADD COLUMN investment_fee_component_id TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
         "candidate_transactions",
         "semantic_hint",
         "ALTER TABLE candidate_transactions ADD COLUMN semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment'))",
@@ -711,7 +720,10 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
             changed_fields_json TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         );
-        CREATE INDEX IF NOT EXISTS idx_canonical_transaction_edits_canonical ON canonical_transaction_edits(canonical_transaction_id);",
+        CREATE INDEX IF NOT EXISTS idx_canonical_transaction_edits_canonical ON canonical_transaction_edits(canonical_transaction_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_investment_fee_component
+            ON canonical_transactions(investment_fee_component_id)
+            WHERE investment_fee_component_id IS NOT NULL;",
     )
 }
 
@@ -3697,6 +3709,53 @@ pub fn create_manual_expense(
     )? {
         return Ok(manual_from_review_error(response));
     }
+    let fee_component_id = input
+        .investment_fee_component_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if input.investment_fee_component_id.is_some() && fee_component_id.is_none() {
+        return Ok(manual_error(
+            command,
+            "validation_failure",
+            "invalid_fee_component_id",
+            "Investment fee component id cannot be empty.",
+            "investment_fee_component_id",
+            serde_json::json!({}),
+        ));
+    }
+    if let Some(component_id) = fee_component_id {
+        let already_expensed = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM canonical_transactions WHERE investment_fee_component_id = ?1)",
+            params![component_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if already_expensed {
+            return Ok(manual_error(
+                command,
+                "conflict",
+                "fee_component_already_expensed",
+                "Investment fee component is already represented by a canonical expense.",
+                "investment_fee_component_id",
+                serde_json::json!({ "fee_component_id": component_id }),
+            ));
+        }
+        let is_capitalized = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM investment_allocation_revisions WHERE fee_component_id = ?1 AND fee_treatment = 'capitalized')",
+            params![component_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if is_capitalized {
+            return Ok(manual_error(
+                command,
+                "conflict",
+                "fee_double_count_conflict",
+                "Capitalized investment fee cannot also be recorded as an expense.",
+                "investment_fee_component_id",
+                serde_json::json!({ "fee_component_id": component_id }),
+            ));
+        }
+    }
     let entry_id = manual_entry_id(
         "expense",
         &input.account_id,
@@ -3710,9 +3769,9 @@ pub fn create_manual_expense(
         .transaction()
         .context("starting manual expense transaction")?;
     tx.execute(
-        "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, transaction_kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![canonical_id, input.account_id, input.posted_date, input.description.trim(), input.amount_minor, normalized_currency(&input.currency), EXPENSE_TRANSACTION_KIND],
+        "INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, transaction_kind, investment_fee_component_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![canonical_id, input.account_id, input.posted_date, input.description.trim(), input.amount_minor, normalized_currency(&input.currency), EXPENSE_TRANSACTION_KIND, fee_component_id],
     )?;
     insert_expense_lines(&tx, &canonical_id, &lines)?;
     insert_manual_fingerprint(&tx, &canonical_id, &account)?;
@@ -4638,7 +4697,10 @@ pub fn list_canonical_transactions(
     connection: &Connection,
     filter: TransactionListFilter<'_>,
 ) -> Result<TransactionLedgerResponse> {
-    let mut sql = "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor, transaction_kind, investment_allocation_status, income_source_id, income_kind, created_from_candidate_id FROM canonical_transactions WHERE 1 = 1".to_string();
+    let mut sql = format!(
+        "{} FROM canonical_transactions ct WHERE 1 = 1",
+        canonical_transaction_select_columns("ct")
+    );
     let mut values: Vec<String> = Vec::new();
     if let Some(value) = filter.start_date {
         sql.push_str(" AND posted_date >= ?");
@@ -4661,7 +4723,7 @@ pub fn list_canonical_transactions(
         values.push(value.to_string());
     }
     if let Some(value) = filter.category_id {
-        sql.push_str(" AND EXISTS (SELECT 1 FROM transaction_lines tl WHERE tl.canonical_transaction_id = canonical_transactions.id AND tl.category_id = ?)");
+        sql.push_str(" AND EXISTS (SELECT 1 FROM transaction_lines tl WHERE tl.canonical_transaction_id = ct.id AND tl.category_id = ?)");
         values.push(value.to_string());
     }
     sql.push_str(" ORDER BY posted_date, id");
@@ -5122,6 +5184,21 @@ pub fn update_canonical_transaction(
     })
 }
 
+fn canonical_transaction_select_columns(alias: &str) -> String {
+    format!(
+        "SELECT {alias}.id, {alias}.account_id, {alias}.posted_date, {alias}.description,
+                {alias}.amount_minor, {alias}.currency, {alias}.balance_minor, {alias}.transaction_kind,
+                CASE WHEN {alias}.transaction_kind IS NULL OR {alias}.transaction_kind <> 'investment_contribution'
+                     THEN {alias}.investment_allocation_status
+                     WHEN COALESCE((SELECT SUM(r.cash_amount_minor) FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id = h.current_revision_id WHERE r.contribution_transaction_id = {alias}.id), 0) = 0
+                     THEN 'pending_allocation'
+                     WHEN COALESCE((SELECT SUM(r.cash_amount_minor) FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id = h.current_revision_id WHERE r.contribution_transaction_id = {alias}.id), 0) = ABS({alias}.amount_minor)
+                     THEN 'fully_allocated' ELSE 'partially_allocated' END,
+                {alias}.income_source_id, {alias}.income_kind, {alias}.investment_fee_component_id,
+                {alias}.created_from_candidate_id"
+    )
+}
+
 fn canonical_transaction_from_row(
     row: &rusqlite::Row<'_>,
 ) -> rusqlite::Result<CanonicalTransaction> {
@@ -5137,7 +5214,8 @@ fn canonical_transaction_from_row(
         investment_allocation_status: row.get(8)?,
         income_source_id: row.get(9)?,
         income_kind: row.get(10)?,
-        created_from_candidate_id: row.get(11)?,
+        investment_fee_component_id: row.get(11)?,
+        created_from_candidate_id: row.get(12)?,
     })
 }
 
@@ -5260,11 +5338,10 @@ fn canonical_transaction(
 ) -> Result<Option<CanonicalTransaction>> {
     connection
         .query_row(
-            "SELECT id, account_id, posted_date, description, amount_minor, currency, balance_minor,
-                    transaction_kind, investment_allocation_status, income_source_id, income_kind,
-                    created_from_candidate_id
-             FROM canonical_transactions
-             WHERE id = ?1",
+            &format!(
+                "{} FROM canonical_transactions ct WHERE ct.id = ?1",
+                canonical_transaction_select_columns("ct")
+            ),
             params![canonical_id],
             |row| {
                 Ok(CanonicalTransaction {
@@ -5279,7 +5356,8 @@ fn canonical_transaction(
                     investment_allocation_status: row.get(8)?,
                     income_source_id: row.get(9)?,
                     income_kind: row.get(10)?,
-                    created_from_candidate_id: row.get(11)?,
+                    investment_fee_component_id: row.get(11)?,
+                    created_from_candidate_id: row.get(12)?,
                 })
             },
         )

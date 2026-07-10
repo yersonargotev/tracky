@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS canonical_transactions (
     investment_allocation_status TEXT CHECK (investment_allocation_status IN ('pending_allocation')),
     income_source_id TEXT REFERENCES income_sources(id),
     income_kind TEXT CHECK (income_kind IN ('salary', 'freelance', 'client_payment', 'sale', 'interest', 'reimbursement', 'other')),
+    investment_fee_component_id TEXT,
     created_from_candidate_id TEXT UNIQUE REFERENCES candidate_transactions(id),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -183,6 +184,50 @@ CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
     accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS investment_instruments (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    instrument_type TEXT NOT NULL CHECK (instrument_type IN ('fiat_currency', 'dollar_referenced_digital_asset', 'security', 'fixed_income', 'generic')),
+    denomination_currency TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    provider_identifier TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (instrument_type, denomination_currency, provider, provider_identifier, name)
+);
+
+CREATE TABLE IF NOT EXISTS investment_allocation_revisions (
+    id TEXT PRIMARY KEY,
+    allocation_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    contribution_transaction_id TEXT NOT NULL REFERENCES canonical_transactions(id),
+    instrument_id TEXT NOT NULL REFERENCES investment_instruments(id),
+    cash_amount_minor INTEGER NOT NULL CHECK (cash_amount_minor > 0),
+    cash_currency TEXT NOT NULL,
+    acquired_quantity TEXT NOT NULL,
+    fee_amount_minor INTEGER CHECK (fee_amount_minor > 0),
+    fee_currency TEXT,
+    fee_treatment TEXT CHECK (fee_treatment IN ('capitalized', 'separate')),
+    fee_component_id TEXT,
+    fee_expense_transaction_id TEXT REFERENCES canonical_transactions(id),
+    provenance_source TEXT NOT NULL CHECK (provenance_source IN ('manual_entry')),
+    correction_reason TEXT,
+    replaces_revision_id TEXT REFERENCES investment_allocation_revisions(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (allocation_id, revision),
+    CHECK (
+        (fee_amount_minor IS NULL AND fee_currency IS NULL AND fee_treatment IS NULL AND fee_component_id IS NULL AND fee_expense_transaction_id IS NULL)
+        OR
+        (fee_amount_minor IS NOT NULL AND fee_currency IS NOT NULL AND fee_treatment = 'capitalized' AND fee_component_id IS NOT NULL AND fee_expense_transaction_id IS NULL)
+        OR
+        (fee_amount_minor IS NOT NULL AND fee_currency IS NOT NULL AND fee_treatment = 'separate' AND fee_component_id IS NOT NULL AND fee_expense_transaction_id IS NOT NULL)
+    )
+);
+
+CREATE TABLE IF NOT EXISTS investment_allocation_heads (
+    allocation_id TEXT PRIMARY KEY,
+    current_revision_id TEXT NOT NULL UNIQUE REFERENCES investment_allocation_revisions(id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);
@@ -198,5 +243,8 @@ CREATE INDEX IF NOT EXISTS idx_provenance_candidate_transaction ON provenance(ca
 CREATE INDEX IF NOT EXISTS idx_transaction_duplicate_markers_candidate ON transaction_duplicate_markers(candidate_transaction_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_from_candidate ON canonical_transfer_pairs(from_candidate_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);
+CREATE INDEX IF NOT EXISTS idx_investment_instruments_provider ON investment_instruments(provider, provider_identifier);
+CREATE INDEX IF NOT EXISTS idx_investment_allocation_revisions_contribution ON investment_allocation_revisions(contribution_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_investment_allocation_revisions_instrument ON investment_allocation_revisions(instrument_id);
 
 PRAGMA user_version = 1;

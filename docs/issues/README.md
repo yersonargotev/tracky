@@ -30,6 +30,7 @@ A slice is **completed** when every acceptance criterion in its issue file is ch
 22. `0024-restore-strict-clippy-cleanliness.md` — strict Clippy cleanliness.
 23. `0025-reconcile-completed-issue-metadata.md` — tracker metadata reconciliation.
 24. `0026-accept-investment-contributions-pending-allocation.md` — typed investment contribution review with explicit pending allocation.
+25. `0027-track-instruments-and-multi-currency-positions-at-cost.md` — exact multi-currency allocations and derived historical-cost positions.
 
 ## Pending queue
 
@@ -37,14 +38,13 @@ These issues retain unchecked criteria and are not represented as completed:
 
 1. `0020-add-tui-review-mvp.md` — minimal TUI review surface; intentionally not started in this slice.
 2. `0021-add-export-backup-and-import-safety.md` — backup, integrity, and export commands.
-3. `0027-track-instruments-and-multi-currency-positions-at-cost.md` — instrument registry, allocation, and historical-cost positions; current investment frontier.
-4. `0028-track-complete-cdt-lifecycle.md` — CDT constitution, renewal, income, withholding, and redemption.
-5. `0029-track-complete-brokerage-investment-lifecycle.md` — brokerage cash, securities, income, costs, and withdrawals.
-6. `0030-reconcile-investment-positions-and-dated-valuations.md` — dated provider snapshots and reviewed reconciliation.
-7. `0031-import-and-reconcile-investment-provider-documents.md` — review-first trii, Wenia, and CDT document adapters.
-8. `0032-add-consolidated-monthly-investment-reports.md` — monthly investment flows, positions, and valuation freshness.
-9. `0033-extend-export-backup-and-integrity-for-investments.md` — operational safety for investment data.
-10. `0034-add-investment-review-and-reporting-to-tui.md` — investment workflow in the shared TUI model.
+3. `0028-track-complete-cdt-lifecycle.md` — CDT constitution, renewal, income, withholding, and redemption; current investment frontier.
+4. `0029-track-complete-brokerage-investment-lifecycle.md` — brokerage cash, securities, income, costs, and withdrawals; current investment frontier.
+5. `0030-reconcile-investment-positions-and-dated-valuations.md` — dated provider snapshots and reviewed reconciliation; current investment frontier.
+6. `0031-import-and-reconcile-investment-provider-documents.md` — review-first trii, Wenia, and CDT document adapters.
+7. `0032-add-consolidated-monthly-investment-reports.md` — monthly investment flows, positions, and valuation freshness.
+8. `0033-extend-export-backup-and-integrity-for-investments.md` — operational safety for investment data.
+9. `0034-add-investment-review-and-reporting-to-tui.md` — investment workflow in the shared TUI model.
 
 Implementation should proceed from the dependency frontier: any issue whose listed blockers are complete may start. The investment-tracking expansion is grounded in `docs/research/investment-tracking-model.md`; provider adapters additionally require representative, user-authorized artifacts or privacy-safe fixtures derived from them.
 

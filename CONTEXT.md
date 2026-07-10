@@ -50,6 +50,18 @@ Una salida confirmada de capital destinada a inversión. El principal no es gast
 
 Estado explícito de un aporte de inversión cuyo instrumento o cantidad adquirida todavía no se conoce. Tracky conserva el aporte sin inventar una posición ni degradarlo a gasto.
 
+### Instrumento de inversión
+
+Identidad estable de un activo adquirido. El tipo, moneda de denominación, proveedor o emisor e identificador del proveedor distinguen activos que no son intercambiables; USD fiat, USDC y COPW son instrumentos diferentes.
+
+### Asignación de inversión
+
+Detalle confirmado que vincula parte del principal de un aporte con una cantidad exacta de un instrumento. Puede ser parcial y sus correcciones conservan revisiones append-only.
+
+### Posición a costo histórico
+
+Cantidad y costo acumulados derivados de asignaciones activas por cuenta, instrumento y moneda del costo. No es un saldo editable ni una valoración de mercado.
+
 ### Documento fuente
 
 Un archivo importado, como un extracto bancario PDF, del que se extraen transacciones candidatas. Debe tener una huella de archivo para evitar reimportaciones exactas.

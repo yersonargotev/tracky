@@ -1,3 +1,8 @@
+use crate::investments::{
+    allocate_contribution, create_instrument, inspect_contribution, inspect_instrument,
+    list_instruments, list_positions, replace_allocation, AllocationInput, AllocationLegInput,
+    AllocationReplacementInput, InstrumentCreateInput, InstrumentResponse, InvestmentResponse,
+};
 use crate::pdf::{
     hex_sha256, inspect_pdf, source_document_id, supported_institution_hint_from_path, AccountHint,
     CredentialSource, DocumentDuplicateState, DocumentDuplicateStatus, ExtractorState,
@@ -87,6 +92,8 @@ enum Commands {
     Categories(CategoriesCommand),
     Transactions(TransactionsCommand),
     Reports(ReportsCommand),
+    Instruments(InstrumentsCommand),
+    Investments(InvestmentsCommand),
 }
 
 #[derive(Debug, Parser)]
@@ -145,6 +152,149 @@ struct TransactionsCommand {
 struct ReportsCommand {
     #[command(subcommand)]
     command: ReportCommands,
+}
+
+#[derive(Debug, Parser)]
+struct InstrumentsCommand {
+    #[command(subcommand)]
+    command: InstrumentCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum InstrumentCommands {
+    Create(InstrumentCreateArgs),
+    List(InstrumentListArgs),
+    Inspect(InstrumentInspectArgs),
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentsCommand {
+    #[command(subcommand)]
+    command: InvestmentCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum InvestmentCommands {
+    Allocate(InvestmentAllocateArgs),
+    ReplaceAllocation(InvestmentReplaceAllocationArgs),
+    InspectContribution(InvestmentInspectContributionArgs),
+    Positions(InvestmentPositionsArgs),
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentAllocateArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "contribution-id")]
+    contribution_id: String,
+    #[arg(long = "allocations-json", value_name = "JSON")]
+    allocations_json: Option<String>,
+    #[arg(long = "instrument-id")]
+    instrument_id: Option<String>,
+    #[arg(long = "cash-amount-minor")]
+    cash_amount_minor: Option<i64>,
+    #[arg(long = "cash-currency")]
+    cash_currency: Option<String>,
+    #[arg(long = "quantity")]
+    acquired_quantity: Option<String>,
+    #[arg(long = "fee-amount-minor")]
+    fee_amount_minor: Option<i64>,
+    #[arg(long = "fee-currency")]
+    fee_currency: Option<String>,
+    #[arg(long = "fee-treatment")]
+    fee_treatment: Option<String>,
+    #[arg(long = "fee-component-id")]
+    fee_component_id: Option<String>,
+    #[arg(long = "fee-expense-transaction-id")]
+    fee_expense_transaction_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentReplaceAllocationArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "allocation-id")]
+    allocation_id: String,
+    #[arg(long = "instrument-id")]
+    instrument_id: String,
+    #[arg(long = "cash-amount-minor")]
+    cash_amount_minor: i64,
+    #[arg(long = "cash-currency")]
+    cash_currency: String,
+    #[arg(long = "quantity")]
+    acquired_quantity: String,
+    #[arg(long = "fee-amount-minor")]
+    fee_amount_minor: Option<i64>,
+    #[arg(long = "fee-currency")]
+    fee_currency: Option<String>,
+    #[arg(long = "fee-treatment")]
+    fee_treatment: Option<String>,
+    #[arg(long = "fee-component-id")]
+    fee_component_id: Option<String>,
+    #[arg(long = "fee-expense-transaction-id")]
+    fee_expense_transaction_id: Option<String>,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentInspectContributionArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "contribution-id")]
+    contribution_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentPositionsArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InstrumentCreateArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long)]
+    name: String,
+    #[arg(long = "type")]
+    instrument_type: String,
+    #[arg(long = "denomination-currency")]
+    denomination_currency: String,
+    #[arg(long)]
+    provider: String,
+    #[arg(long = "provider-identifier")]
+    provider_identifier: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InstrumentListArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct InstrumentInspectArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "instrument-id")]
+    instrument_id: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -282,6 +432,8 @@ struct ManualExpenseArgs {
     category_id: Option<String>,
     #[arg(long = "line", value_name = "CATEGORY_ID:AMOUNT_MINOR:CURRENCY")]
     lines: Vec<String>,
+    #[arg(long = "investment-fee-component-id", value_name = "ID")]
+    investment_fee_component_id: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -752,7 +904,249 @@ where
         Commands::Reports(reports) => match reports.command {
             ReportCommands::Summary(args) => finance_report_command(args, &mut stdout),
         },
+        Commands::Instruments(instruments) => match instruments.command {
+            InstrumentCommands::Create(args) => instrument_create_command(args, &mut stdout),
+            InstrumentCommands::List(args) => instrument_list_command(args, &mut stdout),
+            InstrumentCommands::Inspect(args) => instrument_inspect_command(args, &mut stdout),
+        },
+        Commands::Investments(investments) => match investments.command {
+            InvestmentCommands::Allocate(args) => investment_allocate_command(args, &mut stdout),
+            InvestmentCommands::ReplaceAllocation(args) => {
+                investment_replace_allocation_command(args, &mut stdout)
+            }
+            InvestmentCommands::InspectContribution(args) => {
+                investment_inspect_contribution_command(args, &mut stdout)
+            }
+            InvestmentCommands::Positions(args) => investment_positions_command(args, &mut stdout),
+        },
     }
+}
+
+fn investment_allocate_command<W: Write>(
+    args: InvestmentAllocateArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_investment_response(
+            stdout,
+            investment_cli_json_error("investments allocate"),
+        );
+    }
+    let allocations = if let Some(json) = args.allocations_json.as_deref() {
+        if args.instrument_id.is_some()
+            || args.cash_amount_minor.is_some()
+            || args.cash_currency.is_some()
+            || args.acquired_quantity.is_some()
+            || args.fee_amount_minor.is_some()
+            || args.fee_currency.is_some()
+            || args.fee_treatment.is_some()
+            || args.fee_component_id.is_some()
+            || args.fee_expense_transaction_id.is_some()
+        {
+            return write_investment_response(
+                stdout,
+                investment_cli_validation_error(
+                    "investments allocate",
+                    "conflicting_allocation_inputs",
+                    "Use either --allocations-json or the single-allocation flags, not both.",
+                    "allocations_json",
+                ),
+            );
+        }
+        match serde_json::from_str::<Vec<AllocationLegInput>>(json) {
+            Ok(allocations) => allocations,
+            Err(_) => {
+                return write_investment_response(
+                    stdout,
+                    investment_cli_validation_error(
+                        "investments allocate",
+                        "invalid_allocations_json",
+                        "Allocations JSON must be an array of typed allocation objects.",
+                        "allocations_json",
+                    ),
+                )
+            }
+        }
+    } else {
+        let (
+            Some(instrument_id),
+            Some(cash_amount_minor),
+            Some(cash_currency),
+            Some(acquired_quantity),
+        ) = (
+            args.instrument_id,
+            args.cash_amount_minor,
+            args.cash_currency,
+            args.acquired_quantity,
+        )
+        else {
+            return write_investment_response(
+                stdout,
+                investment_cli_validation_error(
+                    "investments allocate",
+                    "allocation_fields_required",
+                    "Single allocation requires instrument, cash amount/currency, and quantity.",
+                    "allocation",
+                ),
+            );
+        };
+        vec![AllocationLegInput {
+            instrument_id,
+            cash_amount_minor,
+            cash_currency,
+            acquired_quantity,
+            fee_amount_minor: args.fee_amount_minor,
+            fee_currency: args.fee_currency,
+            fee_treatment: args.fee_treatment,
+            fee_component_id: args.fee_component_id,
+            fee_expense_transaction_id: args.fee_expense_transaction_id,
+        }]
+    };
+    let mut connection = open_review_database(&args.db)?;
+    write_investment_response(
+        stdout,
+        allocate_contribution(
+            &mut connection,
+            AllocationInput {
+                contribution_id: args.contribution_id,
+                allocations,
+            },
+        )?,
+    )
+}
+
+fn investment_replace_allocation_command<W: Write>(
+    args: InvestmentReplaceAllocationArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_investment_response(
+            stdout,
+            investment_cli_json_error("investments replace-allocation"),
+        );
+    }
+    let mut connection = open_review_database(&args.db)?;
+    write_investment_response(
+        stdout,
+        replace_allocation(
+            &mut connection,
+            AllocationReplacementInput {
+                allocation_id: args.allocation_id,
+                allocation: AllocationLegInput {
+                    instrument_id: args.instrument_id,
+                    cash_amount_minor: args.cash_amount_minor,
+                    cash_currency: args.cash_currency,
+                    acquired_quantity: args.acquired_quantity,
+                    fee_amount_minor: args.fee_amount_minor,
+                    fee_currency: args.fee_currency,
+                    fee_treatment: args.fee_treatment,
+                    fee_component_id: args.fee_component_id,
+                    fee_expense_transaction_id: args.fee_expense_transaction_id,
+                },
+                reason: args.reason,
+            },
+        )?,
+    )
+}
+
+fn investment_inspect_contribution_command<W: Write>(
+    args: InvestmentInspectContributionArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_investment_response(
+            stdout,
+            investment_cli_json_error("investments inspect-contribution"),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_investment_response(
+        stdout,
+        inspect_contribution(&connection, &args.contribution_id)?,
+    )
+}
+
+fn investment_positions_command<W: Write>(
+    args: InvestmentPositionsArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_investment_response(
+            stdout,
+            investment_cli_json_error("investments positions"),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_investment_response(
+        stdout,
+        list_positions(&connection, args.account_id.as_deref())?,
+    )
+}
+
+fn instrument_create_command<W: Write>(args: InstrumentCreateArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_instrument_response(
+            stdout,
+            crate::investments::instrument_error(
+                "instruments create",
+                "json_output_required",
+                "The instruments create command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_instrument_response(
+        stdout,
+        create_instrument(
+            &connection,
+            InstrumentCreateInput {
+                name: args.name,
+                instrument_type: args.instrument_type,
+                denomination_currency: args.denomination_currency,
+                provider: args.provider,
+                provider_identifier: args.provider_identifier,
+            },
+        )?,
+    )
+}
+
+fn instrument_list_command<W: Write>(args: InstrumentListArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_instrument_response(
+            stdout,
+            crate::investments::instrument_error(
+                "instruments list",
+                "json_output_required",
+                "The instruments list command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_instrument_response(stdout, list_instruments(&connection)?)
+}
+
+fn instrument_inspect_command<W: Write>(
+    args: InstrumentInspectArgs,
+    stdout: &mut W,
+) -> Result<i32> {
+    if !args.json {
+        return write_instrument_response(
+            stdout,
+            crate::investments::instrument_error(
+                "instruments inspect",
+                "json_output_required",
+                "The instruments inspect command currently requires --json.",
+                "command",
+            ),
+        );
+    }
+    let connection = open_review_database(&args.db)?;
+    write_instrument_response(
+        stdout,
+        inspect_instrument(&connection, &args.instrument_id)?,
+    )
 }
 
 fn inspect_command<EnvLookup, Inspector, W>(
@@ -1071,6 +1465,7 @@ where
             amount_minor: args.amount_minor,
             currency: args.currency,
             lines,
+            investment_fee_component_id: args.investment_fee_component_id,
         },
     )?;
     write_manual_transaction_response(stdout, response)
@@ -1976,6 +2371,68 @@ fn write_category_registry_response<W: Write>(
         response,
         "writing category registry JSON",
     )
+}
+
+fn write_instrument_response<W: Write>(
+    stdout: &mut W,
+    response: InstrumentResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing investment instrument JSON",
+    )
+}
+
+fn write_investment_response<W: Write>(
+    stdout: &mut W,
+    response: InvestmentResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing investment allocation JSON",
+    )
+}
+
+fn investment_cli_json_error(command: &'static str) -> InvestmentResponse {
+    investment_cli_validation_error(
+        command,
+        "json_output_required",
+        "This investment command currently requires --json.",
+        "command",
+    )
+}
+
+fn investment_cli_validation_error(
+    command: &'static str,
+    code: &'static str,
+    message: &'static str,
+    path: &'static str,
+) -> InvestmentResponse {
+    InvestmentResponse {
+        schema_version: crate::investments::INVESTMENTS_SCHEMA_VERSION,
+        command,
+        ok: false,
+        contribution_id: None,
+        contribution_amount_minor: None,
+        contribution_currency: None,
+        allocation_status: None,
+        unallocated_amount_minor: None,
+        allocations: Vec::new(),
+        allocation_history: Vec::new(),
+        positions: Vec::new(),
+        errors: vec![crate::storage::ReviewError {
+            category: "validation_failure",
+            code,
+            message: message.to_owned(),
+            path,
+            recoverable: true,
+            details: serde_json::json!({}),
+        }],
+    }
 }
 
 fn write_candidate_review_response<W: Write>(
