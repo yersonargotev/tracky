@@ -25,3 +25,5 @@ The first MVP should support import batch selection, candidate list, inspect det
 
 - `0018-add-monthly-finance-reports.md`
 - `0019-add-review-ergonomics-and-safe-batch-actions.md`
+- `0022-close-generic-candidate-accept-review-bypass.md`
+- `0023-suggest-cross-batch-transfer-actions.md`

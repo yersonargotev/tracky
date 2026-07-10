@@ -23,6 +23,10 @@ These local Markdown issues are ordered for the review-first PDF import mileston
 19. `0019-add-review-ergonomics-and-safe-batch-actions.md` — summarize batches, compare duplicates, and apply safe explicit actions.
 20. `0020-add-tui-review-mvp.md` — wrap the CLI-backed review/report flows in a minimal TUI.
 21. `0021-add-export-backup-and-import-safety.md` — backup, integrity-check, and export the local SQLite ledger.
+22. `0022-close-generic-candidate-accept-review-bypass.md` — require typed review metadata instead of legacy generic promotion.
+23. `0023-suggest-cross-batch-transfer-actions.md` — include valid transfer counterparts from other PDF import batches.
+24. `0024-restore-strict-clippy-cleanliness.md` — clear strict Clippy failures before adding the TUI surface.
+25. `0025-reconcile-completed-issue-metadata.md` — make historical issue completion state reliable.
 
 Implementation should proceed in dependency order unless a later issue's blockers have already been satisfied by another change.
 
