@@ -25,4 +25,5 @@ name = "pdf-extraction-spike"
 path = "src/bin/pdf_extraction_spike.rs"
 
 [dev-dependencies]
+lopdf = "0.44.0"
 tempfile = "3.27.0"

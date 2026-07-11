@@ -8,19 +8,39 @@ Supported commands:
 tracky investment-documents inspect PDF [--password-env NAME] --json
 tracky investment-documents import PDF --db PATH [--password-env NAME] --json
 tracky investment-documents list --db PATH --json
-tracky investment-documents review EVENT_ID --db PATH --decision reconcile_transaction|reject \
-  [--reconciled-kind KIND --reconciled-id ID] --json
+tracky investment-documents inspect-event EVENT_ID --db PATH --json
+tracky investment-documents candidates EVENT_ID --db PATH \
+  --event-account-id PROVIDER_ACCOUNT_ID --counterpart-account-id ACCOUNT_ID --json
+tracky investment-documents accept-snapshot EVENT_ID --db PATH \
+  --account-id ACCOUNT_ID --instrument-id INSTRUMENT_ID --json
+tracky investment-documents reconcile-deposit EVENT_ID --db PATH \
+  --event-account-id PROVIDER_ACCOUNT_ID --counterpart-account-id ACCOUNT_ID \
+  (--canonical-transaction-id ID | --provider-event-id ID) --json
+tracky investment-documents reconcile-withdrawal EVENT_ID --db PATH \
+  --event-account-id PROVIDER_ACCOUNT_ID --counterpart-account-id ACCOUNT_ID \
+  (--canonical-transaction-id ID | --provider-event-id ID) --json
+tracky investment-documents reject EVENT_ID --db PATH --json
 ```
 
 `inspect` is read-only. `import` writes one source document, one import batch, and pending
 provider events in one SQLite transaction. Neither command creates canonical investment
-operations. `review` is the only state transition and is single-use. A transaction
-reconciliation requires an existing canonical investment contribution/owned transfer with the
-same date, absolute amount, and currency; arbitrary ids are rejected.
+operations. Typed movement reconciliation, rejection, and snapshot acceptance are single-use. Reconciliation requires the
+uniquely selected compatible candidate. Candidate generation is read-only and checks direction,
+event semantics, owned counterpart account, external reference when present, exact date, amount,
+currency, and supported target kind. It reports
+`unique_match`, `ambiguous_match`, `unmatched`, `already_reconciled`, or `incompatible`; zero or
+multiple matches remain pending. Provider-event pairs are consumed atomically at both ends.
 
 Every response contains `schema_version`, `command`, `ok`, `events`, and `errors`. Events
-preserve provider/parser versions, effective date, exact minor units or canonical decimal
-quantity, page/row, redacted evidence, fingerprint, decision, and optional reconciliation link.
+preserve source-document and batch ids, canonical provenance id, provider/parser versions,
+effective date, exact minor units or canonical decimal quantity, page/row, redacted evidence,
+fingerprint, decision, and optional reconciliation or accepted-snapshot link. `inspect-event` is
+a read-only expanded view of this chain, including canonical target details or accepted snapshot
+position/baseline counts.
+
+`accept-snapshot` is limited to complete `observed_position` rows. It requires a compatible owned
+account and provider instrument, then creates the immutable issue-0030 snapshot, position,
+original reconciliation baseline, provenance link, and review decision in one transaction.
 
 Supported artifact-derived formats are deliberately narrow:
 

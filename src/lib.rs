@@ -1,6 +1,8 @@
 pub mod brokerage;
 pub mod cdt;
 pub mod cli;
+mod investment_document_parsers;
+mod investment_document_review;
 pub mod investment_documents;
 pub mod investments;
 pub mod pdf;

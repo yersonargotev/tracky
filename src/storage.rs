@@ -625,10 +625,52 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(REVIEW_FIRST_SCHEMA)?;
     add_column_if_missing(
         connection,
+        "provenance",
+        "investment_document_event_id",
+        "ALTER TABLE provenance ADD COLUMN investment_document_event_id TEXT REFERENCES investment_document_events(id)",
+    )?;
+    add_column_if_missing(
+        connection,
+        "provenance",
+        "investment_snapshot_id",
+        "ALTER TABLE provenance ADD COLUMN investment_snapshot_id TEXT REFERENCES investment_snapshots(id)",
+    )?;
+    migrate_provider_provenance_check(connection)?;
+    add_column_if_missing(
+        connection,
+        "investment_document_events",
+        "account_id",
+        "ALTER TABLE investment_document_events ADD COLUMN account_id TEXT REFERENCES accounts(id)",
+    )?;
+    add_column_if_missing(
+        connection,
+        "investment_document_events",
+        "accepted_snapshot_id",
+        "ALTER TABLE investment_document_events ADD COLUMN accepted_snapshot_id TEXT REFERENCES investment_snapshots(id)",
+    )?;
+    connection.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_provenance_investment_document_event
+         ON provenance(investment_document_event_id)
+         WHERE investment_document_event_id IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS idx_provenance_candidate_transaction
+         ON provenance(candidate_transaction_id);
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_document_snapshot_acceptance
+         ON investment_document_events(accepted_snapshot_id)
+         WHERE accepted_snapshot_id IS NOT NULL;",
+    )?;
+    add_column_if_missing(
+        connection,
         "import_batches",
         "duplicate_count",
         "ALTER TABLE import_batches ADD COLUMN duplicate_count INTEGER NOT NULL DEFAULT 0 CHECK (duplicate_count >= 0)",
     )?;
+    add_column_if_missing(
+        connection,
+        "canonical_transactions",
+        "external_reference",
+        "ALTER TABLE canonical_transactions ADD COLUMN external_reference TEXT",
+    )?;
+    connection.execute_batch("CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_transaction_external_reference ON canonical_transactions(external_reference) WHERE external_reference IS NOT NULL;")?;
     add_column_if_missing(
         connection,
         "canonical_transactions",
@@ -732,6 +774,44 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_investment_fee_component
             ON canonical_transactions(investment_fee_component_id)
             WHERE investment_fee_component_id IS NOT NULL;",
+    )
+}
+
+fn migrate_provider_provenance_check(connection: &Connection) -> rusqlite::Result<()> {
+    let sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='provenance'",
+        [],
+        |row| row.get(0),
+    )?;
+    if sql.contains("investment_document_event_id IS NOT NULL") {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         BEGIN IMMEDIATE;
+         CREATE TABLE provenance_v2 (
+           id TEXT PRIMARY KEY,
+           candidate_transaction_id TEXT UNIQUE REFERENCES candidate_transactions(id),
+           canonical_transaction_id TEXT REFERENCES canonical_transactions(id),
+           investment_document_event_id TEXT UNIQUE REFERENCES investment_document_events(id),
+           investment_snapshot_id TEXT REFERENCES investment_snapshots(id),
+           source_document_id TEXT NOT NULL REFERENCES source_documents(id),
+           import_batch_id TEXT REFERENCES import_batches(id), page_number INTEGER, row_index INTEGER,
+           bbox_x REAL, bbox_y REAL, bbox_width REAL, bbox_height REAL, bbox_unit TEXT,
+           extractor_name TEXT NOT NULL, extractor_version TEXT, parser_id TEXT NOT NULL,
+           parser_version TEXT NOT NULL, evidence_redaction TEXT NOT NULL,
+           evidence_text_redacted TEXT NOT NULL,
+           raw_storage_policy TEXT NOT NULL CHECK (raw_storage_policy IN ('not_stored','local_only_optional','redacted_only')),
+           raw_evidence_ref TEXT, confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+           CHECK (candidate_transaction_id IS NOT NULL OR canonical_transaction_id IS NOT NULL OR investment_document_event_id IS NOT NULL)
+         );
+         INSERT INTO provenance_v2(id,candidate_transaction_id,canonical_transaction_id,investment_document_event_id,investment_snapshot_id,source_document_id,import_batch_id,page_number,row_index,bbox_x,bbox_y,bbox_width,bbox_height,bbox_unit,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,raw_evidence_ref,confidence,created_at)
+         SELECT id,candidate_transaction_id,canonical_transaction_id,investment_document_event_id,investment_snapshot_id,source_document_id,import_batch_id,page_number,row_index,bbox_x,bbox_y,bbox_width,bbox_height,bbox_unit,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,raw_evidence_ref,confidence,created_at FROM provenance;
+         DROP TABLE provenance;
+         ALTER TABLE provenance_v2 RENAME TO provenance;
+         COMMIT;
+         PRAGMA foreign_keys=ON;",
     )
 }
 

@@ -390,6 +390,14 @@ fn compare_internal(
     Ok(ok(command, Some(s), vec![], out, adjustments(c, Some(id))?))
 }
 
+pub(crate) fn capture_baseline(
+    connection: &Connection,
+    snapshot_id: &str,
+    as_of: &str,
+) -> Result<Response> {
+    compare_internal(connection, snapshot_id, as_of, true)
+}
+
 #[derive(Default)]
 struct Derived {
     quantity: Option<String>,

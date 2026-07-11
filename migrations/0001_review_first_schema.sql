@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS canonical_transactions (
     income_source_id TEXT REFERENCES income_sources(id),
     income_kind TEXT CHECK (income_kind IN ('salary', 'freelance', 'client_payment', 'sale', 'interest', 'reimbursement', 'other')),
     investment_fee_component_id TEXT,
+    external_reference TEXT,
     created_from_candidate_id TEXT UNIQUE REFERENCES candidate_transactions(id),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -114,6 +115,8 @@ CREATE TABLE IF NOT EXISTS provenance (
     id TEXT PRIMARY KEY,
     candidate_transaction_id TEXT UNIQUE REFERENCES candidate_transactions(id),
     canonical_transaction_id TEXT REFERENCES canonical_transactions(id),
+    investment_document_event_id TEXT UNIQUE REFERENCES investment_document_events(id),
+    investment_snapshot_id TEXT REFERENCES investment_snapshots(id),
     source_document_id TEXT NOT NULL REFERENCES source_documents(id),
     import_batch_id TEXT REFERENCES import_batches(id),
     page_number INTEGER,
@@ -133,7 +136,7 @@ CREATE TABLE IF NOT EXISTS provenance (
     raw_evidence_ref TEXT,
     confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    CHECK (candidate_transaction_id IS NOT NULL OR canonical_transaction_id IS NOT NULL)
+    CHECK (candidate_transaction_id IS NOT NULL OR canonical_transaction_id IS NOT NULL OR investment_document_event_id IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS transaction_fingerprints (
@@ -400,7 +403,8 @@ CREATE TABLE IF NOT EXISTS investment_document_events (
     id TEXT PRIMARY KEY,
     source_document_id TEXT NOT NULL REFERENCES source_documents(id),
     import_batch_id TEXT NOT NULL REFERENCES import_batches(id),
-    provider TEXT NOT NULL,
+    account_id TEXT REFERENCES accounts(id),
+    provider TEXT NOT NULL CHECK (provider IN ('nu','wenia','plenti')),
     parser_id TEXT NOT NULL,
     parser_version TEXT NOT NULL,
     event_type TEXT NOT NULL CHECK (event_type IN ('deposit','withdrawal','cdt_opening','cdt_return','observed_cash','observed_position')),
@@ -415,9 +419,10 @@ CREATE TABLE IF NOT EXISTS investment_document_events (
     evidence_redaction TEXT NOT NULL,
     fingerprint TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'pending_review' CHECK (status IN ('pending_review','accepted','rejected')),
-    decision TEXT,
-    reconciled_kind TEXT,
+    decision TEXT CHECK (decision IS NULL OR decision IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','reject')),
+    reconciled_kind TEXT CHECK (reconciled_kind IS NULL OR reconciled_kind IN ('canonical_transaction','provider_event','investment_snapshot')),
     reconciled_id TEXT,
+    accepted_snapshot_id TEXT UNIQUE REFERENCES investment_snapshots(id),
     reviewed_at TEXT,
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     CHECK (amount_minor IS NOT NULL OR quantity IS NOT NULL),
@@ -431,6 +436,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_document_reconciliation
 ON investment_document_events(reconciled_kind, reconciled_id)
 WHERE reconciled_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_investment_document_batch ON investment_document_events(import_batch_id);
+CREATE TRIGGER IF NOT EXISTS validate_investment_document_event_insert
+BEFORE INSERT ON investment_document_events
+WHEN NEW.provider NOT IN ('nu','wenia','plenti')
+  OR (NEW.decision IS NOT NULL AND NEW.decision NOT IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','reject'))
+  OR (NEW.reconciled_kind IS NOT NULL AND NEW.reconciled_kind NOT IN ('canonical_transaction','provider_event','investment_snapshot'))
+BEGIN SELECT RAISE(ABORT,'invalid investment document vocabulary'); END;
+CREATE TRIGGER IF NOT EXISTS validate_investment_document_event_update
+BEFORE UPDATE ON investment_document_events
+WHEN NEW.provider NOT IN ('nu','wenia','plenti')
+  OR (NEW.decision IS NOT NULL AND NEW.decision NOT IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','reject'))
+  OR (NEW.reconciled_kind IS NOT NULL AND NEW.reconciled_kind NOT IN ('canonical_transaction','provider_event','investment_snapshot'))
+BEGIN SELECT RAISE(ABORT,'invalid investment document vocabulary'); END;
 
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);

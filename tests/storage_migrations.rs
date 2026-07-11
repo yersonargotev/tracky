@@ -495,3 +495,53 @@ fn migrations_constrain_contract_statuses_and_source_hash_uniqueness() {
         Err(Error::SqliteFailure(_, _))
     ));
 }
+
+#[test]
+fn migrations_rebuild_legacy_provenance_for_provider_events() {
+    let (_dir, connection) = temporary_database();
+    apply_migrations(&connection).unwrap();
+    connection.execute_batch("DROP TABLE provenance; CREATE TABLE provenance (
+      id TEXT PRIMARY KEY, candidate_transaction_id TEXT UNIQUE, canonical_transaction_id TEXT,
+      source_document_id TEXT NOT NULL, import_batch_id TEXT, page_number INTEGER, row_index INTEGER,
+      bbox_x REAL,bbox_y REAL,bbox_width REAL,bbox_height REAL,bbox_unit TEXT,
+      extractor_name TEXT NOT NULL,extractor_version TEXT,parser_id TEXT NOT NULL,parser_version TEXT NOT NULL,
+      evidence_redaction TEXT NOT NULL,evidence_text_redacted TEXT NOT NULL,raw_storage_policy TEXT NOT NULL,
+      raw_evidence_ref TEXT,confidence REAL NOT NULL,created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK(candidate_transaction_id IS NOT NULL OR canonical_transaction_id IS NOT NULL));").unwrap();
+    connection.execute("INSERT INTO provenance(id,canonical_transaction_id,source_document_id,extractor_name,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence) VALUES('legacy_prov','legacy_txn','legacy_source','legacy_extractor','legacy_parser','1','REDACTED','REDACTED','redacted_only',1)",[]).unwrap();
+    apply_migrations(&connection).unwrap();
+    let sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name='provenance'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(sql.contains("investment_document_event_id IS NOT NULL"));
+    let index_count: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_provenance_candidate_transaction'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(index_count, 1);
+    let evidence: String = connection
+        .query_row(
+            "SELECT evidence_redaction FROM provenance WHERE id='legacy_prov'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(evidence, "REDACTED");
+}
+
+#[test]
+fn migrations_reject_invalid_provider_document_vocabulary() {
+    let (_dir, connection) = temporary_database();
+    apply_migrations(&connection).unwrap();
+    connection.execute("INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size) VALUES('src_vocab','redacted.pdf',?1,'application/pdf',1)",["cd".repeat(32)]).unwrap();
+    connection.execute("INSERT INTO import_batches(id,source_document_id,started_at,status,error_details_json) VALUES('batch_vocab','src_vocab','2026-06-01T00:00:00Z','completed','[]')",[]).unwrap();
+    let invalid=connection.execute("INSERT INTO investment_document_events(id,source_document_id,import_batch_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,page_number,row_index,evidence_redaction,fingerprint,status) VALUES('event_vocab','src_vocab','batch_vocab','invented','parser','1','deposit','2026-06-01','COP',1,1,1,'REDACTED','fp_vocab','pending_review')",[]);
+    assert!(invalid.is_err());
+}

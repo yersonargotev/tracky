@@ -132,7 +132,44 @@ enum InvestmentDocumentCommands {
     Inspect(InvestmentDocumentInspectArgs),
     Import(InvestmentDocumentImportArgs),
     List(InvestmentDocumentListArgs),
-    Review(InvestmentDocumentReviewArgs),
+    InspectEvent(InvestmentDocumentInspectEventArgs),
+    Candidates(InvestmentDocumentCandidatesArgs),
+    AcceptSnapshot(InvestmentDocumentAcceptSnapshotArgs),
+    ReconcileDeposit(InvestmentDocumentReconcileArgs),
+    ReconcileWithdrawal(InvestmentDocumentReconcileArgs),
+    Reject(InvestmentDocumentInspectEventArgs),
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentInspectEventArgs {
+    event_id: String,
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentCandidatesArgs {
+    event_id: String,
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "event-account-id")]
+    event_account_id: String,
+    #[arg(long = "counterpart-account-id")]
+    counterpart_account_id: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentAcceptSnapshotArgs {
+    event_id: String,
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "account-id")]
+    account_id: String,
+    #[arg(long = "instrument-id")]
+    instrument_id: String,
+    #[arg(long)]
+    json: bool,
 }
 #[derive(Debug, Parser)]
 struct InvestmentDocumentInspectArgs {
@@ -160,16 +197,26 @@ struct InvestmentDocumentListArgs {
     json: bool,
 }
 #[derive(Debug, Parser)]
-struct InvestmentDocumentReviewArgs {
+struct InvestmentDocumentReconcileArgs {
     event_id: String,
     #[arg(long)]
     db: PathBuf,
-    #[arg(long)]
-    decision: String,
-    #[arg(long)]
-    reconciled_kind: Option<String>,
-    #[arg(long)]
-    reconciled_id: Option<String>,
+    #[arg(long = "event-account-id")]
+    event_account_id: String,
+    #[arg(long = "counterpart-account-id")]
+    counterpart_account_id: String,
+    #[arg(
+        long = "canonical-transaction-id",
+        conflicts_with = "provider_event_id",
+        required_unless_present = "provider_event_id"
+    )]
+    canonical_transaction_id: Option<String>,
+    #[arg(
+        long = "provider-event-id",
+        conflicts_with = "canonical_transaction_id",
+        required_unless_present = "canonical_transaction_id"
+    )]
+    provider_event_id: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -1659,17 +1706,93 @@ where
                 writeln!(&mut stdout)?;
                 Ok(0)
             }
-            InvestmentDocumentCommands::Review(a) => {
-                require_json(a.json, "investment-documents review")?;
+            InvestmentDocumentCommands::InspectEvent(a) => {
+                require_json(a.json, "investment-documents inspect-event")?;
+                let c = Connection::open_with_flags(&a.db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                let r = investment_documents::inspect_event(&c, &a.event_id)?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::Candidates(a) => {
+                require_json(a.json, "investment-documents candidates")?;
+                let c = Connection::open_with_flags(&a.db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                let r = investment_documents::reconciliation_candidates(
+                    &c,
+                    &a.event_id,
+                    &a.event_account_id,
+                    &a.counterpart_account_id,
+                )?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::AcceptSnapshot(a) => {
+                require_json(a.json, "investment-documents accept-snapshot")?;
                 let mut c = Connection::open(&a.db)?;
                 apply_migrations(&c)?;
-                let r = investment_documents::review(
+                let r = investment_documents::accept_snapshot(
                     &mut c,
                     &a.event_id,
-                    &a.decision,
-                    a.reconciled_kind.as_deref(),
-                    a.reconciled_id.as_deref(),
+                    &a.account_id,
+                    &a.instrument_id,
                 )?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::ReconcileDeposit(ref a)
+            | InvestmentDocumentCommands::ReconcileWithdrawal(ref a) => {
+                let deposit = matches!(&x.command, InvestmentDocumentCommands::ReconcileDeposit(_));
+                let command = if deposit {
+                    "investment-documents reconcile-deposit"
+                } else {
+                    "investment-documents reconcile-withdrawal"
+                };
+                require_json(a.json, command)?;
+                let mut c = Connection::open(&a.db)?;
+                apply_migrations(&c)?;
+                let (kind, target) = if let Some(id) = a.canonical_transaction_id.as_deref() {
+                    (
+                        investment_documents::ReconciliationKind::CanonicalTransaction,
+                        id,
+                    )
+                } else {
+                    (
+                        investment_documents::ReconciliationKind::ProviderEvent,
+                        a.provider_event_id
+                            .as_deref()
+                            .expect("clap requires one reconciliation target"),
+                    )
+                };
+                let r = if deposit {
+                    investment_documents::reconcile_deposit(
+                        &mut c,
+                        &a.event_id,
+                        &a.event_account_id,
+                        &a.counterpart_account_id,
+                        kind,
+                        target,
+                    )?
+                } else {
+                    investment_documents::reconcile_withdrawal(
+                        &mut c,
+                        &a.event_id,
+                        &a.event_account_id,
+                        &a.counterpart_account_id,
+                        kind,
+                        target,
+                    )?
+                };
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::Reject(a) => {
+                require_json(a.json, "investment-documents reject")?;
+                let mut c = Connection::open(&a.db)?;
+                apply_migrations(&c)?;
+                let r = investment_documents::reject(&mut c, &a.event_id)?;
                 serde_json::to_writer(&mut stdout, &r)?;
                 writeln!(&mut stdout)?;
                 Ok(if r.ok { 0 } else { 2 })
