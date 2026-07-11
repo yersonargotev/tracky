@@ -9,6 +9,7 @@ use crate::cdt::{
     CdtOperationReplacementInput, CdtRedemptionInput, CdtRenewalInput, CdtResponse, CdtTermsInput,
 };
 use crate::investment_documents;
+use crate::investment_reports::{self, InvestmentReportResponse};
 use crate::investments::{
     allocate_contribution, create_instrument, inspect_contribution, inspect_instrument,
     list_instruments, list_positions, replace_allocation, AllocationInput, AllocationLegInput,
@@ -874,6 +875,19 @@ enum TransactionCommands {
 #[derive(Debug, Subcommand)]
 enum ReportCommands {
     Summary(FinanceReportArgs),
+    Investments(InvestmentReportArgs),
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentReportArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "from", value_name = "YYYY-MM-DD")]
+    from: String,
+    #[arg(long = "to", value_name = "YYYY-MM-DD")]
+    to: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1431,6 +1445,7 @@ where
         },
         Commands::Reports(reports) => match reports.command {
             ReportCommands::Summary(args) => finance_report_command(args, &mut stdout),
+            ReportCommands::Investments(args) => investment_report_command(args, &mut stdout),
         },
         Commands::Instruments(instruments) => match instruments.command {
             InstrumentCommands::Create(args) => instrument_create_command(args, &mut stdout),
@@ -2776,6 +2791,31 @@ fn finance_report_command<W: Write>(args: FinanceReportArgs, stdout: &mut W) -> 
     write_finance_report_response(
         stdout,
         summarize_finances(&connection, &args.start_date, &args.end_date)?,
+    )
+}
+
+fn investment_report_command<W: Write>(args: InvestmentReportArgs, stdout: &mut W) -> Result<i32> {
+    if !args.json {
+        return write_json_response(
+            stdout,
+            false,
+            investment_reports::report_error(
+                &args.from,
+                &args.to,
+                "json_output_required",
+                "command",
+            ),
+            "writing investment report JSON",
+        );
+    }
+    let connection = open_readonly_database(&args.db)?;
+    let response: InvestmentReportResponse =
+        investment_reports::report(&connection, &args.from, &args.to)?;
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing investment report JSON",
     )
 }
 

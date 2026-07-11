@@ -4,6 +4,7 @@ pub mod cli;
 mod investment_document_parsers;
 mod investment_document_review;
 pub mod investment_documents;
+pub mod investment_reports;
 pub mod investments;
 pub mod pdf;
 pub mod reconciliation;

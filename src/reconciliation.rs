@@ -93,6 +93,38 @@ pub struct Reconciliation {
     pub original_derived_value_minor: Option<i64>,
     pub original_value_difference_minor: Option<i64>,
 }
+
+#[derive(Debug, Clone)]
+pub struct DerivedClosingPosition {
+    pub account_id: String,
+    pub instrument_id: Option<String>,
+    pub currency: String,
+    pub quantity: Option<String>,
+    pub historical_cost_minor: Option<i64>,
+    pub cost_currency: Option<String>,
+}
+
+pub fn derived_closing_positions(
+    c: &Connection,
+    as_of: &str,
+) -> Result<Vec<DerivedClosingPosition>> {
+    if !valid_date(as_of) {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for (account_id, instrument_id, currency) in derived_keys(c, as_of)? {
+        let value = derived(c, &account_id, instrument_id.as_deref(), &currency, as_of)?;
+        out.push(DerivedClosingPosition {
+            account_id,
+            instrument_id,
+            currency,
+            quantity: value.quantity,
+            historical_cost_minor: value.cost,
+            cost_currency: value.cost.map(|_| value.cost_currency),
+        });
+    }
+    Ok(out)
+}
 #[derive(Debug, Clone, Serialize)]
 pub struct Adjustment {
     pub id: String,
