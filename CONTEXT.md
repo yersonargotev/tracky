@@ -97,3 +97,11 @@ Cuenta propia de custodia cuya caja disponible por moneda y posiciones en instru
 ### Operación de brokerage
 
 Evento append-only de depósito, compra, venta, dividendo o retiro. Conserva cantidades exactas, costo histórico, producto bruto, resultado realizado, fees, retenciones, otras deducciones, efectivo neto y provenance; una corrección crea otra revisión y mueve el active head.
+
+### Snapshot de inversión
+
+Observación inmutable y fechada de un proveedor sobre efectivo, cantidades o valoraciones. Conserva fuente, fecha efectiva y provenance; no es una operación económica ni un saldo editable.
+
+### Ajuste de conciliación
+
+Evento explícito, revisado y append-only que cubre historia faltante confirmada por un snapshot. Conserva la diferencia original y nunca representa una orden, compra, venta ni recomendación.

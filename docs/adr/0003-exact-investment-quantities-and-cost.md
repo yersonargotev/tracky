@@ -22,3 +22,7 @@ Allocations use append-only revisions and a separate active head. Positions are 
 ### Brokerage disposals
 
 Brokerage quantities use the same canonical decimal representation, internally scaled to at most nine fractional digits. Cash, cost, proceeds, realized results, fees, dividends, withholding and deductions remain `i64` minor units. Security sales use deterministic moving weighted-average historical cost: a partial disposal assigns `accumulated_cost_minor * sold_quantity / held_quantity`, truncating only the indivisible minor-unit remainder; a final disposal receives the complete remaining cost. This is portfolio bookkeeping, not a tax-lot or tax calculation.
+
+### Dated observations and reconciliation adjustments
+
+Provider snapshot quantities and prices use the same canonical decimal boundary. Observed cash and values use non-negative `i64` minor units with explicit currencies. Snapshots are immutable evidence and never economic events. Reviewed missing-history adjustments are separate append-only revisions replayed only in derived reconciliation state.

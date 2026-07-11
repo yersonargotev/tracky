@@ -326,6 +326,76 @@ CREATE TABLE IF NOT EXISTS brokerage_operation_heads (
 CREATE INDEX IF NOT EXISTS idx_brokerage_component ON brokerage_operation_revisions(component_id) WHERE component_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_brokerage_account ON brokerage_operation_revisions(account_id);
 
+CREATE TABLE IF NOT EXISTS investment_snapshots (
+    id TEXT PRIMARY KEY,
+    observed_at TEXT NOT NULL,
+    provider_effective_date TEXT,
+    source TEXT NOT NULL,
+    external_reference TEXT,
+    provenance_source TEXT NOT NULL CHECK (length(trim(provenance_source)) > 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (source, external_reference)
+);
+CREATE TABLE IF NOT EXISTS investment_snapshot_positions (
+    snapshot_id TEXT NOT NULL REFERENCES investment_snapshots(id) ON DELETE CASCADE,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    instrument_id TEXT REFERENCES investment_instruments(id),
+    quantity TEXT,
+    currency TEXT NOT NULL,
+    observed_cash_minor INTEGER,
+    observed_value_minor INTEGER CHECK (observed_value_minor IS NULL OR observed_value_minor >= 0),
+    valuation_currency TEXT,
+    observed_price TEXT,
+    PRIMARY KEY (snapshot_id, account_id, instrument_id, currency),
+    CHECK (quantity IS NOT NULL OR observed_cash_minor IS NOT NULL),
+    CHECK (observed_cash_minor IS NULL OR observed_cash_minor >= 0),
+    CHECK ((observed_value_minor IS NULL AND valuation_currency IS NULL) OR (observed_value_minor IS NOT NULL AND valuation_currency IS NOT NULL))
+);
+CREATE TABLE IF NOT EXISTS investment_adjustment_revisions (
+    id TEXT PRIMARY KEY,
+    adjustment_id TEXT NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    snapshot_id TEXT NOT NULL REFERENCES investment_snapshots(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    instrument_id TEXT REFERENCES investment_instruments(id),
+    currency TEXT NOT NULL,
+    quantity_delta TEXT,
+    cash_delta_minor INTEGER,
+    historical_cost_delta_minor INTEGER NOT NULL DEFAULT 0,
+    effective_date TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK (length(trim(reason)) > 0),
+    provenance_source TEXT NOT NULL CHECK (length(trim(provenance_source)) > 0),
+    correction_reason TEXT,
+    replaces_revision_id TEXT REFERENCES investment_adjustment_revisions(id),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (adjustment_id, revision),
+    CHECK (quantity_delta IS NOT NULL OR cash_delta_minor IS NOT NULL),
+    CHECK (instrument_id IS NOT NULL OR quantity_delta IS NULL)
+);
+CREATE TABLE IF NOT EXISTS investment_adjustment_heads (
+    adjustment_id TEXT PRIMARY KEY,
+    current_revision_id TEXT NOT NULL UNIQUE REFERENCES investment_adjustment_revisions(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_adjustment_origin
+ON investment_adjustment_revisions(snapshot_id, account_id, IFNULL(instrument_id, ''), currency)
+WHERE revision = 1;
+CREATE TABLE IF NOT EXISTS investment_snapshot_baselines (
+    snapshot_id TEXT NOT NULL REFERENCES investment_snapshots(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    instrument_id TEXT REFERENCES investment_instruments(id),
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL,
+    quantity_difference TEXT,
+    cash_difference_minor INTEGER,
+    derived_historical_cost_minor INTEGER,
+    derived_value_minor INTEGER,
+    value_difference_minor INTEGER,
+    PRIMARY KEY(snapshot_id, account_id, instrument_id, currency)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_snapshot_baseline_key
+ON investment_snapshot_baselines(snapshot_id, account_id, IFNULL(instrument_id, ''), currency);
+CREATE INDEX IF NOT EXISTS idx_investment_snapshot_observed ON investment_snapshots(observed_at);
+
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);

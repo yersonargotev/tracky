@@ -20,6 +20,9 @@ use crate::pdf::{
     SourceDocument, TrackyError, TrackyErrorCategory, TrackyErrorCode, TrackyErrorPath,
     PDF_INSPECT_SCHEMA_VERSION,
 };
+use crate::reconciliation::{
+    self, AdjustmentInput, AdjustmentReplacement, Response as ReconciliationResponse, SnapshotInput,
+};
 use crate::storage::{
     accept_candidate, accept_expense_candidate, accept_income_candidate,
     accept_investment_candidate, accept_transfer_pair, account_registry_error_response,
@@ -106,6 +109,81 @@ enum Commands {
     Investments(InvestmentsCommand),
     Cdts(CdtsCommand),
     Brokerages(BrokeragesCommand),
+    Snapshots(SnapshotsCommand),
+}
+
+#[derive(Debug, Parser)]
+struct SnapshotsCommand {
+    #[command(subcommand)]
+    command: SnapshotCommands,
+}
+#[derive(Debug, Subcommand)]
+enum SnapshotCommands {
+    Record(SnapshotRecordArgs),
+    List(SnapshotListArgs),
+    Inspect(SnapshotInspectArgs),
+    Compare(SnapshotCompareArgs),
+    Adjust(SnapshotAdjustArgs),
+    ReplaceAdjustment(SnapshotReplaceAdjustmentArgs),
+    AdjustmentHistory(SnapshotInspectArgs),
+}
+#[derive(Debug, Parser)]
+struct SnapshotRecordArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "snapshot-json")]
+    snapshot_json: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct SnapshotListArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct SnapshotInspectArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "snapshot-id")]
+    snapshot_id: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct SnapshotCompareArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "snapshot-id")]
+    snapshot_id: String,
+    #[arg(long = "as-of")]
+    as_of: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct SnapshotAdjustArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "adjustment-json")]
+    adjustment_json: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct SnapshotReplaceAdjustmentArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "adjustment-id")]
+    adjustment_id: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long = "replacement-json")]
+    replacement_json: String,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1419,7 +1497,127 @@ where
             CdtCommands::List(args) => cdt_list_command(args, &mut stdout),
             CdtCommands::Inspect(args) => cdt_inspect_command(args, &mut stdout),
         },
+        Commands::Snapshots(x) => match x.command {
+            SnapshotCommands::Record(a) => {
+                let input = match serde_json::from_str::<SnapshotInput>(&a.snapshot_json) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return write_reconciliation_response(
+                            &mut stdout,
+                            reconciliation_cli_error("invalid_snapshot_json", "snapshot_json"),
+                        )
+                    }
+                };
+                reconciliation_command(
+                    &a.db,
+                    a.json,
+                    |c| reconciliation::record(c, input),
+                    &mut stdout,
+                )
+            }
+            SnapshotCommands::List(a) => {
+                reconciliation_command(&a.db, a.json, |c| reconciliation::list(c), &mut stdout)
+            }
+            SnapshotCommands::Inspect(a) | SnapshotCommands::AdjustmentHistory(a) => {
+                reconciliation_command(
+                    &a.db,
+                    a.json,
+                    |c| reconciliation::inspect(c, &a.snapshot_id, "snapshots inspect"),
+                    &mut stdout,
+                )
+            }
+            SnapshotCommands::Compare(a) => reconciliation_command(
+                &a.db,
+                a.json,
+                |c| reconciliation::compare(c, &a.snapshot_id, &a.as_of),
+                &mut stdout,
+            ),
+            SnapshotCommands::Adjust(a) => {
+                let input = match serde_json::from_str::<AdjustmentInput>(&a.adjustment_json) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return write_reconciliation_response(
+                            &mut stdout,
+                            reconciliation_cli_error("invalid_adjustment_json", "adjustment_json"),
+                        )
+                    }
+                };
+                reconciliation_command(
+                    &a.db,
+                    a.json,
+                    |c| reconciliation::adjust(c, input),
+                    &mut stdout,
+                )
+            }
+            SnapshotCommands::ReplaceAdjustment(a) => {
+                let input = match serde_json::from_str::<AdjustmentReplacement>(&a.replacement_json)
+                {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return write_reconciliation_response(
+                            &mut stdout,
+                            reconciliation_cli_error(
+                                "invalid_replacement_json",
+                                "replacement_json",
+                            ),
+                        )
+                    }
+                };
+                reconciliation_command(
+                    &a.db,
+                    a.json,
+                    |c| reconciliation::replace_adjustment(c, &a.adjustment_id, &a.reason, input),
+                    &mut stdout,
+                )
+            }
+        },
     }
+}
+
+fn reconciliation_command<W: Write, F>(db: &Path, json: bool, f: F, stdout: &mut W) -> Result<i32>
+where
+    F: FnOnce(&mut Connection) -> Result<ReconciliationResponse>,
+{
+    if !json {
+        return write_reconciliation_response(
+            stdout,
+            reconciliation_cli_error("json_output_required", "command"),
+        );
+    }
+    let mut connection = open_review_database(db)?;
+    write_reconciliation_response(stdout, f(&mut connection)?)
+}
+fn reconciliation_cli_error(code: &'static str, path: &'static str) -> ReconciliationResponse {
+    ReconciliationResponse {
+        schema_version: reconciliation::SCHEMA_VERSION,
+        command: "snapshots",
+        ok: false,
+        snapshot: None,
+        snapshots: vec![],
+        reconciliations: vec![],
+        adjustments: vec![],
+        freshness_policy: "fresh through 7 calendar days after observed_at; stale afterwards"
+            .into(),
+        errors: vec![crate::storage::ReviewError {
+            category: "validation_failure",
+            code,
+            message: code.replace('_', " "),
+            path,
+            recoverable: true,
+            details: serde_json::json!({}),
+        }],
+    }
+}
+fn write_reconciliation_response<W: Write>(
+    stdout: &mut W,
+    response: ReconciliationResponse,
+) -> Result<i32> {
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing investment reconciliation JSON",
+    )
 }
 
 fn brokerage_command<W: Write, F>(db: &Path, json: bool, f: F, stdout: &mut W) -> Result<i32>

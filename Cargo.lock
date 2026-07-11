@@ -2356,6 +2356,7 @@ name = "tracky"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap",
  "dotenvy",
  "pdf_oxide",
