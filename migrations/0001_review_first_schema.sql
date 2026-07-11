@@ -396,6 +396,42 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_snapshot_baseline_key
 ON investment_snapshot_baselines(snapshot_id, account_id, IFNULL(instrument_id, ''), currency);
 CREATE INDEX IF NOT EXISTS idx_investment_snapshot_observed ON investment_snapshots(observed_at);
 
+CREATE TABLE IF NOT EXISTS investment_document_events (
+    id TEXT PRIMARY KEY,
+    source_document_id TEXT NOT NULL REFERENCES source_documents(id),
+    import_batch_id TEXT NOT NULL REFERENCES import_batches(id),
+    provider TEXT NOT NULL,
+    parser_id TEXT NOT NULL,
+    parser_version TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK (event_type IN ('deposit','withdrawal','cdt_opening','cdt_return','observed_cash','observed_position')),
+    provider_effective_date TEXT NOT NULL,
+    currency TEXT NOT NULL,
+    amount_minor INTEGER,
+    instrument_hint TEXT,
+    quantity TEXT,
+    external_reference TEXT,
+    page_number INTEGER NOT NULL CHECK (page_number > 0),
+    row_index INTEGER NOT NULL CHECK (row_index > 0),
+    evidence_redaction TEXT NOT NULL,
+    fingerprint TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'pending_review' CHECK (status IN ('pending_review','accepted','rejected')),
+    decision TEXT,
+    reconciled_kind TEXT,
+    reconciled_id TEXT,
+    reviewed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    CHECK (amount_minor IS NOT NULL OR quantity IS NOT NULL),
+    CHECK ((status = 'pending_review' AND decision IS NULL AND reviewed_at IS NULL) OR
+           (status <> 'pending_review' AND decision IS NOT NULL AND reviewed_at IS NOT NULL))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_document_provider_reference
+ON investment_document_events(provider, external_reference)
+WHERE external_reference IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_document_reconciliation
+ON investment_document_events(reconciled_kind, reconciled_id)
+WHERE reconciled_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_investment_document_batch ON investment_document_events(import_batch_id);
+
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);
 CREATE INDEX IF NOT EXISTS idx_income_sources_name ON income_sources(name);
 CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);

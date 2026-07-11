@@ -8,6 +8,7 @@ use crate::cdt::{
     replace_cdt_operation, CdtConstitutionInput, CdtOperationReplacement,
     CdtOperationReplacementInput, CdtRedemptionInput, CdtRenewalInput, CdtResponse, CdtTermsInput,
 };
+use crate::investment_documents;
 use crate::investments::{
     allocate_contribution, create_instrument, inspect_contribution, inspect_instrument,
     list_instruments, list_positions, replace_allocation, AllocationInput, AllocationLegInput,
@@ -56,6 +57,14 @@ use std::path::{Path, PathBuf};
 enum JsonCommand {
     PdfInspect,
     ImportPdf,
+}
+
+fn require_json(enabled: bool, command: &str) -> Result<()> {
+    if enabled {
+        Ok(())
+    } else {
+        anyhow::bail!("{command} requires --json")
+    }
 }
 
 impl JsonCommand {
@@ -110,6 +119,59 @@ enum Commands {
     Cdts(CdtsCommand),
     Brokerages(BrokeragesCommand),
     Snapshots(SnapshotsCommand),
+    InvestmentDocuments(InvestmentDocumentsCommand),
+}
+
+#[derive(Debug, Parser)]
+struct InvestmentDocumentsCommand {
+    #[command(subcommand)]
+    command: InvestmentDocumentCommands,
+}
+#[derive(Debug, Subcommand)]
+enum InvestmentDocumentCommands {
+    Inspect(InvestmentDocumentInspectArgs),
+    Import(InvestmentDocumentImportArgs),
+    List(InvestmentDocumentListArgs),
+    Review(InvestmentDocumentReviewArgs),
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentInspectArgs {
+    pdf: PathBuf,
+    #[arg(long)]
+    password_env: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentImportArgs {
+    pdf: PathBuf,
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    password_env: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentListArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentReviewArgs {
+    event_id: String,
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    decision: String,
+    #[arg(long)]
+    reconciled_kind: Option<String>,
+    #[arg(long)]
+    reconciled_id: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1569,6 +1631,48 @@ where
                     |c| reconciliation::replace_adjustment(c, &a.adjustment_id, &a.reason, input),
                     &mut stdout,
                 )
+            }
+        },
+        Commands::InvestmentDocuments(x) => match x.command {
+            InvestmentDocumentCommands::Inspect(a) => {
+                require_json(a.json, "investment-documents inspect")?;
+                let credential = a.password_env.as_deref().and_then(&env_lookup);
+                let r = investment_documents::inspect(&a.pdf, credential.as_deref())?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::Import(a) => {
+                require_json(a.json, "investment-documents import")?;
+                let credential = a.password_env.as_deref().and_then(&env_lookup);
+                let mut c = Connection::open(&a.db)?;
+                let r = investment_documents::import(&mut c, &a.pdf, credential.as_deref())?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::List(a) => {
+                require_json(a.json, "investment-documents list")?;
+                let c = Connection::open_with_flags(&a.db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                let r = investment_documents::list(&c)?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(0)
+            }
+            InvestmentDocumentCommands::Review(a) => {
+                require_json(a.json, "investment-documents review")?;
+                let mut c = Connection::open(&a.db)?;
+                apply_migrations(&c)?;
+                let r = investment_documents::review(
+                    &mut c,
+                    &a.event_id,
+                    &a.decision,
+                    a.reconciled_kind.as_deref(),
+                    a.reconciled_id.as_deref(),
+                )?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
             }
         },
     }
