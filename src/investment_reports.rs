@@ -124,7 +124,8 @@ pub struct InvestmentReportResponse {
 #[derive(Default)]
 struct FundingPools {
     external: i64,
-    sale_proceeds: i64,
+    sale_principal: i64,
+    realized_income: i64,
     investment_income: i64,
 }
 
@@ -312,7 +313,12 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
                 if in_range {
                     add(&mut external, cur.clone(), used)?;
                 }
-                let used = FundingPools::consume(&mut pools.sale_proceeds, &mut remaining);
+                let used = FundingPools::consume(&mut pools.sale_principal, &mut remaining);
+                if in_range {
+                    add(&mut sales, cur.clone(), used)?;
+                    add(&mut reinvest, cur.clone(), used)?;
+                }
+                let used = FundingPools::consume(&mut pools.realized_income, &mut remaining);
                 if in_range {
                     add(&mut sales, cur.clone(), used)?;
                     add(&mut reinvest, cur.clone(), used)?;
@@ -333,7 +339,16 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
                     )?;
                     add(&mut results, cur.clone(), rr)?;
                 }
-                FundingPools::add(&mut pools.sale_proceeds, n)?;
+                let principal = g
+                    .checked_sub(rr)
+                    .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+                let principal_cash = principal.min(n.max(0));
+                FundingPools::add(&mut pools.sale_principal, principal_cash)?;
+                FundingPools::add(
+                    &mut pools.realized_income,
+                    n.checked_sub(principal_cash)
+                        .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?,
+                )?;
             }
             "dividend" => {
                 if in_range {
@@ -344,10 +359,18 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
             "withdrawal" => {
                 let mut remaining = g;
                 FundingPools::consume(&mut pools.investment_income, &mut remaining);
-                FundingPools::consume(&mut pools.sale_proceeds, &mut remaining);
-                FundingPools::consume(&mut pools.external, &mut remaining);
+                FundingPools::consume(&mut pools.realized_income, &mut remaining);
+                let returned_from_sales =
+                    FundingPools::consume(&mut pools.sale_principal, &mut remaining);
+                let returned_external = FundingPools::consume(&mut pools.external, &mut remaining);
                 if in_range {
-                    add(&mut withdrawn, cur.clone(), g)?;
+                    add(
+                        &mut withdrawn,
+                        cur.clone(),
+                        returned_from_sales
+                            .checked_add(returned_external)
+                            .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?,
+                    )?;
                 }
             }
             _ => {}

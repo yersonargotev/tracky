@@ -52,8 +52,12 @@ fn consolidated_report_separates_capital_acquisitions_returns_currencies_and_pen
         serde_json::json!([{"currency":"COP","amount_minor":100000},{"currency":"USD","amount_minor":5000}])
     );
     assert_eq!(
-        j["capital_external"]["capital_withdrawn"][0]["amount_minor"],
-        2000
+        j["capital_external"]["capital_withdrawn"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        j["capital_external"]["net_external_contribution"],
+        j["capital_external"]["external_capital_contributed"]
     );
     assert_eq!(
         j["acquisitions_and_reinvestment"]["gross_acquisitions"][0]["amount_minor"],
