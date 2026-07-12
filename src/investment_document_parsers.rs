@@ -2,6 +2,11 @@ use crate::investment_documents::{
     date_slash, decimal, digest, money, month, redact, year_from, Error, EventType, Provider,
     ProviderEvent, ReviewStatus, PARSER_VERSION,
 };
+use crate::pdf::{
+    candidate_fingerprint, normalize_candidate_description, AccountHint, CandidateStatus,
+    CandidateTransaction, DirectionHint, DuplicateStatus, DuplicateStatusState, Evidence,
+    ExtractorRef, ParserRef, Provenance, SemanticHint,
+};
 use crate::pdf::{BBox, ExtractedLine};
 use anyhow::{anyhow, Result};
 use pdf_oxide::PdfDocument;
@@ -50,7 +55,20 @@ pub(crate) fn detect_and_parse(
     Ok((provider, events))
 }
 
-fn logical_rows(lines: &[ExtractedLine]) -> Vec<ExtractedLine> {
+pub(crate) fn detect_and_parse_with_ordinary(
+    source: &str,
+    lines: &[ExtractedLine],
+) -> std::result::Result<(Provider, Vec<ProviderEvent>, Vec<CandidateTransaction>), Error> {
+    let (provider, events) = detect_and_parse(source, lines)?;
+    let candidates = if provider == Provider::Nu {
+        parse_nu_ordinary(source, lines, &logical_rows(lines))
+    } else {
+        Vec::new()
+    };
+    Ok((provider, events, candidates))
+}
+
+pub(crate) fn logical_rows(lines: &[ExtractedLine]) -> Vec<ExtractedLine> {
     let mut rows = lines
         .iter()
         .filter(|line| line.bbox.is_none())
@@ -96,6 +114,122 @@ fn logical_rows(lines: &[ExtractedLine]) -> Vec<ExtractedLine> {
                 row.text.push_str(&cell.text);
             }
             row
+        })
+        .collect()
+}
+
+fn parse_nu_ordinary(
+    source: &str,
+    lines: &[ExtractedLine],
+    logical_rows: &[ExtractedLine],
+) -> Vec<CandidateTransaction> {
+    let Some(year) = year_from(lines) else {
+        return Vec::new();
+    };
+    let re = Regex::new(
+        r"(?i)(\d{2})\s+(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s+(.+?)\s+([+-]\$\s*[\d.,]+)$",
+    )
+    .unwrap();
+    let excluded = Regex::new(
+        r"(?i)^(Abriste\s+un\s+CDT|Recibiste\s+dinero\s+de\s+un\s+CDT|Enviaste\s+a\s+Plenti)$",
+    )
+    .unwrap();
+    let mut rows = logical_rows
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.bbox.is_some())
+        .map(|(index, row)| (row.page, index + 1, row.bbox, row.text.clone()))
+        .collect::<Vec<_>>();
+    rows.extend(
+        logical_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.bbox.is_none())
+            .map(|(index, row)| (row.page, index + 1, None, row.text.clone())),
+    );
+    let mut seen = std::collections::HashSet::new();
+    rows.into_iter()
+        .filter_map(|(page, row_index, bbox, text)| {
+            let c = re.captures(&text)?;
+            let description = c[3].split_whitespace().collect::<Vec<_>>().join(" ");
+            if excluded.is_match(&description) {
+                return None;
+            }
+            let normalized_description = normalize_candidate_description(&description);
+            let posted_date = format!("{year}-{}-{}", month(&c[2]), &c[1]);
+            let amount_minor = money(&c[4].replace(' ', ""))?;
+            let fingerprint = candidate_fingerprint(
+                "nu",
+                "Nu account",
+                "nu.statement.v1",
+                &posted_date,
+                amount_minor,
+                "COP",
+                &description,
+            );
+            if !seen.insert(fingerprint.clone()) {
+                return None;
+            }
+            let semantic_hint = if normalized_description.contains("pagaste")
+                && normalized_description.contains("tarjeta")
+            {
+                SemanticHint::CardPayment
+            } else {
+                SemanticHint::BankMovement
+            };
+            let id = format!("cand_{}", &digest(&format!("{source}|{fingerprint}"))[..24]);
+            Some(CandidateTransaction {
+                id,
+                import_batch_id: None,
+                source_document_id: source.into(),
+                status: CandidateStatus::PendingReview,
+                duplicate_status: DuplicateStatus {
+                    status: DuplicateStatusState::NotChecked,
+                    fingerprint,
+                    matched_candidate_ids: Vec::new(),
+                    matched_canonical_transaction_ids: Vec::new(),
+                    reason: None,
+                },
+                institution_hint: "nu".into(),
+                account_hint: AccountHint {
+                    label: "Nu account".into(),
+                    currency: "COP",
+                    masked_identifier: None,
+                },
+                posted_date,
+                description,
+                amount_minor,
+                currency: "COP",
+                balance_minor: None,
+                direction_hint: if amount_minor < 0 {
+                    DirectionHint::Outflow
+                } else {
+                    DirectionHint::Inflow
+                },
+                semantic_hint,
+                confidence: 1.0,
+                provenance: Provenance {
+                    source_document_id: source.into(),
+                    page_number: page,
+                    row_index,
+                    bbox,
+                    extractor: ExtractorRef {
+                        name: "pdf_oxide",
+                        version: None,
+                    },
+                    parser: ParserRef {
+                        id: "nu.statement.v1".into(),
+                        version: PARSER_VERSION,
+                    },
+                    evidence: Evidence {
+                        redaction: "financial_and_counterparty",
+                        text: format!("## {} <description> <amount>", c[2].to_lowercase()),
+                        raw_storage_policy: "redacted_only",
+                    },
+                    confidence: 1.0,
+                },
+                validation_warnings: Vec::new(),
+            })
         })
         .collect()
 }

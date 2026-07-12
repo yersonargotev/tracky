@@ -46,6 +46,7 @@ These issues retain unchecked criteria and are not represented as completed:
 4. `0032-add-consolidated-monthly-investment-reports.md` — monthly investment flows, positions, and valuation freshness; newly unlocked by completed 0030.
 5. `0033-extend-export-backup-and-integrity-for-investments.md` — operational safety for investment data.
 6. `0034-add-investment-review-and-reporting-to-tui.md` — investment workflow in the shared TUI model.
+7. `0036-import-ordinary-nu-account-movements.md` — import ordinary Nu debits and credits from the same statement as its investment events.
 
 Implementation should proceed from the dependency frontier: any issue whose listed blockers are complete may start. The investment-tracking expansion is grounded in `docs/research/investment-tracking-model.md`; provider adapters additionally require representative, user-authorized artifacts or privacy-safe fixtures derived from them.
 

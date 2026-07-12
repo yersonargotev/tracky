@@ -6,6 +6,9 @@ This guide describes the current CLI/JSON path for Tracky's review-first PDF imp
 
 - `tracky pdf inspect` is read-only. It returns transient candidate-shaped JSON and does not write SQLite data.
 - `tracky import pdf` writes a `SourceDocument`, `ImportBatch`, `Provenance`, duplicate markers, and **candidate transactions** only. It must not create canonical transactions.
+- A Nu Cuenta statement is inspected/imported once through `investment-documents`; its v2 response
+  contains both `events[]` and `ordinary_candidates[]` in one atomic review-first boundary. Do not
+  run the same PDF through the generic import path as a workaround.
 - Canonical transactions appear only after an explicit typed review action: `candidates accept-income`, `candidates accept-expense`, `candidates accept-investment`, or `candidates accept-transfer-pair`. The legacy generic `candidates accept` refuses typed finance candidates.
 - Do not drop or hide provenance when reviewing candidates. Accepted and rejected decisions must remain auditable through the source document, import batch, parser/extractor evidence, and candidate id.
 - Do not use real PDFs, unredacted account data, passwords, emails, addresses, counterparties, long identifiers, or full amounts as committed fixtures or examples.

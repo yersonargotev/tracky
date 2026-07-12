@@ -61,6 +61,57 @@ fn synthetic_encrypted_nu_pdf(path: &std::path::Path, password: &str) {
                 "Tj",
                 vec![Object::string_literal("16 jun Enviaste a Plenti")],
             ),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    50.into(),
+                    660.into(),
+                ],
+            ),
+            Operation::new(
+                "Tj",
+                vec![Object::string_literal("17 jun Recibiste transferencia")],
+            ),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    360.into(),
+                    660.into(),
+                ],
+            ),
+            Operation::new("Tj", vec![Object::string_literal("+$3.500,00")]),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    50.into(),
+                    640.into(),
+                ],
+            ),
+            Operation::new("Tj", vec![Object::string_literal("18 jun Pago servicio")]),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    360.into(),
+                    640.into(),
+                ],
+            ),
+            Operation::new("Tj", vec![Object::string_literal("-$1.200,00")]),
             Operation::new("ET", vec![]),
         ],
     };
@@ -106,6 +157,47 @@ fn run(args: &[&str]) -> Value {
         String::from_utf8_lossy(&out.stdout)
     );
     serde_json::from_slice(&out.stdout).unwrap()
+}
+
+#[test]
+fn nu_inspect_exposes_ordinary_candidates_with_provider_events() {
+    let d = tempfile::tempdir().unwrap();
+    let pdf = d.path().join("statement.pdf");
+    synthetic_encrypted_nu_pdf(&pdf, "runtime-only");
+    let out = Command::new(env!("CARGO_BIN_EXE_tracky"))
+        .env("TRACKY_SYNTHETIC_PASSWORD", "runtime-only")
+        .args([
+            "investment-documents",
+            "inspect",
+            pdf.to_str().unwrap(),
+            "--password-env",
+            "TRACKY_SYNTHETIC_PASSWORD",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(value["schema_version"], "tracky.investment-documents.v2");
+    assert_eq!(value["events"].as_array().unwrap().len(), 1);
+    assert_eq!(value["ordinary_candidates"].as_array().unwrap().len(), 2);
+    assert!(value["ordinary_candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate["amount_minor"] == 350_000
+            && candidate["direction_hint"] == "inflow"
+            && candidate["status"] == "pending_review"));
+    assert!(value["ordinary_candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|candidate| candidate["amount_minor"] == -120_000
+            && candidate["direction_hint"] == "outflow"));
 }
 fn seed(db: &str) -> Connection {
     let c = Connection::open(db).unwrap();
@@ -707,6 +799,37 @@ fn synthetic_nu_credential_paths_are_public_secret_safe_and_exactly_deduplicated
         "{}",
         String::from_utf8_lossy(&first.stdout)
     );
+    let first_json: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(first_json["events"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        first_json["ordinary_candidates"].as_array().unwrap().len(),
+        2
+    );
+    let c = Connection::open(&db).unwrap();
+    let counts: (i64, i64, i64, i64, i64, i64) = c
+        .query_row(
+            "SELECT
+                (SELECT count(*) FROM source_documents),
+                (SELECT count(*) FROM import_batches),
+                (SELECT count(*) FROM candidate_transactions),
+                (SELECT count(*) FROM investment_document_events),
+                (SELECT count(*) FROM provenance),
+                (SELECT count(*) FROM canonical_transactions)",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(counts, (1, 1, 2, 1, 3, 0));
+    drop(c);
     let second = Command::new(env!("CARGO_BIN_EXE_tracky"))
         .args([
             "investment-documents",
@@ -725,4 +848,50 @@ fn synthetic_nu_credential_paths_are_public_secret_safe_and_exactly_deduplicated
     let json: Value = serde_json::from_slice(&second.stdout).unwrap();
     assert_eq!(json["errors"][0]["code"], "duplicate_source_document");
     assert!(!String::from_utf8_lossy(&second.stdout).contains(password));
+}
+
+#[test]
+fn mixed_nu_import_rolls_back_candidates_when_provider_event_persistence_fails() {
+    let d = tempfile::tempdir().unwrap();
+    let asset = d.path().join("nu-redacted-encrypted.pdf");
+    let db = d.path().join("x.sqlite");
+    synthetic_encrypted_nu_pdf(&asset, "runtime-only");
+    let c = Connection::open(&db).unwrap();
+    apply_migrations(&c).unwrap();
+    c.execute_batch(
+        "CREATE TRIGGER reject_provider_event BEFORE INSERT ON investment_document_events
+         BEGIN SELECT RAISE(ABORT, 'synthetic persistence failure'); END;",
+    )
+    .unwrap();
+    drop(c);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_tracky"))
+        .env("TRACKY_TEST_CORRECT", "runtime-only")
+        .args([
+            "investment-documents",
+            "import",
+            asset.to_str().unwrap(),
+            "--db",
+            db.to_str().unwrap(),
+            "--password-env",
+            "TRACKY_TEST_CORRECT",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let c = Connection::open(&db).unwrap();
+    let counts: (i64, i64, i64, i64, i64) = c
+        .query_row(
+            "SELECT
+                (SELECT count(*) FROM source_documents),
+                (SELECT count(*) FROM import_batches),
+                (SELECT count(*) FROM candidate_transactions),
+                (SELECT count(*) FROM investment_document_events),
+                (SELECT count(*) FROM provenance)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
+    assert_eq!(counts, (0, 0, 0, 0, 0));
 }

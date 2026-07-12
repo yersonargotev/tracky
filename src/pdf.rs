@@ -1182,15 +1182,43 @@ fn normalized_fingerprint(
     movement: &ParsedMovement,
     amount_minor: i64,
 ) -> String {
+    candidate_fingerprint(
+        &source_document.institution_hint,
+        &source_document.account_hint.label,
+        parser_id,
+        &movement.posted_date,
+        amount_minor,
+        movement.amount.currency,
+        &movement.description_sample,
+    )
+}
+
+pub(crate) fn normalize_candidate_description(description: &str) -> String {
+    description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+pub(crate) fn candidate_fingerprint(
+    institution_hint: &str,
+    account_label: &str,
+    parser_id: &str,
+    posted_date: &str,
+    amount_minor: i64,
+    currency: &str,
+    description: &str,
+) -> String {
     let input = format!(
         "{}|{}|{}|{}|{}|{}|{}",
-        source_document.institution_hint.to_ascii_lowercase(),
-        source_document.account_hint.label.to_ascii_lowercase(),
+        institution_hint.to_ascii_lowercase(),
+        account_label.to_ascii_lowercase(),
         parser_id.to_ascii_lowercase(),
-        movement.posted_date,
+        posted_date,
         amount_minor,
-        movement.amount.currency.to_ascii_uppercase(),
-        movement.description_sample.to_lowercase()
+        currency.to_ascii_uppercase(),
+        normalize_candidate_description(description)
     );
     let digest = Sha256::digest(input.as_bytes());
     digest[..16].iter().map(|b| format!("{b:02x}")).collect()

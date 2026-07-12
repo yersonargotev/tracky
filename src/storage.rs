@@ -1,7 +1,7 @@
 use crate::pdf::{
-    CandidateStatus, CandidateTransaction, DirectionHint, DocumentDuplicateState,
-    DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState, PdfInspectResponse,
-    SemanticHint, SourceDocument, TrackyError,
+    normalize_candidate_description, CandidateStatus, CandidateTransaction, DirectionHint,
+    DocumentDuplicateState, DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState,
+    PdfInspectResponse, SemanticHint, SourceDocument, TrackyError,
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1238,8 +1238,6 @@ pub fn persist_pdf_import(
         });
     }
 
-    let started_at = sqlite_now(connection)?;
-    let completed_at = sqlite_now(connection)?;
     let status = if inspect.errors.is_empty() {
         ImportBatchStatus::Completed
     } else if inspect.candidates.is_empty() {
@@ -1247,76 +1245,14 @@ pub fn persist_pdf_import(
     } else {
         ImportBatchStatus::CompletedWithErrors
     };
-    let mut source_document = inspect.source_document;
-    source_document.document_duplicate_status = DocumentDuplicateStatus {
-        status: DocumentDuplicateState::New,
-        matched_source_document_id: None,
-        reason: None,
-    };
-    let batch = ImportBatch {
-        id: import_batch_id(&source_document.content_sha256),
-        source_document_id: source_document.id.clone(),
-        started_at,
-        completed_at: Some(completed_at),
-        status,
-        candidate_count: inspect.candidates.len(),
-        error_count: inspect.errors.len(),
-        duplicate_count: 0,
-    };
-    let mut candidates = inspect.candidates;
-    mark_candidate_duplicates(connection, &mut candidates)?;
-    let duplicate_count = candidates
-        .iter()
-        .filter(|candidate| is_duplicate_status(&candidate.duplicate_status.status))
-        .count();
-    for candidate in &mut candidates {
-        candidate.import_batch_id = Some(batch.id.clone());
-        candidate.source_document_id = source_document.id.clone();
-        candidate.provenance.source_document_id = source_document.id.clone();
-    }
-    let batch = ImportBatch {
-        duplicate_count,
-        ..batch
-    };
-    let source_account_resolution = resolve_owned_account(
+    let (source_document, batch, candidates) = persist_review_first_boundary(
         connection,
-        &source_document.institution_hint,
-        &source_document.account_hint,
+        inspect.source_document,
+        inspect.candidates,
+        status,
+        &inspect.errors,
+        |_, _| Ok(()),
     )?;
-    let candidate_account_resolutions = candidates
-        .iter()
-        .map(|candidate| {
-            resolve_owned_account(
-                connection,
-                &candidate.institution_hint,
-                &candidate.account_hint,
-            )
-            .map(|resolution| (candidate.id.clone(), resolution))
-        })
-        .collect::<Result<std::collections::HashMap<_, _>>>()?;
-
-    let tx = connection
-        .transaction()
-        .context("starting import transaction")?;
-    insert_source_document(&tx, &source_document, source_account_resolution.as_ref())?;
-    insert_import_batch(&tx, &batch, &inspect.errors)?;
-    for candidate in &candidates {
-        insert_candidate(
-            &tx,
-            candidate,
-            &source_document,
-            &batch.id,
-            candidate_account_resolutions
-                .get(&candidate.id)
-                .and_then(Option::as_ref),
-        )?;
-        insert_provenance(&tx, candidate, &source_document, &batch.id)?;
-        insert_fingerprint(&tx, candidate)?;
-    }
-    for candidate in &candidates {
-        insert_duplicate_markers(&tx, candidate)?;
-    }
-    tx.commit().context("committing pdf import")?;
 
     Ok(ImportPdfResponse {
         schema_version: IMPORT_PDF_SCHEMA_VERSION,
@@ -1816,10 +1752,104 @@ fn insert_fingerprint(connection: &Connection, candidate: &CandidateTransaction)
             candidate.posted_date,
             candidate.amount_minor,
             normalized_currency(candidate.currency),
-            candidate.description.to_ascii_lowercase(),
+            normalize_candidate_description(&candidate.description),
         ],
     )?;
     Ok(())
+}
+
+pub(crate) fn persist_mixed_review_first<F>(
+    connection: &mut Connection,
+    source: SourceDocument,
+    candidates: Vec<CandidateTransaction>,
+    persist_additional: F,
+) -> Result<(String, Vec<CandidateTransaction>)>
+where
+    F: FnOnce(&Connection, &str) -> Result<()>,
+{
+    let (source, batch, candidates) = persist_review_first_boundary(
+        connection,
+        source,
+        candidates,
+        ImportBatchStatus::Completed,
+        &[],
+        persist_additional,
+    )?;
+    let _ = source;
+    Ok((batch.id, candidates))
+}
+
+fn persist_review_first_boundary<F>(
+    connection: &mut Connection,
+    mut source: SourceDocument,
+    mut candidates: Vec<CandidateTransaction>,
+    status: ImportBatchStatus,
+    errors: &[TrackyError],
+    persist_additional: F,
+) -> Result<(SourceDocument, ImportBatch, Vec<CandidateTransaction>)>
+where
+    F: FnOnce(&Connection, &str) -> Result<()>,
+{
+    mark_candidate_duplicates(connection, &mut candidates)?;
+    let batch_id = import_batch_id(&source.content_sha256);
+    for candidate in &mut candidates {
+        candidate.import_batch_id = Some(batch_id.clone());
+        candidate.source_document_id = source.id.clone();
+        candidate.provenance.source_document_id = source.id.clone();
+    }
+    source.document_duplicate_status = DocumentDuplicateStatus {
+        status: DocumentDuplicateState::New,
+        matched_source_document_id: None,
+        reason: None,
+    };
+    let resolutions = candidates
+        .iter()
+        .map(|candidate| {
+            resolve_owned_account(
+                connection,
+                &candidate.institution_hint,
+                &candidate.account_hint,
+            )
+            .map(|resolution| (candidate.id.clone(), resolution))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>>>()?;
+    let duplicate_count = candidates
+        .iter()
+        .filter(|candidate| is_duplicate_status(&candidate.duplicate_status.status))
+        .count();
+    let now = sqlite_now(connection)?;
+    let batch = ImportBatch {
+        id: batch_id.clone(),
+        source_document_id: source.id.clone(),
+        started_at: now.clone(),
+        completed_at: Some(now),
+        status,
+        candidate_count: candidates.len(),
+        error_count: errors.len(),
+        duplicate_count,
+    };
+    let source_resolution =
+        resolve_owned_account(connection, &source.institution_hint, &source.account_hint)?;
+    let tx = connection.transaction()?;
+    insert_source_document(&tx, &source, source_resolution.as_ref())?;
+    insert_import_batch(&tx, &batch, errors)?;
+    for candidate in &candidates {
+        insert_candidate(
+            &tx,
+            candidate,
+            &source,
+            &batch_id,
+            resolutions.get(&candidate.id).and_then(Option::as_ref),
+        )?;
+        insert_provenance(&tx, candidate, &source, &batch_id)?;
+        insert_fingerprint(&tx, candidate)?;
+    }
+    for candidate in &candidates {
+        insert_duplicate_markers(&tx, candidate)?;
+    }
+    persist_additional(&tx, &batch_id)?;
+    tx.commit()?;
+    Ok((source, batch, candidates))
 }
 
 fn institution_id(institution: &str) -> String {

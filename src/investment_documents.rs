@@ -1,20 +1,17 @@
-use crate::investment_document_parsers::{detect_and_parse, extract};
+use crate::investment_document_parsers::{detect_and_parse_with_ordinary, extract};
 use crate::investments::canonical_exact_decimal;
-use crate::pdf::{hex_sha256, source_document_id, ExtractedLine};
-use crate::storage::apply_migrations;
+use crate::pdf::{hex_sha256, source_document_id, CandidateTransaction, ExtractedLine};
+use crate::storage::{apply_migrations, persist_mixed_review_first};
 use anyhow::Result;
 use regex::Regex;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::Path};
 
 pub const SCHEMA_VERSION: &str = "tracky.investment-documents.v1";
+pub const MIXED_NU_SCHEMA_VERSION: &str = "tracky.investment-documents.v2";
 pub(crate) const PARSER_VERSION: &str = "1";
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -103,6 +100,8 @@ pub struct Response {
     pub source_document_id: Option<String>,
     pub import_batch_id: Option<String>,
     pub events: Vec<ProviderEvent>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ordinary_candidates: Vec<CandidateTransaction>,
     pub candidates: Vec<ReconciliationCandidate>,
     pub audit_chain: Option<AuditChain>,
     pub errors: Vec<Error>,
@@ -125,13 +124,14 @@ pub fn inspect(path: &Path, credential: Option<&str>) -> Result<Response> {
         Ok(lines) => lines,
         Err(_) => return Ok(err("investment-documents inspect", extraction_error())),
     };
-    Ok(match detect_and_parse(&source, &lines) {
-        Ok((provider, events)) => ok(
+    Ok(match detect_and_parse_with_ordinary(&source, &lines) {
+        Ok((provider, events, ordinary_candidates)) => response_with_ordinary(
             "investment-documents inspect",
             Some(provider),
             Some(source),
             None,
             events,
+            ordinary_candidates,
         ),
         Err(e) => err("investment-documents inspect", e),
     })
@@ -171,30 +171,60 @@ pub fn import(
         Ok(lines) => lines,
         Err(_) => return Ok(err("investment-documents import", extraction_error())),
     };
-    let (provider, mut events) = match detect_and_parse(&source, &lines) {
-        Ok(v) => v,
-        Err(e) => return Ok(err("investment-documents import", e)),
+    let (provider, mut events, ordinary_candidates) =
+        match detect_and_parse_with_ordinary(&source, &lines) {
+            Ok(v) => v,
+            Err(e) => return Ok(err("investment-documents import", e)),
+        };
+    let (account_label, account_currency) = match provider {
+        Provider::Nu => ("Nu account", "COP"),
+        Provider::Plenti => ("Plenti account", "COP"),
+        Provider::Wenia => ("Wenia account", "USD"),
     };
-    let batch = unique("batch", &hash);
-    let tx = connection.transaction()?;
-    tx.execute("INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size,institution_hint) VALUES(?1,?2,?3,'application/pdf',?4,?5)", params![source,path.file_name().and_then(|x|x.to_str()).unwrap_or("document.pdf"),hash,bytes.len() as i64,provider])?;
-    tx.execute("INSERT INTO import_batches(id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count,error_details_json) VALUES(?1,?2,?3,?3,'completed',?4,0,0,'[]')",params![batch,source,now(),events.len() as i64])?;
-    for e in &mut events {
-        e.import_batch_id = Some(batch.clone());
-        if tx.execute("INSERT INTO investment_document_events(id,source_document_id,import_batch_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'pending_review')",params![e.id,source,batch,e.provider,e.parser_id,e.parser_version,e.event_type,e.provider_effective_date,e.currency,e.amount_minor,e.instrument_hint,e.quantity,e.external_reference,e.page_number as i64,e.row_index as i64,e.evidence_redaction,e.fingerprint]).is_err() {
-            return Ok(err("investment-documents import", Error { code:"duplicate_provider_movement", path:"events.fingerprint", message:"A normalized provider movement from this document was already imported.".into() }));
-        }
-        let provenance_id = format!("prov_{}", &digest(&e.id)[..24]);
-        tx.execute("INSERT INTO provenance(id,investment_document_event_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence) VALUES(?1,?2,?3,?4,?5,?6,'pdf_oxide',NULL,?7,?8,?9,?9,'redacted_only',1.0)",params![provenance_id,e.id,source,batch,e.page_number as i64,e.row_index as i64,e.parser_id,e.parser_version,e.evidence_redaction])?;
-        e.provenance_id = Some(provenance_id);
-    }
-    tx.commit()?;
-    Ok(ok(
+    let source_document = crate::pdf::SourceDocument {
+        id: source.clone(),
+        input_name: path
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or("document.pdf")
+            .into(),
+        content_sha256: hash.clone(),
+        mime_type: "application/pdf",
+        byte_size: bytes.len() as u64,
+        institution_hint: provider.to_string(),
+        account_hint: crate::pdf::AccountHint {
+            label: account_label.into(),
+            currency: account_currency,
+            masked_identifier: None,
+        },
+        document_duplicate_status: crate::pdf::DocumentDuplicateStatus {
+            status: crate::pdf::DocumentDuplicateState::New,
+            matched_source_document_id: None,
+            reason: None,
+        },
+    };
+    let (batch, ordinary_candidates) = persist_mixed_review_first(
+        connection,
+        source_document,
+        ordinary_candidates,
+        |tx, batch| {
+            for event in &mut events {
+                event.import_batch_id = Some(batch.to_string());
+                tx.execute("INSERT INTO investment_document_events(id,source_document_id,import_batch_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,'pending_review')",params![event.id,source,batch,event.provider,event.parser_id,event.parser_version,event.event_type,event.provider_effective_date,event.currency,event.amount_minor,event.instrument_hint,event.quantity,event.external_reference,event.page_number as i64,event.row_index as i64,event.evidence_redaction,event.fingerprint])?;
+                let provenance_id = format!("prov_{}", &digest(&event.id)[..24]);
+                tx.execute("INSERT INTO provenance(id,investment_document_event_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence) VALUES(?1,?2,?3,?4,?5,?6,'pdf_oxide',NULL,?7,?8,?9,?9,'redacted_only',1.0)",params![provenance_id,event.id,source,batch,event.page_number as i64,event.row_index as i64,event.parser_id,event.parser_version,event.evidence_redaction])?;
+                event.provenance_id = Some(provenance_id);
+            }
+            Ok(())
+        },
+    )?;
+    Ok(response_with_ordinary(
         "investment-documents import",
         Some(provider),
         Some(source),
         Some(batch),
         events,
+        ordinary_candidates,
     ))
 }
 
@@ -270,16 +300,6 @@ pub(crate) fn redact(s: &str) -> String {
 pub(crate) fn digest(s: &str) -> String {
     format!("{:x}", Sha256::digest(s.as_bytes()))
 }
-fn unique(prefix: &str, seed: &str) -> String {
-    format!(
-        "{prefix}_{}_{}",
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-        &digest(seed)[..8]
-    )
-}
 pub(crate) fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -298,6 +318,7 @@ pub(crate) fn ok(
         source_document_id,
         import_batch_id,
         events,
+        ordinary_candidates: vec![],
         candidates: vec![],
         audit_chain: None,
         errors: vec![],
@@ -312,9 +333,37 @@ pub(crate) fn err(command: &'static str, e: Error) -> Response {
         source_document_id: None,
         import_batch_id: None,
         events: vec![],
+        ordinary_candidates: vec![],
         candidates: vec![],
         audit_chain: None,
         errors: vec![e],
+    }
+}
+
+fn response_with_ordinary(
+    command: &'static str,
+    provider: Option<Provider>,
+    source_document_id: Option<String>,
+    import_batch_id: Option<String>,
+    events: Vec<ProviderEvent>,
+    ordinary_candidates: Vec<CandidateTransaction>,
+) -> Response {
+    Response {
+        schema_version: if provider == Some(Provider::Nu) {
+            MIXED_NU_SCHEMA_VERSION
+        } else {
+            SCHEMA_VERSION
+        },
+        command,
+        ok: true,
+        provider,
+        source_document_id,
+        import_batch_id,
+        events,
+        ordinary_candidates,
+        candidates: vec![],
+        audit_chain: None,
+        errors: vec![],
     }
 }
 
@@ -329,6 +378,7 @@ fn extraction_error() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::investment_document_parsers::detect_and_parse;
     use crate::pdf::BBox;
 
     fn line(page: usize, text: &str) -> ExtractedLine {
@@ -431,6 +481,64 @@ mod tests {
             .evidence_redaction
             .chars()
             .all(|c| !c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn nu_mixed_layout_emits_ordinary_rows_without_duplicating_provider_rows() {
+        let lines = vec![
+            line(1, "Llegó tu extracto de Mayo 2026 CDT Nu"),
+            cell(2, "17 may", 40.0, 300.0),
+            cell(2, "Recibiste transferencia", 120.0, 300.0),
+            cell(2, "+$3.500,00", 360.0, 301.0),
+            cell(2, "18 may Abriste un CDT", 40.0, 320.0),
+            cell(2, "-$2.000,00", 360.0, 320.0),
+        ];
+        let (_, events, candidates) = detect_and_parse_with_ordinary("src", &lines).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].amount_minor, 350_000);
+        assert!(candidates[0].provenance.bbox.is_some());
+        assert_eq!(
+            candidates[0].provenance.evidence.text,
+            "## may <description> <amount>"
+        );
+        assert!(!candidates[0]
+            .provenance
+            .evidence
+            .text
+            .contains("transferencia"));
+    }
+
+    #[test]
+    fn nu_linear_and_layout_ordinary_copies_prefer_layout_provenance() {
+        let lines = vec![
+            line(1, "Llegó tu extracto de Junio 2026 CDT Nu"),
+            line(2, "17 jun Recibiste transferencia +$3.500,00"),
+            cell(2, "17 jun Recibiste transferencia", 40.0, 300.0),
+            cell(2, "+$3.500,00", 360.0, 300.0),
+            line(2, "18 jun Abriste un CDT -$2.000,00"),
+        ];
+        let (_, _, candidates) = detect_and_parse_with_ordinary("src", &lines).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].provenance.bbox.is_some());
+    }
+
+    #[test]
+    fn nu_card_payment_remains_transfer_like_for_review() {
+        let lines = vec![
+            line(1, "Llegó tu extracto de Mayo 2026 CDT Nu"),
+            line(2, "17 may Pagaste tu tarjeta Nu -$3.500,00"),
+            line(2, "18 may Abriste un CDT -$2.000,00"),
+        ];
+        let (_, _, candidates) = detect_and_parse_with_ordinary("src", &lines).unwrap();
+        assert_eq!(
+            candidates[0].semantic_hint,
+            crate::pdf::SemanticHint::CardPayment
+        );
+        assert_eq!(
+            candidates[0].direction_hint,
+            crate::pdf::DirectionHint::Outflow
+        );
     }
 
     #[test]
