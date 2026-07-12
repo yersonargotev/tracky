@@ -930,7 +930,13 @@ fn unscaled(v: i128) -> String {
     let x = format!("{f:018}").trim_end_matches('0').to_string();
     format!("{}{}.{}", if neg { "-" } else { "" }, w, x)
 }
-fn signed_decimal(v: &str) -> Option<String> {
+pub(crate) fn validate_integrity(c: &Connection) -> Result<()> {
+    derived_closing_positions(c, "9999-12-31")?;
+    adjustments(c, None)?;
+    Ok(())
+}
+
+pub(crate) fn signed_decimal(v: &str) -> Option<String> {
     let n = scaled(v)?;
     Some(unscaled(n))
 }

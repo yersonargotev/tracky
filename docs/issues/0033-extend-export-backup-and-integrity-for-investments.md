@@ -13,12 +13,12 @@ Extend Tracky's operational safety surface so investment data is included in bac
 
 ## Acceptance criteria
 
-- [ ] Backup and restore verification preserve investment contributions, instruments, allocations, lifecycle events, positions, snapshots, reconciliations, adjustments, and provenance.
-- [ ] Structured export includes investment data and stable links back to canonical cash transactions without silently flattening quantities or currencies.
-- [ ] Default export preserves the same canonical-versus-pending boundary used for other Tracky data, with review/audit information available only through an explicit option.
-- [ ] Integrity checks detect broken contribution allocations, impossible position balances, duplicate lifecycle links, missing snapshot sources, and orphaned provenance.
-- [ ] Integrity and export commands remain safe for local-first use and avoid unrelated writes to user configuration.
-- [ ] Focused tests cover round-trip backup, export shape, restored investment reports, and representative integrity failures.
+- [x] Backup and restore verification preserve investment contributions, instruments, allocations, lifecycle events, positions, snapshots, reconciliations, adjustments, and provenance.
+- [x] Structured export includes investment data and stable links back to canonical cash transactions without silently flattening quantities or currencies.
+- [x] Default export preserves the same canonical-versus-pending boundary used for other Tracky data, with review/audit information available only through an explicit option.
+- [x] Integrity checks detect broken contribution allocations, impossible position balances, duplicate lifecycle links, missing snapshot sources, and orphaned provenance.
+- [x] Integrity and export commands remain safe for local-first use and avoid unrelated writes to user configuration.
+- [x] Focused tests cover round-trip backup, export shape, restored investment reports, and representative integrity failures.
 
 ## Blocked by
 

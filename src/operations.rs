@@ -32,6 +32,7 @@ pub enum FindingCategory {
     SqliteCorruption,
     SchemaIncompatibility,
     BrokenReference,
+    InvariantViolation,
 }
 
 #[derive(Debug, Serialize)]
@@ -55,6 +56,7 @@ pub struct IntegrityFinding {
     pub category: FindingCategory,
     pub code: &'static str,
     pub entity: &'static str,
+    pub id: String,
     pub count: i64,
 }
 
@@ -200,6 +202,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
                     category: FindingCategory::SqliteCorruption,
                     code: "sqlite_integrity_failed",
                     entity: "database",
+                    id: "database:sqlite_integrity_failed".into(),
                     count: 1,
                 });
             }
@@ -228,6 +231,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
             category: FindingCategory::SchemaIncompatibility,
             code: "unsupported_schema_version",
             entity: "schema",
+            id: "schema:unsupported_schema_version".into(),
             count: 1,
         });
     }
@@ -239,6 +243,44 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
         ("transaction_lines", "transaction_lines"),
         ("canonical_transfer_pairs", "canonical_transfer_pairs"),
         ("provenance", "provenance"),
+        ("investment_instruments", "investment_instruments"),
+        (
+            "investment_allocation_revisions",
+            "investment_allocation_revisions",
+        ),
+        ("investment_allocation_heads", "investment_allocation_heads"),
+        (
+            "investment_allocation_consumptions",
+            "investment_allocation_consumptions",
+        ),
+        ("cdt_positions", "cdt_positions"),
+        ("cdt_operation_revisions", "cdt_operation_revisions"),
+        ("cdt_operation_heads", "cdt_operation_heads"),
+        ("brokerage_accounts", "brokerage_accounts"),
+        (
+            "brokerage_operation_revisions",
+            "brokerage_operation_revisions",
+        ),
+        ("brokerage_operation_heads", "brokerage_operation_heads"),
+        (
+            "brokerage_buy_funding_attributions",
+            "brokerage_buy_funding_attributions",
+        ),
+        ("investment_snapshots", "investment_snapshots"),
+        (
+            "investment_snapshot_positions",
+            "investment_snapshot_positions",
+        ),
+        (
+            "investment_snapshot_baselines",
+            "investment_snapshot_baselines",
+        ),
+        (
+            "investment_adjustment_revisions",
+            "investment_adjustment_revisions",
+        ),
+        ("investment_adjustment_heads", "investment_adjustment_heads"),
+        ("investment_document_events", "investment_document_events"),
     ];
     for (entity, table) in tables {
         match c.query_row(&format!("SELECT count(*) FROM {table}"), [], |x| {
@@ -257,26 +299,28 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
         }
     }
     struct IntegrityCheck {
+        category: FindingCategory,
         code: &'static str,
         entity: &'static str,
         sql: &'static str,
     }
     let checks = [
-      IntegrityCheck { code:"transaction_account_missing", entity:"canonical_transactions", sql:"SELECT count(*) FROM canonical_transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE t.account_id IS NOT NULL AND a.id IS NULL" },
-      IntegrityCheck { code:"transaction_income_source_missing", entity:"canonical_transactions", sql:"SELECT count(*) FROM canonical_transactions t LEFT JOIN income_sources s ON s.id=t.income_source_id WHERE t.income_source_id IS NOT NULL AND s.id IS NULL" },
-      IntegrityCheck { code:"line_transaction_missing", entity:"transaction_lines", sql:"SELECT count(*) FROM transaction_lines l LEFT JOIN canonical_transactions t ON t.id=l.canonical_transaction_id WHERE t.id IS NULL" },
-      IntegrityCheck { code:"line_category_missing", entity:"transaction_lines", sql:"SELECT count(*) FROM transaction_lines l LEFT JOIN categories c ON c.id=l.category_id WHERE c.id IS NULL" },
-      IntegrityCheck { code:"transfer_leg_missing_or_incompatible", entity:"canonical_transfer_pairs", sql:"SELECT count(*) FROM canonical_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR f.amount_minor<>-p.amount_minor OR t.amount_minor<>p.amount_minor" },
-      IntegrityCheck { code:"manual_transfer_leg_missing_or_incompatible", entity:"manual_transfer_pairs", sql:"SELECT count(*) FROM manual_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR f.amount_minor<>-p.amount_minor OR t.amount_minor<>p.amount_minor" },
-      IntegrityCheck { code:"provenance_target_missing", entity:"provenance", sql:"SELECT count(*) FROM provenance p LEFT JOIN candidate_transactions c ON c.id=p.candidate_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE (p.candidate_transaction_id IS NOT NULL AND c.id IS NULL) OR (p.canonical_transaction_id IS NOT NULL AND t.id IS NULL)" },
-      IntegrityCheck { code:"manual_provenance_target_missing", entity:"manual_transaction_provenance", sql:"SELECT count(*) FROM manual_transaction_provenance p LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE t.id IS NULL" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"transaction_account_missing", entity:"canonical_transactions", sql:"SELECT count(*) FROM canonical_transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE t.account_id IS NOT NULL AND a.id IS NULL" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"transaction_income_source_missing", entity:"canonical_transactions", sql:"SELECT count(*) FROM canonical_transactions t LEFT JOIN income_sources s ON s.id=t.income_source_id WHERE t.income_source_id IS NOT NULL AND s.id IS NULL" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"line_transaction_missing", entity:"transaction_lines", sql:"SELECT count(*) FROM transaction_lines l LEFT JOIN canonical_transactions t ON t.id=l.canonical_transaction_id WHERE t.id IS NULL" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"line_category_missing", entity:"transaction_lines", sql:"SELECT count(*) FROM transaction_lines l LEFT JOIN categories c ON c.id=l.category_id WHERE c.id IS NULL" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"transfer_leg_missing_or_incompatible", entity:"canonical_transfer_pairs", sql:"SELECT count(*) FROM canonical_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR f.amount_minor<>-p.amount_minor OR t.amount_minor<>p.amount_minor" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"manual_transfer_leg_missing_or_incompatible", entity:"manual_transfer_pairs", sql:"SELECT count(*) FROM manual_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR f.amount_minor<>-p.amount_minor OR t.amount_minor<>p.amount_minor" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"provenance_target_missing", entity:"provenance", sql:"SELECT count(*) FROM provenance p LEFT JOIN candidate_transactions c ON c.id=p.candidate_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE (p.candidate_transaction_id IS NOT NULL AND c.id IS NULL) OR (p.canonical_transaction_id IS NOT NULL AND t.id IS NULL)" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"manual_provenance_target_missing", entity:"manual_transaction_provenance", sql:"SELECT count(*) FROM manual_transaction_provenance p LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE t.id IS NULL" },
     ];
     for check in checks {
         match c.query_row(check.sql, [], |x| x.get::<_, i64>(0)) {
             Ok(count) if count > 0 => r.findings.push(IntegrityFinding {
-                category: FindingCategory::BrokenReference,
+                category: check.category,
                 code: check.code,
                 entity: check.entity,
+                id: format!("{}:{}", check.entity, check.code),
                 count,
             }),
             Ok(_) => {}
@@ -291,6 +335,37 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
             }
         }
     }
+    match crate::investment_integrity::findings(&c) {
+        Ok(findings) => r
+            .findings
+            .extend(findings.into_iter().map(|finding| IntegrityFinding {
+                category: match finding.kind {
+                    crate::investment_integrity::Kind::Broken => FindingCategory::BrokenReference,
+                    crate::investment_integrity::Kind::Invariant => {
+                        FindingCategory::InvariantViolation
+                    }
+                },
+                code: finding.code,
+                entity: finding.entity,
+                id: format!("{}:{}", finding.entity, finding.code),
+                count: finding.count,
+            })),
+        Err(e) => {
+            r.errors.push(error(
+                OperationErrorCategory::Operational,
+                "investment_integrity_failed",
+                e.to_string(),
+                "db",
+            ));
+            return r;
+        }
+    }
+    r.findings.sort_by(|left, right| {
+        format!("{:?}", left.category)
+            .cmp(&format!("{:?}", right.category))
+            .then(left.entity.cmp(right.entity))
+            .then(left.id.cmp(&right.id))
+    });
     r.ok = r.sqlite_integrity == "ok" && r.findings.is_empty() && r.errors.is_empty();
     r
 }
@@ -370,6 +445,24 @@ pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
       ExportQuery{name:"transfer_pairs",sql:"SELECT id,transfer_kind,posted_date,amount_minor,currency,from_account_id,to_account_id,from_candidate_id,to_candidate_id,from_canonical_transaction_id,to_canonical_transaction_id,accepted_at FROM canonical_transfer_pairs ORDER BY posted_date,id"},
       ExportQuery{name:"manual_transfer_pairs",sql:"SELECT id,posted_date,amount_minor,currency,from_account_id,to_account_id,from_canonical_transaction_id,to_canonical_transaction_id,created_at FROM manual_transfer_pairs ORDER BY posted_date,id"},
       ExportQuery{name:"provenance",sql:"SELECT id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE canonical_transaction_id IS NOT NULL ORDER BY canonical_transaction_id,id"},
+      ExportQuery{name:"investment_instruments",sql:"SELECT id,name,instrument_type,denomination_currency,provider,provider_identifier,created_at FROM investment_instruments ORDER BY id"},
+      ExportQuery{name:"investment_allocation_revisions",sql:"SELECT id,allocation_id,revision,contribution_transaction_id,instrument_id,cash_amount_minor,cash_currency,acquired_quantity,effective_date,fee_amount_minor,fee_currency,fee_treatment,fee_component_id,fee_expense_transaction_id,provenance_source,correction_reason,replaces_revision_id,created_at FROM investment_allocation_revisions ORDER BY allocation_id,revision,id"},
+      ExportQuery{name:"investment_allocation_heads",sql:"SELECT allocation_id,current_revision_id FROM investment_allocation_heads ORDER BY allocation_id"},
+      ExportQuery{name:"investment_allocation_consumptions",sql:"SELECT allocation_id,consumer_kind,cdt_position_id,consumer_operation_id,created_at FROM investment_allocation_consumptions ORDER BY allocation_id"},
+      ExportQuery{name:"cdt_positions",sql:"SELECT id,instrument_id,account_id,constituent_allocation_id,created_at FROM cdt_positions ORDER BY id"},
+      ExportQuery{name:"cdt_operation_revisions",sql:"SELECT id,operation_id,revision,cdt_position_id,operation_type,effective_date,currency,principal_before_minor,principal_after_minor,principal_returned_minor,external_capital_minor,capitalized_interest_minor,gross_interest_minor,withholding_minor,other_deductions_minor,net_cash_received_minor,funding_allocation_id,maturity_date,agreed_rate,payment_mode,payment_periodicity,renewal_terms,contract_identifier,allows_partial_redemption,deduction_component_id,deduction_expense_transaction_id,provenance_source,correction_reason,replaces_revision_id,created_at FROM cdt_operation_revisions ORDER BY operation_id,revision,id"},
+      ExportQuery{name:"cdt_operation_heads",sql:"SELECT operation_id,current_revision_id FROM cdt_operation_heads ORDER BY operation_id"},
+      ExportQuery{name:"brokerage_accounts",sql:"SELECT account_id,opened_date,provenance_source,created_at FROM brokerage_accounts ORDER BY account_id"},
+      ExportQuery{name:"brokerage_operation_revisions",sql:"SELECT id,operation_id,revision,account_id,operation_type,effective_date,currency,instrument_id,quantity,gross_amount_minor,historical_cost_minor,realized_result_minor,fee_minor,fee_treatment,withholding_minor,other_deductions_minor,net_cash_minor,funding_allocation_id,destination_account_id,linked_transaction_id,component_id,provenance_source,correction_reason,replaces_revision_id,created_at FROM brokerage_operation_revisions ORDER BY operation_id,revision,id"},
+      ExportQuery{name:"brokerage_operation_heads",sql:"SELECT operation_id,current_revision_id FROM brokerage_operation_heads ORDER BY operation_id"},
+      ExportQuery{name:"brokerage_buy_funding_attributions",sql:"SELECT operation_revision_id,external_capital_minor,existing_cash_minor,reinvested_minor,investment_income_minor,unattributed_minor FROM brokerage_buy_funding_attributions ORDER BY operation_revision_id"},
+      ExportQuery{name:"investment_snapshots",sql:"SELECT id,observed_at,provider_effective_date,source,external_reference,provenance_source,created_at FROM investment_snapshots ORDER BY observed_at,id"},
+      ExportQuery{name:"investment_snapshot_positions",sql:"SELECT snapshot_id,account_id,instrument_id,quantity,currency,observed_cash_minor,observed_value_minor,valuation_currency,observed_price FROM investment_snapshot_positions ORDER BY snapshot_id,account_id,instrument_id,currency"},
+      ExportQuery{name:"investment_snapshot_baselines",sql:"SELECT snapshot_id,account_id,instrument_id,currency,status,quantity_difference,cash_difference_minor,derived_historical_cost_minor,derived_value_minor,value_difference_minor FROM investment_snapshot_baselines ORDER BY snapshot_id,account_id,instrument_id,currency"},
+      ExportQuery{name:"investment_adjustment_revisions",sql:"SELECT id,adjustment_id,revision,snapshot_id,account_id,instrument_id,currency,quantity_delta,cash_delta_minor,historical_cost_delta_minor,effective_date,reason,provenance_source,correction_reason,replaces_revision_id,created_at FROM investment_adjustment_revisions ORDER BY adjustment_id,revision,id"},
+      ExportQuery{name:"investment_adjustment_heads",sql:"SELECT adjustment_id,current_revision_id FROM investment_adjustment_heads ORDER BY adjustment_id"},
+      ExportQuery{name:"accepted_investment_document_events",sql:"SELECT id,source_document_id,import_batch_id,account_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status,decision,reconciled_kind,reconciled_id,accepted_snapshot_id,reviewed_at,created_at FROM investment_document_events WHERE status='accepted' ORDER BY provider_effective_date,id"},
+      ExportQuery{name:"investment_provenance",sql:"SELECT p.id,p.investment_document_event_id,p.investment_snapshot_id,p.source_document_id,p.import_batch_id,p.page_number,p.row_index,p.extractor_name,p.extractor_version,p.parser_id,p.parser_version,p.evidence_redaction,p.evidence_text_redacted,p.raw_storage_policy,p.confidence,p.created_at FROM provenance p LEFT JOIN investment_document_events e ON e.id=p.investment_document_event_id WHERE p.investment_snapshot_id IS NOT NULL OR e.status='accepted' ORDER BY COALESCE(p.investment_document_event_id,p.investment_snapshot_id),p.id"},
       ExportQuery{name:"manual_provenance",sql:"SELECT canonical_transaction_id,entry_id,source,created_at FROM manual_transaction_provenance ORDER BY canonical_transaction_id"}];
     if let Err(e) = export_queries(&c, &mut r, &queries) {
         r.errors.push(error(
@@ -385,7 +478,8 @@ pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
       ExportQuery{name:"review_candidates",sql:"SELECT id,import_batch_id,source_document_id,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,posted_date,description,amount_minor,currency,balance_minor,direction_hint,semantic_hint,confidence,status,duplicate_status,fingerprint,validation_warnings_json,canonical_transaction_id,created_at FROM candidate_transactions ORDER BY import_batch_id,id"},
       ExportQuery{name:"import_batches",sql:"SELECT id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count FROM import_batches ORDER BY started_at,id"},
       ExportQuery{name:"source_documents",sql:"SELECT id,mime_type,byte_size,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,imported_at,duplicate_of_source_document_id FROM source_documents ORDER BY imported_at,id"},
-      ExportQuery{name:"review_provenance",sql:"SELECT id,candidate_transaction_id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE candidate_transaction_id IS NOT NULL ORDER BY candidate_transaction_id,id"}];
+      ExportQuery{name:"review_provenance",sql:"SELECT id,candidate_transaction_id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE candidate_transaction_id IS NOT NULL ORDER BY candidate_transaction_id,id"},
+      ExportQuery{name:"investment_document_review_events",sql:"SELECT id,source_document_id,import_batch_id,account_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status,decision,reconciled_kind,reconciled_id,accepted_snapshot_id,reviewed_at,created_at FROM investment_document_events ORDER BY provider_effective_date,id"}];
         if let Err(e) = export_queries(&c, &mut r, &extra) {
             r.errors.push(error(
                 OperationErrorCategory::SchemaIncompatibility,
