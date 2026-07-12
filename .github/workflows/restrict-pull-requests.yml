@@ -1,0 +1,29 @@
+name: Restrict pull requests
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  close-untrusted:
+    if: github.event.pull_request.author_association != 'OWNER' && github.event.pull_request.author_association != 'MEMBER' && github.event.pull_request.author_association != 'COLLABORATOR'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close pull request
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              ...context.repo,
+              issue_number: context.issue.number,
+              body: 'Thanks for your interest. Tracky currently accepts public issues only; code changes are limited to the owner and designated maintainers.'
+            });
+            await github.rest.pulls.update({
+              ...context.repo,
+              pull_number: context.issue.number,
+              state: 'closed'
+            });

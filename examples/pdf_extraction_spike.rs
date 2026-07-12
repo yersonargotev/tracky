@@ -182,7 +182,7 @@ fn main() -> Result<()> {
 
     let summary = summarize(&documents);
     let report = SpikeReport {
-        generated_by: "cargo run --bin pdf-extraction-spike -- --pretty".to_string(),
+        generated_by: "cargo run --example pdf_extraction_spike -- --pretty".to_string(),
         inputs: files.iter().map(|path| display_path(path)).collect(),
         extractors: vec!["pdf_oxide", "pdfium-render"],
         documents,

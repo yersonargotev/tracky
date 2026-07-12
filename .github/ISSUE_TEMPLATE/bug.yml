@@ -1,0 +1,34 @@
+name: Bug report
+description: Report a reproducible Tracky CLI problem
+title: "bug: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: Never include real statements, credentials, account numbers, or unredacted financial data.
+  - type: input
+    id: version
+    attributes:
+      label: Tracky version
+      placeholder: "tracky 0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide minimal commands and synthetic or redacted inputs.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true

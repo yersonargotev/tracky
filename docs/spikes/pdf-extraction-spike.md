@@ -56,7 +56,7 @@ For each extractor, record whether it:
 Implemented a minimal local diagnostic binary:
 
 ```bash
-cargo run --bin pdf-extraction-spike -- --pretty --no-prompt --output target/spike/pdf-extraction-results.json
+cargo run --example pdf_extraction_spike -- --pretty --no-prompt --output target/spike/pdf-extraction-results.json
 ```
 
 Behavior:
@@ -156,7 +156,7 @@ Added a first deterministic parser prototype on top of `pdf_oxide` line/bbox out
 Command:
 
 ```bash
-cargo run --bin pdf-extraction-spike -- --pretty --no-prompt --output target/spike/pdf-parser-diagnostic.json
+cargo run --example pdf_extraction_spike -- --pretty --no-prompt --output target/spike/pdf-parser-diagnostic.json
 ```
 
 The JSON now includes `documents[].parsing` with:

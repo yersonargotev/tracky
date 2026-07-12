@@ -2,6 +2,18 @@
 
 Tracky is a local-first finance tracker. The current implemented path is a CLI/JSON-first, review-first workflow for supported statement PDFs: inspect a document, import reviewable candidate transactions, then explicitly accept or reject candidates.
 
+## Install
+
+Install the latest release with Homebrew:
+
+```bash
+brew install yersonargotev/tap/tracky
+```
+
+Prebuilt archives and checksums for supported platforms are also available from
+[GitHub Releases](https://github.com/yersonargotev/tracky/releases). Tracky is currently CLI-only;
+the TUI is intentionally deferred.
+
 ## Review-first PDF workflow
 
 Tracky's PDF commands are designed so extraction can be aggressive without corrupting canonical finance data. Imported movements become **candidate transactions** first; they do not affect canonical reports, balances, categories, transfers, or income until an explicit review action accepts them.

@@ -1,0 +1,18 @@
+name: Feature request
+description: Propose a Tracky CLI improvement
+title: "feature: "
+labels: []
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the user problem without including private financial data.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed CLI behavior
+    validations:
+      required: true
