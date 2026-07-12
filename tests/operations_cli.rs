@@ -109,6 +109,135 @@ fn integrity_distinguishes_incompatible_schema() {
 }
 
 #[test]
+fn integrity_reports_orphan_lines_manual_transfers_and_provenance() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("broken.sqlite3");
+    let c = database(&path);
+    c.execute("PRAGMA foreign_keys=OFF", []).unwrap();
+    c.execute("INSERT INTO categories(id,name) VALUES('cat','Food')", [])
+        .unwrap();
+    c.execute("INSERT INTO transaction_lines(id,canonical_transaction_id,category_id,amount_minor,currency,line_kind) VALUES('line','missing','cat',-1,'COP','expense')",[]).unwrap();
+    c.execute("INSERT INTO manual_transfer_pairs(id,posted_date,amount_minor,currency,from_account_id,to_account_id,from_canonical_transaction_id,to_canonical_transaction_id) VALUES('pair','2026-01-01',100,'COP','missing-a','missing-b','missing-from','missing-to')",[]).unwrap();
+    c.execute("INSERT INTO manual_transaction_provenance(canonical_transaction_id,entry_id,source) VALUES('missing-txn','entry','manual_entry')",[]).unwrap();
+    drop(c);
+    let (ok, json) = run(&["integrity", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(!ok);
+    let codes = json["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["code"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(codes.contains(&"line_transaction_missing"));
+    assert!(codes.contains(&"manual_transfer_leg_missing_or_incompatible"));
+    assert!(codes.contains(&"manual_provenance_target_missing"));
+}
+
+#[test]
+fn integrity_check_execution_failure_is_operational() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("invalid.sqlite3");
+    fs::write(&path, b"not a sqlite database").unwrap();
+    let (ok, json) = run(&["integrity", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(!ok);
+    assert_eq!(json["errors"][0]["category"], "operational");
+    assert_eq!(json["errors"][0]["code"], "integrity_check_failed");
+}
+
+#[test]
+fn empty_export_is_stable_and_read_only() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("empty.sqlite3");
+    drop(database(&path));
+    let before = fs::metadata(&path).unwrap().modified().unwrap();
+    let (ok, first) = run(&["export", "--db", path.to_str().unwrap(), "--json"]);
+    let (_, second) = run(&["export", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(ok);
+    assert_eq!(first, second);
+    assert_eq!(
+        first["entities"]["canonical_transactions"],
+        serde_json::json!([])
+    );
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+}
+
+#[test]
+fn export_includes_manual_transfer_and_manual_provenance_links() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("manual.sqlite3");
+    let (ok, created) = run(&[
+        "accounts",
+        "register",
+        "--db",
+        path.to_str().unwrap(),
+        "--institution",
+        "Bank",
+        "--label",
+        "A",
+        "--account-type",
+        "wallet",
+        "--currency",
+        "COP",
+        "--json",
+    ]);
+    assert!(ok);
+    let a = created["account"]["id"].as_str().unwrap().to_owned();
+    let (ok, created) = run(&[
+        "accounts",
+        "register",
+        "--db",
+        path.to_str().unwrap(),
+        "--institution",
+        "Bank",
+        "--label",
+        "B",
+        "--account-type",
+        "wallet",
+        "--currency",
+        "COP",
+        "--json",
+    ]);
+    assert!(ok);
+    let b = created["account"]["id"].as_str().unwrap().to_owned();
+    let (ok, _) = run(&[
+        "transactions",
+        "add-transfer",
+        "--db",
+        path.to_str().unwrap(),
+        "--from-account-id",
+        &a,
+        "--to-account-id",
+        &b,
+        "--posted-date",
+        "2026-01-01",
+        "--description",
+        "move",
+        "--amount-minor",
+        "100",
+        "--currency",
+        "COP",
+        "--json",
+    ]);
+    assert!(ok);
+    let (ok, json) = run(&["export", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(ok);
+    assert_eq!(
+        json["entities"]["manual_transfer_pairs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        json["entities"]["manual_provenance"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn export_preserves_exact_canonical_links_and_review_is_opt_in_and_redacted() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("ledger.sqlite3");

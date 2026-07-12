@@ -31,9 +31,9 @@ targets. It reports only and never repairs.
 Arrays and entity keys have deterministic ordering.
 
 The default `entities` are accounts, categories, income sources, canonical transactions,
-transaction lines, transfer pairs, and the minimal redacted provenance linked to canonical
-transactions. IDs, nullable fields, dates, currencies, and integer minor-unit amounts are
-preserved; relations are not replaced with display names.
+transaction lines, imported and manual transfer pairs, minimal redacted imported provenance,
+and manual-entry provenance. IDs, nullable fields, dates, currencies, and integer minor-unit
+amounts are preserved; relations are not replaced with display names.
 
 `--include-review-audit` additionally includes candidate transactions of every status, import
 batches, safe source-document metadata, and candidate provenance. Candidate status is the review

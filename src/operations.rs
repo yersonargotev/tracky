@@ -12,10 +12,25 @@ const EXPECTED_USER_VERSION: i64 = 1;
 
 #[derive(Debug, Serialize)]
 pub struct OperationError {
-    pub category: &'static str,
+    pub category: OperationErrorCategory,
     pub code: &'static str,
     pub message: String,
     pub path: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationErrorCategory {
+    Operational,
+    SchemaIncompatibility,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingCategory {
+    SqliteCorruption,
+    SchemaIncompatibility,
+    BrokenReference,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,7 +51,7 @@ pub struct Count {
 
 #[derive(Debug, Serialize)]
 pub struct IntegrityFinding {
-    pub category: &'static str,
+    pub category: FindingCategory,
     pub code: &'static str,
     pub entity: &'static str,
     pub count: i64,
@@ -65,7 +80,7 @@ pub struct ExportResponse {
 }
 
 fn error(
-    category: &'static str,
+    category: OperationErrorCategory,
     code: &'static str,
     message: impl Into<String>,
     path: &'static str,
@@ -97,7 +112,7 @@ pub fn backup(source: &Path, destination: &Path) -> BackupResponse {
     };
     if destination.exists() {
         response.errors.push(error(
-            "operational",
+            OperationErrorCategory::Operational,
             "destination_exists",
             "Backup destination already exists.",
             "destination",
@@ -130,7 +145,10 @@ pub fn backup(source: &Path, destination: &Path) -> BackupResponse {
         drop(destination_db);
         fs::hard_link(&temporary, destination)
             .with_context(|| format!("publishing backup {}", destination.display()))?;
-        fs::remove_file(&temporary).context("removing temporary backup link")?;
+        if let Err(remove_error) = fs::remove_file(&temporary) {
+            let _ = fs::remove_file(destination);
+            return Err(remove_error).context("removing temporary backup link");
+        }
         Ok(())
     })();
     match outcome {
@@ -141,7 +159,7 @@ pub fn backup(source: &Path, destination: &Path) -> BackupResponse {
         Err(e) => {
             let _ = fs::remove_file(&temporary);
             response.errors.push(error(
-                "operational",
+                OperationErrorCategory::Operational,
                 "backup_failed",
                 e.to_string(),
                 "backup",
@@ -166,7 +184,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
         Ok(c) => c,
         Err(e) => {
             r.errors.push(error(
-                "operational",
+                OperationErrorCategory::Operational,
                 "database_open_failed",
                 e.to_string(),
                 "db",
@@ -179,7 +197,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
             r.sqlite_integrity = v;
             if r.sqlite_integrity != "ok" {
                 r.findings.push(IntegrityFinding {
-                    category: "sqlite_corruption",
+                    category: FindingCategory::SqliteCorruption,
                     code: "sqlite_integrity_failed",
                     entity: "database",
                     count: 1,
@@ -188,7 +206,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
         }
         Err(e) => {
             r.errors.push(error(
-                "sqlite_corruption",
+                OperationErrorCategory::Operational,
                 "integrity_check_failed",
                 e.to_string(),
                 "db",
@@ -199,7 +217,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
     r.user_version = c.query_row("PRAGMA user_version", [], |x| x.get(0)).ok();
     if r.user_version != Some(EXPECTED_USER_VERSION) {
         r.findings.push(IntegrityFinding {
-            category: "schema_incompatibility",
+            category: FindingCategory::SchemaIncompatibility,
             code: "unsupported_schema_version",
             entity: "schema",
             count: 1,
@@ -221,7 +239,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
             Ok(count) => r.counts.push(Count { entity, count }),
             Err(e) => {
                 r.errors.push(error(
-                    "schema_incompatibility",
+                    OperationErrorCategory::SchemaIncompatibility,
                     "required_table_unavailable",
                     e.to_string(),
                     "schema",
@@ -230,26 +248,33 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
             }
         }
     }
+    struct IntegrityCheck {
+        code: &'static str,
+        entity: &'static str,
+        sql: &'static str,
+    }
     let checks = [
-      ("broken_reference","transaction_account_missing","canonical_transactions", "SELECT count(*) FROM canonical_transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE t.account_id IS NOT NULL AND a.id IS NULL"),
-      ("broken_reference","transaction_income_source_missing","canonical_transactions", "SELECT count(*) FROM canonical_transactions t LEFT JOIN income_sources s ON s.id=t.income_source_id WHERE t.income_source_id IS NOT NULL AND s.id IS NULL"),
-      ("broken_reference","line_transaction_missing","transaction_lines", "SELECT count(*) FROM transaction_lines l LEFT JOIN canonical_transactions t ON t.id=l.canonical_transaction_id WHERE t.id IS NULL"),
-      ("broken_reference","line_category_missing","transaction_lines", "SELECT count(*) FROM transaction_lines l LEFT JOIN categories c ON c.id=l.category_id WHERE c.id IS NULL"),
-      ("broken_reference","transfer_leg_missing_or_incompatible","canonical_transfer_pairs", "SELECT count(*) FROM canonical_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR abs(f.amount_minor)<>p.amount_minor OR abs(t.amount_minor)<>p.amount_minor"),
-      ("broken_reference","provenance_target_missing","provenance", "SELECT count(*) FROM provenance p LEFT JOIN candidate_transactions c ON c.id=p.candidate_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE (p.candidate_transaction_id IS NOT NULL AND c.id IS NULL) OR (p.canonical_transaction_id IS NOT NULL AND t.id IS NULL)"),
+      IntegrityCheck { code:"transaction_account_missing", entity:"canonical_transactions", sql:"SELECT count(*) FROM canonical_transactions t LEFT JOIN accounts a ON a.id=t.account_id WHERE t.account_id IS NOT NULL AND a.id IS NULL" },
+      IntegrityCheck { code:"transaction_income_source_missing", entity:"canonical_transactions", sql:"SELECT count(*) FROM canonical_transactions t LEFT JOIN income_sources s ON s.id=t.income_source_id WHERE t.income_source_id IS NOT NULL AND s.id IS NULL" },
+      IntegrityCheck { code:"line_transaction_missing", entity:"transaction_lines", sql:"SELECT count(*) FROM transaction_lines l LEFT JOIN canonical_transactions t ON t.id=l.canonical_transaction_id WHERE t.id IS NULL" },
+      IntegrityCheck { code:"line_category_missing", entity:"transaction_lines", sql:"SELECT count(*) FROM transaction_lines l LEFT JOIN categories c ON c.id=l.category_id WHERE c.id IS NULL" },
+      IntegrityCheck { code:"transfer_leg_missing_or_incompatible", entity:"canonical_transfer_pairs", sql:"SELECT count(*) FROM canonical_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR abs(f.amount_minor)<>p.amount_minor OR abs(t.amount_minor)<>p.amount_minor" },
+      IntegrityCheck { code:"manual_transfer_leg_missing_or_incompatible", entity:"manual_transfer_pairs", sql:"SELECT count(*) FROM manual_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR abs(f.amount_minor)<>p.amount_minor OR abs(t.amount_minor)<>p.amount_minor" },
+      IntegrityCheck { code:"provenance_target_missing", entity:"provenance", sql:"SELECT count(*) FROM provenance p LEFT JOIN candidate_transactions c ON c.id=p.candidate_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE (p.candidate_transaction_id IS NOT NULL AND c.id IS NULL) OR (p.canonical_transaction_id IS NOT NULL AND t.id IS NULL)" },
+      IntegrityCheck { code:"manual_provenance_target_missing", entity:"manual_transaction_provenance", sql:"SELECT count(*) FROM manual_transaction_provenance p LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE t.id IS NULL" },
     ];
-    for (category, code, entity, sql) in checks {
-        match c.query_row(sql, [], |x| x.get::<_, i64>(0)) {
+    for check in checks {
+        match c.query_row(check.sql, [], |x| x.get::<_, i64>(0)) {
             Ok(count) if count > 0 => r.findings.push(IntegrityFinding {
-                category,
-                code,
-                entity,
+                category: FindingCategory::BrokenReference,
+                code: check.code,
+                entity: check.entity,
                 count,
             }),
             Ok(_) => {}
             Err(e) => {
                 r.errors.push(error(
-                    "operational",
+                    OperationErrorCategory::Operational,
                     "integrity_query_failed",
                     e.to_string(),
                     "db",
@@ -288,6 +313,25 @@ fn rows(c: &Connection, sql: &str) -> Result<Value> {
     Ok(Value::Array(values))
 }
 
+#[derive(Clone, Copy)]
+struct ExportQuery {
+    name: &'static str,
+    sql: &'static str,
+}
+
+fn export_queries(
+    c: &Connection,
+    response: &mut ExportResponse,
+    queries: &[ExportQuery],
+) -> Result<()> {
+    for query in queries {
+        response
+            .entities
+            .insert(query.name.into(), rows(c, query.sql)?);
+    }
+    Ok(())
+}
+
 pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
     let mut r = ExportResponse {
         schema_version: EXPORT_SCHEMA_VERSION,
@@ -301,7 +345,7 @@ pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
         Ok(c) => c,
         Err(e) => {
             r.errors.push(error(
-                "operational",
+                OperationErrorCategory::Operational,
                 "database_open_failed",
                 e.to_string(),
                 "db",
@@ -310,50 +354,38 @@ pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
         }
     };
     let queries=[
-      ("accounts", "SELECT id,institution_id,label,currency,masked_identifier,kind,is_owned,created_at FROM accounts ORDER BY id"),
-      ("categories", "SELECT id,name,created_at FROM categories ORDER BY id"),
-      ("income_sources", "SELECT id,name,created_at FROM income_sources ORDER BY id"),
-      ("canonical_transactions", "SELECT id,account_id,posted_date,description,amount_minor,currency,balance_minor,transaction_kind,investment_allocation_status,income_source_id,income_kind,investment_fee_component_id,external_reference,created_from_candidate_id,created_at FROM canonical_transactions ORDER BY posted_date,id"),
-      ("transaction_lines", "SELECT id,canonical_transaction_id,category_id,amount_minor,currency,line_kind,created_at FROM transaction_lines ORDER BY canonical_transaction_id,id"),
-      ("transfer_pairs", "SELECT id,transfer_kind,posted_date,amount_minor,currency,from_account_id,to_account_id,from_candidate_id,to_candidate_id,from_canonical_transaction_id,to_canonical_transaction_id,accepted_at FROM canonical_transfer_pairs ORDER BY posted_date,id"),
-      ("provenance", "SELECT id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE canonical_transaction_id IS NOT NULL ORDER BY canonical_transaction_id,id")];
-    for (name, sql) in queries {
-        match rows(&c, sql) {
-            Ok(v) => {
-                r.entities.insert(name.into(), v);
-            }
-            Err(e) => {
-                r.errors.push(error(
-                    "schema_incompatibility",
-                    "export_query_failed",
-                    e.to_string(),
-                    "schema",
-                ));
-                return r;
-            }
-        }
+      ExportQuery{name:"accounts",sql:"SELECT id,institution_id,label,currency,masked_identifier,kind,is_owned,created_at FROM accounts ORDER BY id"},
+      ExportQuery{name:"categories",sql:"SELECT id,name,created_at FROM categories ORDER BY id"},
+      ExportQuery{name:"income_sources",sql:"SELECT id,name,created_at FROM income_sources ORDER BY id"},
+      ExportQuery{name:"canonical_transactions",sql:"SELECT id,account_id,posted_date,description,amount_minor,currency,balance_minor,transaction_kind,investment_allocation_status,income_source_id,income_kind,investment_fee_component_id,external_reference,created_from_candidate_id,created_at FROM canonical_transactions ORDER BY posted_date,id"},
+      ExportQuery{name:"transaction_lines",sql:"SELECT id,canonical_transaction_id,category_id,amount_minor,currency,line_kind,created_at FROM transaction_lines ORDER BY canonical_transaction_id,id"},
+      ExportQuery{name:"transfer_pairs",sql:"SELECT id,transfer_kind,posted_date,amount_minor,currency,from_account_id,to_account_id,from_candidate_id,to_candidate_id,from_canonical_transaction_id,to_canonical_transaction_id,accepted_at FROM canonical_transfer_pairs ORDER BY posted_date,id"},
+      ExportQuery{name:"manual_transfer_pairs",sql:"SELECT id,posted_date,amount_minor,currency,from_account_id,to_account_id,from_canonical_transaction_id,to_canonical_transaction_id,created_at FROM manual_transfer_pairs ORDER BY posted_date,id"},
+      ExportQuery{name:"provenance",sql:"SELECT id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE canonical_transaction_id IS NOT NULL ORDER BY canonical_transaction_id,id"},
+      ExportQuery{name:"manual_provenance",sql:"SELECT canonical_transaction_id,entry_id,source,created_at FROM manual_transaction_provenance ORDER BY canonical_transaction_id"}];
+    if let Err(e) = export_queries(&c, &mut r, &queries) {
+        r.errors.push(error(
+            OperationErrorCategory::SchemaIncompatibility,
+            "export_query_failed",
+            e.to_string(),
+            "schema",
+        ));
+        return r;
     }
     if include_review_audit {
         let extra=[
-      ("review_candidates", "SELECT id,import_batch_id,source_document_id,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,posted_date,description,amount_minor,currency,balance_minor,direction_hint,semantic_hint,confidence,status,duplicate_status,fingerprint,validation_warnings_json,canonical_transaction_id,created_at FROM candidate_transactions ORDER BY import_batch_id,id"),
-      ("import_batches", "SELECT id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count,error_details_json FROM import_batches ORDER BY started_at,id"),
-      ("source_documents", "SELECT id,mime_type,byte_size,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,imported_at,duplicate_of_source_document_id FROM source_documents ORDER BY imported_at,id"),
-      ("review_provenance", "SELECT id,candidate_transaction_id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE candidate_transaction_id IS NOT NULL ORDER BY candidate_transaction_id,id")];
-        for (name, sql) in extra {
-            match rows(&c, sql) {
-                Ok(v) => {
-                    r.entities.insert(name.into(), v);
-                }
-                Err(e) => {
-                    r.errors.push(error(
-                        "schema_incompatibility",
-                        "export_query_failed",
-                        e.to_string(),
-                        "schema",
-                    ));
-                    return r;
-                }
-            }
+      ExportQuery{name:"review_candidates",sql:"SELECT id,import_batch_id,source_document_id,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,posted_date,description,amount_minor,currency,balance_minor,direction_hint,semantic_hint,confidence,status,duplicate_status,fingerprint,validation_warnings_json,canonical_transaction_id,created_at FROM candidate_transactions ORDER BY import_batch_id,id"},
+      ExportQuery{name:"import_batches",sql:"SELECT id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count,error_details_json FROM import_batches ORDER BY started_at,id"},
+      ExportQuery{name:"source_documents",sql:"SELECT id,mime_type,byte_size,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,imported_at,duplicate_of_source_document_id FROM source_documents ORDER BY imported_at,id"},
+      ExportQuery{name:"review_provenance",sql:"SELECT id,candidate_transaction_id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE candidate_transaction_id IS NOT NULL ORDER BY candidate_transaction_id,id"}];
+        if let Err(e) = export_queries(&c, &mut r, &extra) {
+            r.errors.push(error(
+                OperationErrorCategory::SchemaIncompatibility,
+                "export_query_failed",
+                e.to_string(),
+                "schema",
+            ));
+            return r;
         }
     }
     r.ok = true;
