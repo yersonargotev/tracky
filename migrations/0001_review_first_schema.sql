@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS candidate_transactions (
     account_label_hint TEXT,
     account_currency_hint TEXT,
     account_masked_identifier_hint TEXT,
+    account_resolution_json TEXT NOT NULL DEFAULT '{"status":"unresolved","reason":"not_evaluated","compatible_account_count":0,"preventing_dimensions":[]}',
     posted_date TEXT NOT NULL,
     description TEXT NOT NULL,
     amount_minor INTEGER NOT NULL,

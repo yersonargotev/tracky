@@ -208,6 +208,7 @@ fn parse_nu_ordinary(
                 },
                 semantic_hint,
                 confidence: 1.0,
+                account_resolution: None,
                 provenance: Provenance {
                     source_document_id: source.into(),
                     page_number: page,

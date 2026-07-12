@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use pdf_oxide::PdfDocument as OxideDocument;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
@@ -143,6 +143,43 @@ pub struct CandidateTransaction {
     pub confidence: f32,
     pub provenance: Provenance,
     pub validation_warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_resolution: Option<AccountResolutionResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccountResolutionResult {
+    pub status: AccountResolutionStatus,
+    pub reason: AccountResolutionReason,
+    pub compatible_account_count: usize,
+    pub preventing_dimensions: Vec<AccountResolutionDimension>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountResolutionStatus {
+    Resolved,
+    Unresolved,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountResolutionReason {
+    NotEvaluated,
+    UniqueCompatibleAccount,
+    NoMatch,
+    MaskedIdentifierMismatch,
+    MultipleCompatibleAccounts,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AccountResolutionDimension {
+    Institution,
+    Currency,
+    MaskedIdentifier,
+    LabelOrType,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -719,6 +756,7 @@ fn candidate_from_movement(
         direction_hint,
         semantic_hint: movement.semantic_hint,
         confidence: movement.confidence,
+        account_resolution: None,
         provenance: Provenance {
             source_document_id: source_document.id.clone(),
             page_number: movement.page,

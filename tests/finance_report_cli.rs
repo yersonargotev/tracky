@@ -121,6 +121,7 @@ fn candidate_response(fixture: CandidateFixture<'_>) -> PdfInspectResponse {
             confidence: 0.95,
         },
         validation_warnings: Vec::new(),
+        account_resolution: None,
     };
     PdfInspectResponse {
         schema_version: PDF_INSPECT_SCHEMA_VERSION,

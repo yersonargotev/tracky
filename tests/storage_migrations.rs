@@ -208,6 +208,17 @@ fn migrations_add_semantic_hint_to_existing_candidate_transactions() {
         )
         .expect("read nullable semantic_hint");
     assert_eq!(semantic_hint, None);
+    let resolution: String = connection
+        .query_row(
+            "SELECT account_resolution_json FROM candidate_transactions WHERE id = 'cand_legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read backfilled account resolution");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&resolution).unwrap()["reason"],
+        "not_evaluated"
+    );
 }
 
 #[test]

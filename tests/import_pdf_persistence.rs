@@ -1,14 +1,14 @@
 use rusqlite::Connection;
 use tracky::pdf::{
-    AccountHint, CandidateStatus, CandidateTransaction, CredentialSource, DirectionHint,
-    DocumentDuplicateState, DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState,
-    Evidence, ExtractorRef, ExtractorState, ExtractorStatus, ParserRef, ParserState, ParserStatus,
-    PdfInspectResponse, Provenance, SemanticHint, SourceDocument, TrackyError,
-    PDF_INSPECT_SCHEMA_VERSION,
+    AccountHint, AccountResolutionDimension, AccountResolutionReason, CandidateStatus,
+    CandidateTransaction, CredentialSource, DirectionHint, DocumentDuplicateState,
+    DocumentDuplicateStatus, DuplicateStatus, DuplicateStatusState, Evidence, ExtractorRef,
+    ExtractorState, ExtractorStatus, ParserRef, ParserState, ParserStatus, PdfInspectResponse,
+    Provenance, SemanticHint, SourceDocument, TrackyError, PDF_INSPECT_SCHEMA_VERSION,
 };
 use tracky::storage::{
-    apply_migrations, list_owned_accounts, persist_pdf_import, register_owned_account,
-    AccountRegisterInput,
+    apply_migrations, list_owned_accounts, list_review_candidates, persist_pdf_import,
+    register_owned_account, AccountRegisterInput,
 };
 
 fn temporary_database() -> (tempfile::TempDir, Connection) {
@@ -84,6 +84,7 @@ fn inspect_response_with_fingerprint(hash: &str, fingerprint: &str) -> PdfInspec
             confidence: 0.91,
         },
         validation_warnings: Vec::new(),
+        account_resolution: None,
     };
     PdfInspectResponse {
         schema_version: PDF_INSPECT_SCHEMA_VERSION,
@@ -770,7 +771,7 @@ fn owned_account_registry_registers_nequi_and_rappi_separately() {
 fn imported_candidate_hints_resolve_to_unambiguous_owned_accounts() {
     let (_dir, mut connection) = temporary_database();
     apply_migrations(&connection).expect("apply migrations");
-    let account_id = register_account(&connection, "nequi", "Nequi wallet", "wallet", None);
+    let account_id = register_account(&connection, "nequi", "Daily spending", "wallet", None);
 
     let response = persist_pdf_import(
         &mut connection,
@@ -779,6 +780,14 @@ fn imported_candidate_hints_resolve_to_unambiguous_owned_accounts() {
     .expect("persist import");
 
     assert!(response.ok);
+    assert_eq!(
+        response.candidates[0]
+            .account_resolution
+            .as_ref()
+            .unwrap()
+            .status,
+        tracky::pdf::AccountResolutionStatus::Resolved
+    );
     let resolved: (Option<String>, Option<String>, String, String) = connection
         .query_row(
             "SELECT c.account_id, sd.account_id, c.account_label_hint, c.account_currency_hint
@@ -826,6 +835,22 @@ fn ambiguous_or_unresolved_account_hints_do_not_block_import() {
     .expect("persist import with ambiguous account hint");
 
     assert!(response.ok);
+    let resolution = response.candidates[0].account_resolution.as_ref().unwrap();
+    assert_eq!(
+        resolution.status,
+        tracky::pdf::AccountResolutionStatus::Ambiguous
+    );
+    assert_eq!(
+        resolution.reason,
+        AccountResolutionReason::MultipleCompatibleAccounts
+    );
+    assert_eq!(resolution.compatible_account_count, 2);
+    assert_eq!(
+        resolution.preventing_dimensions,
+        [AccountResolutionDimension::LabelOrType]
+    );
+    let inspected = list_review_candidates(&connection, None, None).expect("inspect candidates");
+    assert_eq!(inspected[0].account_resolution, *resolution);
     let unresolved: (Option<String>, String, String) = connection
         .query_row(
             "SELECT account_id, account_label_hint, account_currency_hint
@@ -839,6 +864,95 @@ fn ambiguous_or_unresolved_account_hints_do_not_block_import() {
         unresolved,
         (None, "Nequi wallet".to_string(), "COP".to_string())
     );
+}
+
+#[test]
+fn masked_identifier_mismatch_and_no_match_are_explainable_without_guessing() {
+    let (_dir, mut connection) = temporary_database();
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(
+        &connection,
+        "nequi",
+        "Private label",
+        "wallet",
+        Some("***1111"),
+    );
+
+    let mut masked =
+        inspect_response("abababababababababababababababababababababababababababababababab");
+    masked.source_document.account_hint.masked_identifier = Some("***9999".into());
+    masked.candidates[0].account_hint.masked_identifier = Some("***9999".into());
+    let masked = persist_pdf_import(&mut connection, masked).expect("persist masked mismatch");
+    let resolution = masked.candidates[0].account_resolution.as_ref().unwrap();
+    assert_eq!(
+        resolution.status,
+        tracky::pdf::AccountResolutionStatus::Unresolved
+    );
+    assert_eq!(
+        resolution.reason,
+        AccountResolutionReason::MaskedIdentifierMismatch
+    );
+    assert_eq!(
+        resolution.preventing_dimensions,
+        [AccountResolutionDimension::MaskedIdentifier]
+    );
+
+    let mut no_match =
+        inspect_response("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd");
+    no_match.source_document.institution_hint = "synthetic-bank".into();
+    no_match.candidates[0].institution_hint = "synthetic-bank".into();
+    let no_match = persist_pdf_import(&mut connection, no_match).expect("persist no match");
+    let resolution = no_match.candidates[0].account_resolution.as_ref().unwrap();
+    assert_eq!(resolution.reason, AccountResolutionReason::NoMatch);
+    assert_eq!(
+        resolution.preventing_dimensions,
+        [AccountResolutionDimension::Institution]
+    );
+}
+
+#[test]
+fn exact_parser_labels_remain_compatible_for_supported_providers() {
+    let cases = [
+        ("nequi", "Nequi wallet", "wallet", "COP", '1'),
+        ("rappi", "Rappi card", "credit_card", "COP", '2'),
+        ("nu", "Nu account", "savings", "COP", '3'),
+        ("plenti", "Plenti account", "broker", "COP", '4'),
+        ("wenia", "Wenia account", "broker", "USD", '5'),
+    ];
+    for (institution, label, account_type, currency, hash_char) in cases {
+        let (_dir, mut connection) = temporary_database();
+        apply_migrations(&connection).expect("apply migrations");
+        register_owned_account(
+            &connection,
+            AccountRegisterInput {
+                institution: institution.into(),
+                label: label.into(),
+                account_type: account_type.into(),
+                currency: currency.into(),
+                masked_identifier: None,
+            },
+        )
+        .expect("register provider account");
+        let hash = hash_char.to_string().repeat(64);
+        let mut inspect = inspect_response(&hash);
+        inspect.source_document.institution_hint = institution.into();
+        inspect.source_document.account_hint.label = label.into();
+        inspect.source_document.account_hint.currency = currency;
+        inspect.candidates[0].institution_hint = institution.into();
+        inspect.candidates[0].account_hint = inspect.source_document.account_hint.clone();
+        inspect.candidates[0].currency = currency;
+        let imported =
+            persist_pdf_import(&mut connection, inspect).expect("persist provider import");
+        assert_eq!(
+            imported.candidates[0]
+                .account_resolution
+                .as_ref()
+                .unwrap()
+                .status,
+            tracky::pdf::AccountResolutionStatus::Resolved,
+            "{institution}"
+        );
+    }
 }
 
 #[test]

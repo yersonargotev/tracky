@@ -73,6 +73,7 @@ fn inspect_response(hash: &str) -> PdfInspectResponse {
             confidence: 0.91,
         },
         validation_warnings: Vec::new(),
+        account_resolution: None,
     };
     let mut second = candidate.clone();
     second.id = "cand_review_002".to_string();
@@ -110,6 +111,46 @@ fn inspect_response(hash: &str) -> PdfInspectResponse {
 
 fn tracky() -> &'static str {
     env!("CARGO_BIN_EXE_tracky")
+}
+
+#[test]
+fn candidate_list_exposes_machine_readable_account_resolution() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "User chosen label", "wallet");
+    persist_pdf_import(
+        &mut connection,
+        inspect_response("1010101010101010101010101010101010101010101010101010101010101010"),
+    )
+    .expect("persist synthetic import");
+    drop(connection);
+
+    let output = Command::new(tracky())
+        .args([
+            "candidates",
+            "list",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("list candidates");
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("candidate JSON");
+    assert_eq!(
+        json["candidates"][0]["account_resolution"]["status"],
+        "resolved"
+    );
+    assert_eq!(
+        json["candidates"][0]["account_resolution"]["reason"],
+        "unique_compatible_account"
+    );
+    assert_eq!(
+        json["candidates"][0]["account_resolution"]["preventing_dimensions"],
+        serde_json::json!([])
+    );
 }
 
 fn register_account(
@@ -306,6 +347,7 @@ fn transfer_inspect_response(fixture: TransferCandidateFixture<'_>) -> PdfInspec
             confidence: 0.95,
         },
         validation_warnings: Vec::new(),
+        account_resolution: None,
     };
     PdfInspectResponse {
         schema_version: PDF_INSPECT_SCHEMA_VERSION,

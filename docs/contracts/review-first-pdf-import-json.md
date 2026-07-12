@@ -228,6 +228,12 @@ A `CandidateTransaction` is a **transacción candidata**. It is reviewable data 
     "currency": "COP",
     "masked_identifier": "***1234"
   },
+  "account_resolution": {
+    "status": "resolved",
+    "reason": "unique_compatible_account",
+    "compatible_account_count": 1,
+    "preventing_dimensions": []
+  },
   "posted_date": "2026-05-31",
   "description": "Redacted merchant or counterparty",
   "amount_minor": -4590000,
@@ -240,6 +246,13 @@ A `CandidateTransaction` is a **transacción candidata**. It is reviewable data 
   "validation_warnings": []
 }
 ```
+
+Persisted/imported candidates include `account_resolution`; transient `pdf inspect` candidates may
+omit it because no owned-account registry is consulted. Status is `resolved`, `unresolved`, or
+`ambiguous`. Stable reasons are `unique_compatible_account`, `no_match`,
+`masked_identifier_mismatch`, and `multiple_compatible_accounts`; legacy rows migrated without a
+new evaluation use `not_evaluated`. `preventing_dimensions` contains any relevant stable dimension
+from `institution`, `currency`, `masked_identifier`, and `label_or_type`.
 
 `CandidateTransaction.status` values:
 
@@ -498,7 +511,11 @@ Both commands return `schema_version: "tracky.accounts.v1"` and machine-readable
 }
 ```
 
-PDF import remains review-first. When an imported source document or candidate has an institution/account hint, Tracky links it to a registered owned account only when institution, normalized label/type, currency, and any provided masked identifier identify exactly one account. If no account matches, or more than one account matches, `account_id` remains null and the original account hint remains stored for review.
+PDF import remains review-first. Tracky first constrains owned accounts by normalized institution,
+currency, and any provided masked identifier. A single compatible account resolves even when its
+user-defined label differs from the parser display label. When several accounts remain, normalized
+label/type evidence may disambiguate exactly one; otherwise `account_id` remains null, the original
+hint remains stored, and `account_resolution` explains the unresolved dimensions without guessing.
 
 ## Redaction and wording expectations
 

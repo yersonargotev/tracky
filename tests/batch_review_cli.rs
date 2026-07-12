@@ -90,6 +90,7 @@ fn candidate(spec: CandidateSpec<'_>) -> CandidateTransaction {
             confidence: 0.93,
         },
         validation_warnings: Vec::new(),
+        account_resolution: None,
     }
 }
 
