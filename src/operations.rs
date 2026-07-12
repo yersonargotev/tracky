@@ -281,6 +281,10 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
         ),
         ("investment_adjustment_heads", "investment_adjustment_heads"),
         ("investment_document_events", "investment_document_events"),
+        (
+            "candidate_account_assignment_events",
+            "candidate_account_assignment_events",
+        ),
     ];
     for (entity, table) in tables {
         match c.query_row(&format!("SELECT count(*) FROM {table}"), [], |x| {
@@ -313,6 +317,9 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
       IntegrityCheck { category:FindingCategory::BrokenReference, code:"manual_transfer_leg_missing_or_incompatible", entity:"manual_transfer_pairs", sql:"SELECT count(*) FROM manual_transfer_pairs p LEFT JOIN accounts fa ON fa.id=p.from_account_id LEFT JOIN accounts ta ON ta.id=p.to_account_id LEFT JOIN canonical_transactions f ON f.id=p.from_canonical_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.to_canonical_transaction_id WHERE fa.id IS NULL OR ta.id IS NULL OR f.id IS NULL OR t.id IS NULL OR f.account_id<>p.from_account_id OR t.account_id<>p.to_account_id OR f.currency<>p.currency OR t.currency<>p.currency OR f.amount_minor<>-p.amount_minor OR t.amount_minor<>p.amount_minor" },
       IntegrityCheck { category:FindingCategory::BrokenReference, code:"provenance_target_missing", entity:"provenance", sql:"SELECT count(*) FROM provenance p LEFT JOIN candidate_transactions c ON c.id=p.candidate_transaction_id LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE (p.candidate_transaction_id IS NOT NULL AND c.id IS NULL) OR (p.canonical_transaction_id IS NOT NULL AND t.id IS NULL)" },
       IntegrityCheck { category:FindingCategory::BrokenReference, code:"manual_provenance_target_missing", entity:"manual_transaction_provenance", sql:"SELECT count(*) FROM manual_transaction_provenance p LEFT JOIN canonical_transactions t ON t.id=p.canonical_transaction_id WHERE t.id IS NULL" },
+      IntegrityCheck { category:FindingCategory::BrokenReference, code:"candidate_account_assignment_invalid", entity:"candidate_account_assignment_events", sql:"SELECT count(*) FROM candidate_account_assignment_events e LEFT JOIN candidate_transactions c ON c.id=e.candidate_transaction_id LEFT JOIN accounts a ON a.id=e.account_id WHERE c.id IS NULL OR a.id IS NULL OR a.is_owned<>1 OR upper(a.currency)<>upper(c.currency)" },
+      IntegrityCheck { category:FindingCategory::InvariantViolation, code:"candidate_account_assignment_history_invalid", entity:"candidate_account_assignment_events", sql:"SELECT count(*) FROM candidate_account_assignment_events e LEFT JOIN accounts previous_account ON previous_account.id=e.previous_account_id LEFT JOIN candidate_account_assignment_events previous_event ON previous_event.candidate_transaction_id=e.candidate_transaction_id AND previous_event.revision=e.revision-1 WHERE (e.previous_account_id IS NOT NULL AND previous_account.id IS NULL) OR (e.revision>1 AND (previous_event.id IS NULL OR e.previous_account_id IS NOT previous_event.account_id))" },
+      IntegrityCheck { category:FindingCategory::InvariantViolation, code:"candidate_account_assignment_head_mismatch", entity:"candidate_account_assignment_events", sql:"SELECT count(*) FROM candidate_transactions c JOIN candidate_account_assignment_events e ON e.id=(SELECT latest.id FROM candidate_account_assignment_events latest WHERE latest.candidate_transaction_id=c.id ORDER BY latest.revision DESC LIMIT 1) WHERE c.account_id IS NOT e.account_id" },
     ];
     for check in checks {
         match c.query_row(check.sql, [], |x| x.get::<_, i64>(0)) {
@@ -479,7 +486,8 @@ pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
       ExportQuery{name:"import_batches",sql:"SELECT id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count FROM import_batches ORDER BY started_at,id"},
       ExportQuery{name:"source_documents",sql:"SELECT id,mime_type,byte_size,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,imported_at,duplicate_of_source_document_id FROM source_documents ORDER BY imported_at,id"},
       ExportQuery{name:"review_provenance",sql:"SELECT id,candidate_transaction_id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE candidate_transaction_id IS NOT NULL ORDER BY candidate_transaction_id,id"},
-      ExportQuery{name:"investment_document_review_events",sql:"SELECT id,source_document_id,import_batch_id,account_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status,decision,reconciled_kind,reconciled_id,accepted_snapshot_id,reviewed_at,created_at FROM investment_document_events ORDER BY provider_effective_date,id"}];
+      ExportQuery{name:"investment_document_review_events",sql:"SELECT id,source_document_id,import_batch_id,account_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status,decision,reconciled_kind,reconciled_id,accepted_snapshot_id,reviewed_at,created_at FROM investment_document_events ORDER BY provider_effective_date,id"},
+      ExportQuery{name:"candidate_account_assignment_events",sql:"SELECT id,candidate_transaction_id,revision,previous_account_id,account_id,decision,reviewed_at FROM candidate_account_assignment_events ORDER BY candidate_transaction_id,revision"}];
         if let Err(e) = export_queries(&c, &mut r, &extra) {
             r.errors.push(error(
                 OperationErrorCategory::SchemaIncompatibility,

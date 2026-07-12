@@ -149,6 +149,8 @@ pub struct ReviewCandidate {
     pub account_id: Option<String>,
     pub account_hint: ReviewAccountHint,
     pub account_resolution: AccountResolutionResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_assignment: Option<CandidateAccountAssignment>,
     pub posted_date: String,
     pub description: String,
     pub amount_minor: i64,
@@ -160,6 +162,17 @@ pub struct ReviewCandidate {
     pub provenance: ReviewProvenance,
     pub validation_warnings: Vec<String>,
     pub canonical_transaction_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CandidateAccountAssignment {
+    pub id: String,
+    pub candidate_transaction_id: String,
+    pub revision: i64,
+    pub previous_account_id: Option<String>,
+    pub account_id: String,
+    pub decision: String,
+    pub reviewed_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -2230,6 +2243,7 @@ pub fn list_review_candidates(
     for row in rows {
         let mut candidate = row?;
         hydrate_duplicate_matches(connection, &mut candidate)?;
+        hydrate_account_assignment(connection, &mut candidate)?;
         candidates.push(candidate);
     }
     Ok(candidates)
@@ -3713,6 +3727,117 @@ pub fn reject_candidate(
     })
 }
 
+pub fn assign_candidate_account(
+    connection: &mut Connection,
+    candidate_id: &str,
+    account_id: &str,
+) -> Result<CandidateReviewResponse> {
+    let command = "candidates assign-account";
+    let tx = connection
+        .transaction()
+        .context("starting candidate account assignment transaction")?;
+    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
+        return Ok(review_error_response(
+            command,
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.".to_string(),
+            "candidate_id",
+            true,
+            serde_json::json!({ "candidate_id": candidate_id }),
+        ));
+    };
+    if let Some(error) = candidate_rejection_error(&candidate) {
+        return Ok(review_error_response(
+            command,
+            error.category,
+            error.code,
+            "Reviewed candidates cannot be reassigned.".to_string(),
+            error.path,
+            error.recoverable,
+            error.details,
+        ));
+    }
+    let Some(account) = owned_account_by_id(&tx, account_id)? else {
+        return Ok(review_error_response(
+            command,
+            "not_found",
+            "owned_account_not_found",
+            "Owned account was not found.".to_string(),
+            "account_id",
+            true,
+            serde_json::json!({ "account_id": account_id }),
+        ));
+    };
+    if !account.currency.eq_ignore_ascii_case(&candidate.currency) {
+        return Ok(review_error_response(
+            command,
+            "validation_failure",
+            "account_currency_mismatch",
+            "Candidate currency must match the owned account currency.".to_string(),
+            "account_id",
+            true,
+            serde_json::json!({
+                "account_id": account_id,
+                "account_currency": account.currency,
+                "candidate_currency": candidate.currency,
+            }),
+        ));
+    }
+    let resolution = AccountResolutionResult {
+        status: AccountResolutionStatus::Resolved,
+        reason: AccountResolutionReason::ReviewerAssigned,
+        compatible_account_count: 1,
+        preventing_dimensions: Vec::new(),
+    };
+    let event_id = candidate_account_assignment_id(candidate_id, account_id);
+    let revision: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(revision), 0) + 1
+         FROM candidate_account_assignment_events
+         WHERE candidate_transaction_id = ?1",
+        params![candidate_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "INSERT INTO candidate_account_assignment_events (
+            id, candidate_transaction_id, revision, previous_account_id, account_id, decision
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'assign_owned_account')",
+        params![
+            event_id,
+            candidate_id,
+            revision,
+            candidate.account_id,
+            account_id
+        ],
+    )?;
+    tx.execute(
+        "UPDATE candidate_transactions
+         SET institution_id = ?1, account_id = ?2, account_resolution_json = ?3
+         WHERE id = ?4",
+        params![
+            account.institution_id,
+            account.id,
+            serde_json::to_string(&resolution)
+                .context("serializing reviewed account resolution")?,
+            candidate_id,
+        ],
+    )?;
+    tx.commit()
+        .context("committing candidate account assignment")?;
+    let candidate = find_review_candidate(connection, candidate_id)?
+        .expect("assigned candidate remains queryable");
+    Ok(CandidateReviewResponse {
+        schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
+        command,
+        ok: true,
+        candidate: Some(candidate),
+        candidates: Vec::new(),
+        canonical_transaction: None,
+        transaction_lines: Vec::new(),
+        errors: Vec::new(),
+    })
+}
+
 pub fn review_error_response(
     command: &'static str,
     category: &'static str,
@@ -4800,6 +4925,7 @@ fn find_review_candidate(
         .optional()?;
     if let Some(candidate) = &mut candidate {
         hydrate_duplicate_matches(connection, candidate)?;
+        hydrate_account_assignment(connection, candidate)?;
     }
     Ok(candidate)
 }
@@ -4849,6 +4975,7 @@ fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Review
             masked_identifier: row.get(11)?,
         },
         account_resolution,
+        account_assignment: None,
         posted_date: row.get(13)?,
         description: row.get(14)?,
         amount_minor: row.get(15)?,
@@ -4876,6 +5003,34 @@ fn review_candidate_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Review
         validation_warnings,
         canonical_transaction_id: row.get(22)?,
     })
+}
+
+fn hydrate_account_assignment(
+    connection: &Connection,
+    candidate: &mut ReviewCandidate,
+) -> Result<()> {
+    candidate.account_assignment = connection
+        .query_row(
+            "SELECT id, candidate_transaction_id, revision, previous_account_id, account_id, decision, reviewed_at
+             FROM candidate_account_assignment_events
+             WHERE candidate_transaction_id = ?1
+             ORDER BY revision DESC
+             LIMIT 1",
+            params![candidate.id],
+            |row| {
+                Ok(CandidateAccountAssignment {
+                    id: row.get(0)?,
+                    candidate_transaction_id: row.get(1)?,
+                    revision: row.get(2)?,
+                    previous_account_id: row.get(3)?,
+                    account_id: row.get(4)?,
+                    decision: row.get(5)?,
+                    reviewed_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(())
 }
 
 fn hydrate_duplicate_matches(
@@ -5784,6 +5939,15 @@ fn canonical_transaction_id(candidate_id: &str) -> String {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>()
     )
+}
+
+fn candidate_account_assignment_id(candidate_id: &str, account_id: &str) -> String {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after Unix epoch")
+        .as_nanos();
+    let digest = Sha256::digest(format!("{candidate_id}|{account_id}|{nonce}").as_bytes());
+    format!("assignment_{}", hex_digest(&digest))
 }
 
 fn transfer_pair_id(from_candidate_id: &str, to_candidate_id: &str) -> String {

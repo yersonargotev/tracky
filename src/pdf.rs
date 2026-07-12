@@ -171,6 +171,7 @@ pub enum AccountResolutionReason {
     NoMatch,
     MaskedIdentifierMismatch,
     MultipleCompatibleAccounts,
+    ReviewerAssigned,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

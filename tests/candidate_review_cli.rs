@@ -153,6 +153,323 @@ fn candidate_list_exposes_machine_readable_account_resolution() {
     );
 }
 
+#[test]
+fn candidate_review_cli_assigns_owned_account_without_changing_import_evidence() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    persist_pdf_import(
+        &mut connection,
+        inspect_response("1212121212121212121212121212121212121212121212121212121212121212"),
+    )
+    .expect("persist unresolved synthetic import");
+    let account_id = register_account(&connection, "nequi", "Reviewed wallet", "wallet");
+    let corrected_account_id = register_account(&connection, "nequi", "Corrected wallet", "wallet");
+    let before: (String, String, String) = connection
+        .query_row(
+            "SELECT account_label_hint, fingerprint, p.evidence_text_redacted
+             FROM candidate_transactions c
+             JOIN provenance p ON p.candidate_transaction_id = c.id
+             WHERE c.id = 'cand_review_001'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("original import evidence");
+    drop(connection);
+
+    let output = Command::new(tracky())
+        .args([
+            "candidates",
+            "assign-account",
+            "cand_review_001",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--account-id",
+            &account_id,
+            "--json",
+        ])
+        .output()
+        .expect("assign account");
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("assignment JSON");
+    assert_eq!(json["schema_version"], "tracky.candidate-review.v1");
+    assert_eq!(json["command"], "candidates assign-account");
+    assert_eq!(json["candidate"]["account_id"], account_id);
+    assert_eq!(
+        json["candidate"]["account_resolution"]["reason"],
+        "reviewer_assigned"
+    );
+    assert_eq!(json["candidate"]["account_hint"]["label"], before.0);
+    assert_eq!(
+        json["candidate"]["account_assignment"]["account_id"],
+        account_id
+    );
+
+    let correction = Command::new(tracky())
+        .args([
+            "candidates",
+            "assign-account",
+            "cand_review_001",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--account-id",
+            &corrected_account_id,
+            "--json",
+        ])
+        .output()
+        .expect("correct account assignment");
+    assert!(correction.status.success());
+    let correction_json: serde_json::Value = serde_json::from_slice(&correction.stdout).unwrap();
+    assert_eq!(
+        correction_json["candidate"]["account_assignment"]["previous_account_id"],
+        account_id
+    );
+    assert_eq!(
+        correction_json["candidate"]["account_id"],
+        corrected_account_id
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    let after: (String, String, String) = connection
+        .query_row(
+            "SELECT account_label_hint, fingerprint, p.evidence_text_redacted
+             FROM candidate_transactions c
+             JOIN provenance p ON p.candidate_transaction_id = c.id
+             WHERE c.id = 'cand_review_001'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("preserved import evidence");
+    assert_eq!(after, before);
+    assert_eq!(
+        connection
+            .query_row::<i64, _, _>(
+                "SELECT count(*) FROM candidate_account_assignment_events WHERE candidate_transaction_id = 'cand_review_001'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("assignment audit count"),
+        2
+    );
+}
+
+#[test]
+fn candidate_account_assignment_validates_account_currency_and_review_state_atomically() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    persist_pdf_import(
+        &mut connection,
+        inspect_response("1313131313131313131313131313131313131313131313131313131313131313"),
+    )
+    .expect("persist unresolved synthetic import");
+    connection
+        .execute(
+            "INSERT INTO institutions(id,name) VALUES('foreign-inst','Foreign')",
+            [],
+        )
+        .unwrap();
+    connection.execute("INSERT INTO accounts(id,institution_id,label,currency,kind,is_owned) VALUES('not-owned','foreign-inst','External','COP','wallet',0),('usd-owned','foreign-inst','USD wallet','USD','wallet',1)", []).unwrap();
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET status='rejected' WHERE id='cand_review_002'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    for (candidate_id, account_id, code) in [
+        ("cand_review_001", "missing", "owned_account_not_found"),
+        ("cand_review_001", "not-owned", "owned_account_not_found"),
+        ("cand_review_001", "usd-owned", "account_currency_mismatch"),
+        ("cand_review_002", "usd-owned", "candidate_already_rejected"),
+    ] {
+        let output = Command::new(tracky())
+            .args([
+                "candidates",
+                "assign-account",
+                candidate_id,
+                "--db",
+                db_path.to_str().unwrap(),
+                "--account-id",
+                account_id,
+                "--json",
+            ])
+            .output()
+            .expect("refuse invalid assignment");
+        assert!(!output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["errors"][0]["code"], code);
+    }
+
+    let connection = Connection::open(&db_path).unwrap();
+    assert_eq!(
+        connection
+            .query_row::<i64, _, _>(
+                "SELECT count(*) FROM candidate_account_assignment_events",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row::<Option<String>, _, _>(
+                "SELECT account_id FROM candidate_transactions WHERE id='cand_review_001'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn reviewed_account_assignment_is_immediately_used_by_transfer_discovery() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "1414141414141414141414141414141414141414141414141414141414141414",
+            institution: "unknown-a",
+            account_label: "Original source A",
+            candidate_id: "cand_assignment_from",
+            description: "REDACTED TRANSFER",
+            amount_minor: -250000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .unwrap();
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "1616161616161616161616161616161616161616161616161616161616161616",
+            institution: "unknown-c",
+            account_label: "Original source C",
+            candidate_id: "cand_assignment_income",
+            description: "REDACTED INCOME",
+            amount_minor: 75000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .unwrap();
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "1515151515151515151515151515151515151515151515151515151515151515",
+            institution: "unknown-b",
+            account_label: "Original source B",
+            candidate_id: "cand_assignment_to",
+            description: "REDACTED TRANSFER",
+            amount_minor: 250000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .unwrap();
+    let from_account = register_account(&connection, "bank-a", "Reviewed A", "savings");
+    let to_account = register_account(&connection, "bank-b", "Reviewed B", "savings");
+    drop(connection);
+
+    for (candidate, account) in [
+        ("cand_assignment_from", from_account.as_str()),
+        ("cand_assignment_to", to_account.as_str()),
+    ] {
+        let output = Command::new(tracky())
+            .args([
+                "candidates",
+                "assign-account",
+                candidate,
+                "--db",
+                db_path.to_str().unwrap(),
+                "--account-id",
+                account,
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+    }
+
+    let output = Command::new(tracky())
+        .args([
+            "candidates",
+            "list-transfer-pairs",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["transfer_pairs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json["transfer_pairs"][0]["from_account"]["id"],
+        from_account
+    );
+    assert_eq!(json["transfer_pairs"][0]["to_account"]["id"], to_account);
+
+    let assignment = Command::new(tracky())
+        .args([
+            "candidates",
+            "assign-account",
+            "cand_assignment_income",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--account-id",
+            &from_account,
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(assignment.status.success());
+    let source = Command::new(tracky())
+        .args([
+            "income-sources",
+            "create",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--name",
+            "Synthetic source",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(source.status.success());
+    let source_json: serde_json::Value = serde_json::from_slice(&source.stdout).unwrap();
+    let source_id = source_json["income_source"]["id"].as_str().unwrap();
+    let accepted = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-income",
+            "cand_assignment_income",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--income-source-id",
+            source_id,
+            "--income-kind",
+            "other",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(accepted.status.success());
+    let accepted_json: serde_json::Value = serde_json::from_slice(&accepted.stdout).unwrap();
+    assert_eq!(
+        accepted_json["canonical_transaction"]["account_id"],
+        from_account
+    );
+}
+
 fn register_account(
     connection: &Connection,
     institution: &str,

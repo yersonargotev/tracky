@@ -306,6 +306,75 @@ fn export_preserves_exact_canonical_links_and_review_is_opt_in_and_redacted() {
 }
 
 #[test]
+fn assignment_audit_is_exported_backed_up_and_integrity_checked() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("assignment.sqlite3");
+    let backup = temp.path().join("assignment-backup.sqlite3");
+    let c = database(&path);
+    c.execute(
+        "INSERT INTO institutions(id,name) VALUES('inst-audit','Synthetic Bank')",
+        [],
+    )
+    .unwrap();
+    c.execute("INSERT INTO accounts(id,institution_id,label,currency,kind,is_owned) VALUES('acc-audit','inst-audit','Reviewed','COP','wallet',1)", []).unwrap();
+    c.execute("INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size) VALUES('doc-audit','redacted.pdf',?1,'application/pdf',1)", params!["c".repeat(64)]).unwrap();
+    c.execute("INSERT INTO import_batches(id,source_document_id,started_at,status) VALUES('batch-audit','doc-audit','2026-01-01','completed')", []).unwrap();
+    c.execute("INSERT INTO candidate_transactions(id,import_batch_id,source_document_id,account_id,posted_date,description,amount_minor,currency,confidence,status) VALUES('candidate-audit','batch-audit','doc-audit','acc-audit','2026-01-01','redacted',100,'COP',1.0,'pending_review')", []).unwrap();
+    c.execute("INSERT INTO candidate_account_assignment_events(id,candidate_transaction_id,revision,account_id,decision,reviewed_at) VALUES('assignment-audit','candidate-audit',1,'acc-audit','assign_owned_account','2026-01-02T00:00:00.000Z')", []).unwrap();
+    drop(c);
+
+    assert!(run(&["integrity", "--db", path.to_str().unwrap(), "--json"]).0);
+    let (ok, exported) = run(&[
+        "export",
+        "--db",
+        path.to_str().unwrap(),
+        "--include-review-audit",
+        "--json",
+    ]);
+    assert!(ok);
+    assert_eq!(
+        exported["entities"]["candidate_account_assignment_events"][0]["id"],
+        "assignment-audit"
+    );
+    assert!(
+        run(&[
+            "backup",
+            "--db",
+            path.to_str().unwrap(),
+            "--destination",
+            backup.to_str().unwrap(),
+            "--json",
+        ])
+        .0
+    );
+    let restored = Connection::open(&backup).unwrap();
+    assert_eq!(
+        restored
+            .query_row::<i64, _, _>(
+                "SELECT count(*) FROM candidate_account_assignment_events",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+        1
+    );
+
+    let c = Connection::open(&path).unwrap();
+    c.execute("PRAGMA foreign_keys=OFF", []).unwrap();
+    c.execute(
+        "UPDATE candidate_transactions SET account_id=NULL WHERE id='candidate-audit'",
+        [],
+    )
+    .unwrap();
+    drop(c);
+    let (ok, integrity) = run(&["integrity", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(!ok);
+    assert!(serde_json::to_string(&integrity["findings"])
+        .unwrap()
+        .contains("candidate_account_assignment_head_mismatch"));
+}
+
+#[test]
 fn backup_default_name_is_timestamped_adjacent_and_home_is_untouched() {
     let temp = tempdir().unwrap();
     let home = temp.path().join("home");

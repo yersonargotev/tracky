@@ -112,6 +112,20 @@ CREATE TABLE IF NOT EXISTS candidate_transactions (
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
+CREATE TABLE IF NOT EXISTS candidate_account_assignment_events (
+    id TEXT PRIMARY KEY,
+    candidate_transaction_id TEXT NOT NULL REFERENCES candidate_transactions(id),
+    revision INTEGER NOT NULL CHECK (revision > 0),
+    previous_account_id TEXT REFERENCES accounts(id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    decision TEXT NOT NULL CHECK (decision = 'assign_owned_account'),
+    reviewed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    , UNIQUE (candidate_transaction_id, revision)
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_account_assignment_events_candidate
+ON candidate_account_assignment_events(candidate_transaction_id, revision);
+
 CREATE TABLE IF NOT EXISTS provenance (
     id TEXT PRIMARY KEY,
     candidate_transaction_id TEXT UNIQUE REFERENCES candidate_transactions(id),

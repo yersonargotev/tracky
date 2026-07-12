@@ -21,15 +21,29 @@ record of the reviewer decision.
 
 ## Acceptance criteria
 
-- [ ] A pending imported candidate can be assigned to an existing compatible owned account through
+- [x] A pending imported candidate can be assigned to an existing compatible owned account through
   stable CLI/JSON.
-- [ ] The action validates currency and ownership and refuses missing or incompatible accounts
+- [x] The action validates currency and ownership and refuses missing or incompatible accounts
   without partial mutation.
-- [ ] Original import hints and provenance remain inspectable beside the reviewed assignment.
-- [ ] Already accepted/rejected candidates cannot be silently reassigned.
-- [ ] Transfer discovery and typed review immediately use the reviewed account assignment.
-- [ ] Export, backup, and integrity preserve and validate the assignment audit trail.
+- [x] Original import hints and provenance remain inspectable beside the reviewed assignment.
+- [x] Already accepted/rejected candidates cannot be silently reassigned.
+- [x] Transfer discovery and typed review immediately use the reviewed account assignment.
+- [x] Export, backup, and integrity preserve and validate the assignment audit trail.
 
 ## Blocked by
 
 - `0038-make-owned-account-resolution-tolerant-and-explainable.md`
+
+## Reconciliation evidence
+
+- `tracky candidates assign-account CANDIDATE_ID --account-id ID --json` updates only an
+  unreviewed candidate after owned-account and currency validation, preserving import hints,
+  provenance, and fingerprint while exposing the reviewed resolution through candidate JSON.
+- `candidate_account_assignment_events` records append-only, revisioned assignment decisions;
+  candidate inspection exposes the active assignment and its previous account.
+- Transfer discovery and typed income review consume the updated candidate account immediately.
+  Review-audit export includes every assignment revision, SQLite backup preserves the table, and
+  integrity checks validate references, currency/ownership, revision continuity, and the active
+  candidate head.
+- Synthetic public coverage lives in `tests/candidate_review_cli.rs` and
+  `tests/operations_cli.rs`.

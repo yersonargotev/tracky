@@ -883,6 +883,7 @@ enum CandidateCommands {
     CompareDuplicate(CandidateCompareDuplicateArgs),
     SuggestActions(CandidateSuggestActionsArgs),
     ApplyActions(CandidateApplyActionsArgs),
+    AssignAccount(CandidateAssignAccountArgs),
     Accept(CandidateActionArgs),
     AcceptIncome(CandidateIncomeAcceptArgs),
     AcceptExpense(CandidateExpenseAcceptArgs),
@@ -1269,6 +1270,18 @@ struct CandidateActionArgs {
 }
 
 #[derive(Debug, Parser)]
+struct CandidateAssignAccountArgs {
+    #[arg(value_name = "CANDIDATE_ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "account-id", value_name = "ID")]
+    account_id: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
 struct CandidateIncomeAcceptArgs {
     /// Candidate transaction id.
     #[arg(value_name = "CANDIDATE_ID")]
@@ -1461,6 +1474,9 @@ where
             }
             CandidateCommands::ApplyActions(args) => {
                 candidate_apply_actions_command(args, &mut stdout)
+            }
+            CandidateCommands::AssignAccount(args) => {
+                candidate_assign_account_command(args, &mut stdout)
             }
             CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
             CandidateCommands::AcceptIncome(args) => {
@@ -3140,6 +3156,26 @@ where
     }
     let mut connection = open_review_database(&args.db)?;
     let response = accept_candidate(&mut connection, &args.candidate_id)?;
+    write_candidate_review_response(stdout, response)
+}
+
+fn candidate_assign_account_command<W>(
+    args: CandidateAssignAccountArgs,
+    stdout: &mut W,
+) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) = require_candidate_json(args.json, stdout, "candidates assign-account")?
+    {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response = crate::storage::assign_candidate_account(
+        &mut connection,
+        &args.candidate_id,
+        &args.account_id,
+    )?;
     write_candidate_review_response(stdout, response)
 }
 
