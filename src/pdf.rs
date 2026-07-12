@@ -732,7 +732,7 @@ fn candidate_from_movement(
     let fingerprint = normalized_fingerprint(source_document, parser_id, &movement, amount_minor);
     let candidate_id = format!(
         "cand_{}_{:04}",
-        &source_document.id.replace("srcdoc_", ""),
+        source_document.id.replace("srcdoc_", ""),
         index + 1
     );
     Some(CandidateTransaction {
