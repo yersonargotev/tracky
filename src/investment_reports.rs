@@ -28,6 +28,16 @@ pub struct AcquisitionSection {
     pub funded_by_sales: Vec<MoneyTotal>,
     pub funded_by_maturities: Vec<MoneyTotal>,
     pub reinvestment: Vec<MoneyTotal>,
+    pub by_instrument: Vec<InstrumentAcquisition>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct InstrumentAcquisition {
+    pub account_id: String,
+    pub instrument_id: String,
+    pub instrument_type: String,
+    pub currency: String,
+    pub amount_minor: i64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
@@ -111,6 +121,28 @@ pub struct InvestmentReportResponse {
     pub errors: Vec<ReviewError>,
 }
 
+#[derive(Default)]
+struct FundingPools {
+    external: i64,
+    sale_proceeds: i64,
+    investment_income: i64,
+}
+
+impl FundingPools {
+    fn add(slot: &mut i64, amount: i64) -> Result<()> {
+        *slot = slot
+            .checked_add(amount)
+            .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+        Ok(())
+    }
+    fn consume(slot: &mut i64, wanted: &mut i64) -> i64 {
+        let used = (*wanted).min((*slot).max(0));
+        *slot -= used;
+        *wanted -= used;
+        used
+    }
+}
+
 fn valid_date(value: &str) -> bool {
     chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
@@ -133,6 +165,20 @@ fn totals(map: BTreeMap<String, i64>) -> Vec<MoneyTotal> {
             amount_minor,
         })
         .collect()
+}
+fn add_instrument(
+    map: &mut BTreeMap<(String, String, String, String), i64>,
+    key: (String, String, String, String),
+    amount: i64,
+) -> Result<()> {
+    let total = map
+        .get(&key)
+        .copied()
+        .unwrap_or(0)
+        .checked_add(amount)
+        .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+    map.insert(key, total);
+    Ok(())
 }
 fn error(from: &str, to: &str, code: &'static str, path: &'static str) -> InvestmentReportResponse {
     InvestmentReportResponse {
@@ -200,9 +246,30 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
     let mut sales = BTreeMap::new();
     let mut maturities = BTreeMap::new();
     let mut reinvest = BTreeMap::new();
-    let mut source_cash: HashMap<(String, String), [i64; 3]> = HashMap::new();
-    let mut stmt=c.prepare("SELECT r.account_id,r.operation_type,r.currency,r.gross_amount_minor,r.realized_result_minor,r.fee_minor,r.withholding_minor,r.other_deductions_minor,r.net_cash_minor,r.funding_allocation_id FROM brokerage_operation_heads h JOIN brokerage_operation_revisions r ON r.id=h.current_revision_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,r.operation_id")?;
+    let mut instrument_acquisitions: BTreeMap<(String, String, String, String), i64> =
+        BTreeMap::new();
+    let mut stmt=c.prepare("SELECT t.account_id,r.instrument_id,i.instrument_type,r.cash_currency,r.cash_amount_minor FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions t ON t.id=r.contribution_transaction_id JOIN investment_instruments i ON i.id=r.instrument_id LEFT JOIN investment_allocation_consumptions c ON c.allocation_id=h.allocation_id WHERE t.posted_date BETWEEN ?1 AND ?2 AND c.allocation_id IS NULL ORDER BY t.posted_date,h.allocation_id")?;
     for row in stmt.query_map(params![from, to], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })? {
+        let (account, instrument, kind, currency, amount) = row?;
+        add(&mut gross, currency.clone(), amount)?;
+        add(&mut external, currency.clone(), amount)?;
+        add_instrument(
+            &mut instrument_acquisitions,
+            (account, instrument, kind, currency),
+            amount,
+        )?;
+    }
+    let mut source_cash: HashMap<(String, String), FundingPools> = HashMap::new();
+    let mut stmt=c.prepare("SELECT r.account_id,r.operation_type,r.currency,r.gross_amount_minor,r.realized_result_minor,r.fee_minor,r.withholding_minor,r.other_deductions_minor,r.net_cash_minor,r.funding_allocation_id,r.instrument_id,i.instrument_type,r.effective_date FROM brokerage_operation_heads h JOIN brokerage_operation_revisions r ON r.id=h.current_revision_id LEFT JOIN investment_instruments i ON i.id=r.instrument_id WHERE r.effective_date<=?1 ORDER BY r.effective_date,r.operation_id")?;
+    for row in stmt.query_map([to], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, String>(1)?,
@@ -214,56 +281,85 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
             r.get::<_, i64>(7)?,
             r.get::<_, i64>(8)?,
             r.get::<_, Option<String>>(9)?,
+            r.get::<_, Option<String>>(10)?,
+            r.get::<_, Option<String>>(11)?,
+            r.get::<_, String>(12)?,
         ))
     })? {
-        let (account, kind, cur, g, rr, f, w, d, n, funding) = row?;
-        let pools = source_cash.entry((account, cur.clone())).or_default();
+        let (account, kind, cur, g, rr, f, w, d, n, funding, instrument, instrument_type, date) =
+            row?;
+        let in_range = date.as_str() >= from;
+        let pools = source_cash
+            .entry((account.clone(), cur.clone()))
+            .or_default();
         match kind.as_str() {
-            "deposit" if funding.is_some() => {
-                pools[0] = pools[0]
-                    .checked_add(n)
-                    .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?
-            }
+            "deposit" if funding.is_some() => FundingPools::add(&mut pools.external, n)?,
             "buy" => {
-                add(&mut gross, cur.clone(), g)?;
+                if in_range {
+                    add(&mut gross, cur.clone(), g)?;
+                }
+                if in_range {
+                    if let (Some(instrument), Some(kind)) = (instrument, instrument_type) {
+                        add_instrument(
+                            &mut instrument_acquisitions,
+                            (account.clone(), instrument, kind, cur.clone()),
+                            g,
+                        )?;
+                    }
+                }
                 let mut remaining = g;
-                let used = remaining.min(pools[0].max(0));
-                pools[0] -= used;
-                remaining -= used;
-                add(&mut external, cur.clone(), used)?;
-                let used = remaining.min(pools[1].max(0));
-                pools[1] -= used;
-                remaining -= used;
-                add(&mut sales, cur.clone(), used)?;
-                add(&mut reinvest, cur.clone(), used)?;
-                let used = remaining.min(pools[2].max(0));
-                pools[2] -= used;
-                remaining -= used;
-                add(&mut reinvest, cur.clone(), used)?;
-                add(&mut existing, cur.clone(), remaining)?;
+                let used = FundingPools::consume(&mut pools.external, &mut remaining);
+                if in_range {
+                    add(&mut external, cur.clone(), used)?;
+                }
+                let used = FundingPools::consume(&mut pools.sale_proceeds, &mut remaining);
+                if in_range {
+                    add(&mut sales, cur.clone(), used)?;
+                    add(&mut reinvest, cur.clone(), used)?;
+                }
+                let used = FundingPools::consume(&mut pools.investment_income, &mut remaining);
+                if in_range {
+                    add(&mut reinvest, cur.clone(), used)?;
+                    add(&mut existing, cur.clone(), remaining)?;
+                }
             }
             "sell" => {
-                add(&mut principal, cur.clone(), g.checked_sub(rr).unwrap_or(g))?;
-                add(&mut results, cur.clone(), rr)?;
-                pools[1] = pools[1]
-                    .checked_add(n)
-                    .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+                if in_range {
+                    add(
+                        &mut principal,
+                        cur.clone(),
+                        g.checked_sub(rr)
+                            .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?,
+                    )?;
+                    add(&mut results, cur.clone(), rr)?;
+                }
+                FundingPools::add(&mut pools.sale_proceeds, n)?;
             }
             "dividend" => {
-                add(&mut dividends, cur.clone(), g)?;
-                pools[2] = pools[2]
-                    .checked_add(n)
-                    .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+                if in_range {
+                    add(&mut dividends, cur.clone(), g)?;
+                }
+                FundingPools::add(&mut pools.investment_income, n)?;
             }
-            "withdrawal" => add(&mut withdrawn, cur.clone(), g)?,
+            "withdrawal" => {
+                let mut remaining = g;
+                FundingPools::consume(&mut pools.investment_income, &mut remaining);
+                FundingPools::consume(&mut pools.sale_proceeds, &mut remaining);
+                FundingPools::consume(&mut pools.external, &mut remaining);
+                if in_range {
+                    add(&mut withdrawn, cur.clone(), g)?;
+                }
+            }
             _ => {}
         }
-        add(&mut fees, cur.clone(), f)?;
-        add(&mut withholding, cur.clone(), w)?;
-        add(&mut deductions, cur.clone(), d)?;
-        add(&mut net, cur, n)?
+        if in_range {
+            add(&mut fees, cur.clone(), f)?;
+            add(&mut withholding, cur.clone(), w)?;
+            add(&mut deductions, cur.clone(), d)?;
+            add(&mut net, cur, n)?;
+        }
     }
-    let mut stmt=c.prepare("SELECT r.operation_type,r.currency,r.principal_returned_minor,r.external_capital_minor,r.capitalized_interest_minor,r.gross_interest_minor,r.withholding_minor,r.other_deductions_minor,r.net_cash_received_minor,r.principal_before_minor,r.principal_after_minor FROM cdt_operation_heads h JOIN cdt_operation_revisions r ON r.id=h.current_revision_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,r.operation_id")?;
+    let mut stmt=c.prepare("SELECT r.operation_type,r.currency,r.principal_returned_minor,r.external_capital_minor,r.capitalized_interest_minor,r.gross_interest_minor,r.withholding_minor,r.other_deductions_minor,r.net_cash_received_minor,r.principal_before_minor,r.principal_after_minor,p.account_id,p.instrument_id FROM cdt_operation_heads h JOIN cdt_operation_revisions r ON r.id=h.current_revision_id JOIN cdt_positions p ON p.id=r.cdt_position_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,r.operation_id")?;
     for row in stmt.query_map(params![from, to], |r| {
         Ok((
             r.get::<_, String>(0)?,
@@ -277,14 +373,25 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
             r.get::<_, i64>(8)?,
             r.get::<_, i64>(9)?,
             r.get::<_, i64>(10)?,
+            r.get::<_, String>(11)?,
+            r.get::<_, String>(12)?,
         ))
     })? {
-        let (kind, cur, p, e, ci, gi, w, d, n, before, after) = row?;
+        let (kind, cur, p, e, ci, gi, w, d, n, before, after, account, instrument) = row?;
         if matches!(kind.as_str(), "constitution" | "renewal") {
             add(&mut gross, cur.clone(), after)?;
+            add_instrument(
+                &mut instrument_acquisitions,
+                (account, instrument, "fixed_income".into(), cur.clone()),
+                after,
+            )?;
         }
         if kind == "renewal" {
-            let matured = before.min(after.saturating_sub(e).saturating_sub(ci));
+            let reinvestable = after
+                .checked_sub(e)
+                .and_then(|v| v.checked_sub(ci))
+                .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+            let matured = before.min(reinvestable);
             add(&mut maturities, cur.clone(), matured)?;
             add(&mut reinvest, cur.clone(), matured)?;
         }
@@ -307,11 +414,15 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .map(|k| {
-            let v =
-                contributed.get(&k).copied().unwrap_or(0) - withdrawn.get(&k).copied().unwrap_or(0);
-            (k, v)
+            contributed
+                .get(&k)
+                .copied()
+                .unwrap_or(0)
+                .checked_sub(withdrawn.get(&k).copied().unwrap_or(0))
+                .map(|v| (k, v))
+                .ok_or_else(|| anyhow::anyhow!("report amount overflow"))
         })
-        .collect();
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let mut pending = PendingSection::default();
     let mut stmt=c.prepare("SELECT t.id,t.currency,-t.amount_minor,COALESCE(SUM(r.cash_amount_minor),0) FROM canonical_transactions t LEFT JOIN investment_allocation_revisions r ON r.contribution_transaction_id=t.id AND EXISTS(SELECT 1 FROM investment_allocation_heads h WHERE h.current_revision_id=r.id) WHERE t.transaction_kind='investment_contribution' AND t.posted_date<=?1 GROUP BY t.id,t.currency,t.amount_minor HAVING COALESCE(SUM(r.cash_amount_minor),0)<-t.amount_minor ORDER BY t.posted_date,t.id")?;
     pending.allocations = stmt
@@ -370,7 +481,11 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
                 x.instrument_id.clone(),
                 x.currency.clone(),
             );
-            if !observed_keys.contains(&tuple) || position_map.contains_key(&tuple) {
+            let account_in_snapshot = s.positions.iter().any(|p| p.account_id == x.account_id);
+            if !(observed_keys.contains(&tuple)
+                || account_in_snapshot && x.status == "missing_snapshot_position")
+                || position_map.contains_key(&tuple)
+            {
                 continue;
             }
             let key = format!(
@@ -484,6 +599,20 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
             funded_by_sales: totals(sales),
             funded_by_maturities: totals(maturities),
             reinvestment: totals(reinvest),
+            by_instrument: instrument_acquisitions
+                .into_iter()
+                .map(
+                    |((account_id, instrument_id, instrument_type, currency), amount_minor)| {
+                        InstrumentAcquisition {
+                            account_id,
+                            instrument_id,
+                            instrument_type,
+                            currency,
+                            amount_minor,
+                        }
+                    },
+                )
+                .collect(),
         },
         returns_and_income: ReturnSection {
             principal_returned: totals(principal),
