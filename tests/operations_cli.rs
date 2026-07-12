@@ -354,7 +354,7 @@ fn integrity_reports_imported_transfer_and_provenance_failures() {
     c.execute("INSERT INTO institutions(id,name) VALUES('i','Bank')", [])
         .unwrap();
     c.execute("INSERT INTO accounts(id,institution_id,label,currency,is_owned) VALUES('a','i','A','COP',1),('b','i','B','COP',1)",[]).unwrap();
-    c.execute("INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency) VALUES('f','a','2026-01-01','from',-100,'COP'),('t','b','2026-01-01','to',99,'COP')",[]).unwrap();
+    c.execute("INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency) VALUES('f','a','2026-01-01','from',100,'COP'),('t','b','2026-01-01','to',100,'COP')",[]).unwrap();
     c.execute("INSERT INTO canonical_transfer_pairs(id,transfer_kind,posted_date,amount_minor,currency,from_account_id,to_account_id,from_candidate_id,to_candidate_id,from_canonical_transaction_id,to_canonical_transaction_id) VALUES('pair','card_payment','2026-01-01',100,'COP','a','b','fc','tc','f','t')",[]).unwrap();
     c.execute("INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size) VALUES('d','redacted',?1,'application/pdf',1)",params!["b".repeat(64)]).unwrap();
     c.execute("INSERT INTO provenance(id,canonical_transaction_id,source_document_id,extractor_name,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence) VALUES('prov-broken','missing','d','x','p','1','r','r','not_stored',1)",[]).unwrap();
