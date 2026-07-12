@@ -53,6 +53,7 @@ pub struct AllocationInput {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AllocationLegInput {
+    pub effective_date: String,
     pub instrument_id: String,
     pub cash_amount_minor: i64,
     pub cash_currency: String,
@@ -89,6 +90,7 @@ pub struct InvestmentAllocation {
     pub cash_amount_minor: i64,
     pub cash_currency: String,
     pub acquired_quantity: String,
+    pub effective_date: Option<String>,
     pub fee_amount_minor: Option<i64>,
     pub fee_currency: Option<String>,
     pub fee_treatment: Option<String>,
@@ -245,7 +247,8 @@ pub fn replace_allocation(
         |row| row.get(0),
     )?;
     if consumed_by_cdt
-        && (input.allocation.instrument_id != current.instrument_id
+        && (current.effective_date.as_deref() != Some(input.allocation.effective_date.as_str())
+            || input.allocation.instrument_id != current.instrument_id
             || input.allocation.cash_amount_minor != current.cash_amount_minor
             || !input
                 .allocation
@@ -326,7 +329,7 @@ pub fn list_positions(
          FROM investment_allocation_heads h
          JOIN investment_allocation_revisions r ON r.id = h.current_revision_id
          JOIN canonical_transactions ct ON ct.id = r.contribution_transaction_id
-         WHERE (?1 IS NULL OR ct.account_id = ?1)
+         WHERE r.effective_date IS NOT NULL AND (?1 IS NULL OR ct.account_id = ?1)
          ORDER BY r.rowid",
     )?;
     let mut aggregates: BTreeMap<(String, String, String), PositionAggregate> = BTreeMap::new();
@@ -574,6 +577,7 @@ struct ValidatedAllocation {
     cash_amount_minor: i64,
     cash_currency: String,
     quantity: String,
+    effective_date: String,
     fee_amount_minor: Option<i64>,
     fee_currency: Option<String>,
     fee_treatment: Option<String>,
@@ -641,6 +645,16 @@ fn validate_allocation(
             "invalid_cash_amount",
             "Allocated cash principal must be positive.",
             "cash_amount_minor",
+        )));
+    }
+    if input.effective_date.len() != 10
+        || chrono::NaiveDate::parse_from_str(&input.effective_date, "%Y-%m-%d").is_err()
+    {
+        return Ok(Err(investment_error(
+            command,
+            "invalid_effective_date",
+            "Effective date must be a valid YYYY-MM-DD date.",
+            "effective_date",
         )));
     }
     let cash_currency = input.cash_currency.trim().to_ascii_uppercase();
@@ -797,6 +811,7 @@ fn validate_allocation(
         cash_amount_minor: input.cash_amount_minor,
         cash_currency,
         quantity: quantity.canonical(),
+        effective_date: input.effective_date.clone(),
         fee_amount_minor: input.fee_amount_minor,
         fee_currency,
         fee_treatment,
@@ -885,10 +900,10 @@ fn insert_revision(
     tx.execute(
         "INSERT INTO investment_allocation_revisions (
             id, allocation_id, revision, contribution_transaction_id, instrument_id,
-            cash_amount_minor, cash_currency, acquired_quantity, fee_amount_minor,
+            cash_amount_minor, cash_currency, acquired_quantity, effective_date, fee_amount_minor,
             fee_currency, fee_treatment, fee_component_id, fee_expense_transaction_id,
             provenance_source, correction_reason, replaces_revision_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'manual_entry', ?14, ?15)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 'manual_entry', ?15, ?16)",
         params![
             identity.revision_id,
             identity.allocation_id,
@@ -898,6 +913,7 @@ fn insert_revision(
             allocation.cash_amount_minor,
             allocation.cash_currency,
             allocation.quantity,
+            allocation.effective_date,
             allocation.fee_amount_minor,
             allocation.fee_currency,
             allocation.fee_treatment,
@@ -933,7 +949,7 @@ fn active_allocation_by_id(
     connection
         .query_row(
             "SELECT r.id, r.allocation_id, r.revision, r.contribution_transaction_id,
-                    r.instrument_id, r.cash_amount_minor, r.cash_currency, r.acquired_quantity,
+                    r.instrument_id, r.cash_amount_minor, r.cash_currency, r.acquired_quantity, r.effective_date,
                     r.fee_amount_minor, r.fee_currency, r.fee_treatment, r.fee_component_id,
                     r.fee_expense_transaction_id, r.provenance_source,
                     r.correction_reason, r.replaces_revision_id, r.created_at
@@ -1019,7 +1035,7 @@ fn allocations_for_contribution(
 ) -> Result<Vec<InvestmentAllocation>> {
     let sql = if active_only {
         "SELECT r.id, r.allocation_id, r.revision, r.contribution_transaction_id,
-                r.instrument_id, r.cash_amount_minor, r.cash_currency, r.acquired_quantity,
+                r.instrument_id, r.cash_amount_minor, r.cash_currency, r.acquired_quantity, r.effective_date,
                 r.fee_amount_minor, r.fee_currency, r.fee_treatment, r.fee_component_id,
                 r.fee_expense_transaction_id, r.provenance_source,
                 r.correction_reason, r.replaces_revision_id, r.created_at
@@ -1028,7 +1044,7 @@ fn allocations_for_contribution(
          WHERE r.contribution_transaction_id = ?1 ORDER BY r.rowid"
     } else {
         "SELECT id, allocation_id, revision, contribution_transaction_id,
-                instrument_id, cash_amount_minor, cash_currency, acquired_quantity,
+                instrument_id, cash_amount_minor, cash_currency, acquired_quantity, effective_date,
                 fee_amount_minor, fee_currency, fee_treatment, fee_component_id,
                 fee_expense_transaction_id, provenance_source,
                 correction_reason, replaces_revision_id, created_at
@@ -1054,21 +1070,22 @@ fn allocation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InvestmentAl
         cash_amount_minor,
         cash_currency: cash_currency.clone(),
         acquired_quantity: acquired_quantity.clone(),
-        fee_amount_minor: row.get(8)?,
-        fee_currency: row.get(9)?,
-        fee_treatment: row.get(10)?,
-        fee_component_id: row.get(11)?,
-        fee_expense_transaction_id: row.get(12)?,
+        effective_date: row.get(8)?,
+        fee_amount_minor: row.get(9)?,
+        fee_currency: row.get(10)?,
+        fee_treatment: row.get(11)?,
+        fee_component_id: row.get(12)?,
+        fee_expense_transaction_id: row.get(13)?,
         effective_rate: Some(EffectiveRate {
             cost_minor_numerator: cash_amount_minor,
             cost_currency: cash_currency,
             quantity_denominator: acquired_quantity,
             instrument_id,
         }),
-        provenance_source: row.get(13)?,
-        correction_reason: row.get(14)?,
-        replaces_revision_id: row.get(15)?,
-        created_at: row.get(16)?,
+        provenance_source: row.get(14)?,
+        correction_reason: row.get(15)?,
+        replaces_revision_id: row.get(16)?,
+        created_at: row.get(17)?,
     })
 }
 

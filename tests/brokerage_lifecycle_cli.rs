@@ -96,6 +96,8 @@ fn setup() -> (tempfile::TempDir, String, String, String) {
         &db,
         "--contribution-id",
         &contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         &cash,
         "--cash-amount-minor",
@@ -178,6 +180,8 @@ fn complete_lifecycle_derives_cash_position_income_and_realized_result() {
         "10.5",
         "--gross-amount-minor",
         "60000",
+        "--funded-by-external-minor",
+        "61000",
         "--fee-minor",
         "1000",
         "--fee-treatment",
@@ -302,21 +306,64 @@ fn complete_lifecycle_derives_cash_position_income_and_realized_result() {
         "--effective-date",
         "2026-01-06",
         "--amount-minor",
-        "10000",
+        "20000",
         "--currency",
         "COP",
         "--json",
     ]);
-    assert_eq!(end["accounts"][0]["cash"][0]["available_minor"], 73000);
+    assert_eq!(end["accounts"][0]["cash"][0]["available_minor"], 63000);
     assert_eq!(
         end["accounts"][0]["cash"][0]["external_capital_minor"],
         100000
-    )
+    );
+    let investments = run(&[
+        "reports",
+        "investments",
+        "--db",
+        &db,
+        "--from",
+        "2026-01-01",
+        "--to",
+        "2026-01-31",
+        "--json",
+    ]);
+    assert_eq!(
+        investments["acquisitions_and_reinvestment"]["funded_by_external_contribution"][0]
+            ["amount_minor"],
+        61000
+    );
+    assert!(
+        investments["capital_external"]["capital_withdrawn"][0]["amount_minor"]
+            .as_i64()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        investments["returns_and_income"]["by_instrument"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["instrument_id"] == sec)
+            .unwrap()["gross_dividends_minor"],
+        6000
+    );
 }
 #[test]
 fn rejects_insufficient_cash_position_and_bad_net_without_mutation() {
     let (_d, db, b, _) = setup();
     let sec = instrument(&db, "SEC2", "security");
+    let before = run(&[
+        "brokerages",
+        "inspect",
+        "--db",
+        &db,
+        "--account-id",
+        &b,
+        "--json",
+    ])["accounts"][0]["active_operations"]
+        .as_array()
+        .unwrap()
+        .len();
     assert_eq!(
         fail(&[
             "brokerages",
@@ -332,6 +379,45 @@ fn rejects_insufficient_cash_position_and_bad_net_without_mutation() {
             "--quantity",
             "1",
             "--gross-amount-minor",
+            "1000",
+            "--funded-by-reinvestment-minor",
+            "1000",
+            "--json",
+        ])["errors"][0]["code"],
+        "funding_provenance_unavailable"
+    );
+    assert_eq!(
+        run(&[
+            "brokerages",
+            "inspect",
+            "--db",
+            &db,
+            "--account-id",
+            &b,
+            "--json"
+        ])["accounts"][0]["active_operations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        before
+    );
+    assert_eq!(
+        fail(&[
+            "brokerages",
+            "buy",
+            "--db",
+            &db,
+            "--account-id",
+            &b,
+            "--instrument-id",
+            &sec,
+            "--effective-date",
+            "2026-01-03",
+            "--quantity",
+            "1",
+            "--gross-amount-minor",
+            "100001",
+            "--funded-by-external-minor",
             "100001",
             "--json"
         ])["errors"][0]["code"],

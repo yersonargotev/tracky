@@ -229,6 +229,8 @@ fn contribution_allocations_preserve_exact_cross_currency_quantities_fees_and_po
         db,
         "--contribution-id",
         &contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         usd_id,
         "--cash-amount-minor",
@@ -304,6 +306,8 @@ fn contribution_allocations_preserve_exact_cross_currency_quantities_fees_and_po
         db,
         "--contribution-id",
         &contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         usdc_id,
         "--cash-amount-minor",
@@ -337,6 +341,8 @@ fn contribution_allocations_preserve_exact_cross_currency_quantities_fees_and_po
         db,
         "--allocation-id",
         usdc_allocation_id,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         usdc_id,
         "--cash-amount-minor",
@@ -415,6 +421,8 @@ fn contribution_allocations_preserve_exact_cross_currency_quantities_fees_and_po
         db,
         "--contribution-id",
         &duplicate_fee_contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         usd_id,
         "--cash-amount-minor",
@@ -453,6 +461,32 @@ fn allocation_replacements_are_append_only_and_invalid_changes_are_atomic() {
     let instrument = create_instrument(db, "Generic unit", "generic", "USD", None);
     let instrument_id = instrument["instrument"]["id"].as_str().unwrap();
 
+    let invalid_date = output(&[
+        "investments",
+        "allocate",
+        "--db",
+        db,
+        "--contribution-id",
+        &contribution,
+        "--effective-date",
+        "2026-1-1",
+        "--instrument-id",
+        instrument_id,
+        "--cash-amount-minor",
+        "600",
+        "--cash-currency",
+        "COP",
+        "--quantity",
+        "1.25",
+        "--json",
+    ]);
+    assert!(!invalid_date.status.success());
+    let invalid_date_json: Value = serde_json::from_slice(&invalid_date.stdout).unwrap();
+    assert_eq!(
+        invalid_date_json["errors"][0]["code"],
+        "invalid_effective_date"
+    );
+
     let first = run(&[
         "investments",
         "allocate",
@@ -460,6 +494,8 @@ fn allocation_replacements_are_append_only_and_invalid_changes_are_atomic() {
         db,
         "--contribution-id",
         &contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         instrument_id,
         "--cash-amount-minor",
@@ -479,6 +515,8 @@ fn allocation_replacements_are_append_only_and_invalid_changes_are_atomic() {
         db,
         "--allocation-id",
         allocation_id,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         instrument_id,
         "--cash-amount-minor",
@@ -512,6 +550,8 @@ fn allocation_replacements_are_append_only_and_invalid_changes_are_atomic() {
         db,
         "--allocation-id",
         allocation_id,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         instrument_id,
         "--cash-amount-minor",
@@ -558,6 +598,8 @@ fn allocation_replacements_are_append_only_and_invalid_changes_are_atomic() {
             db,
             "--contribution-id",
             &contribution,
+            "--effective-date",
+            "2026-01-01",
             "--instrument-id",
             instrument_id,
             "--cash-amount-minor",
@@ -597,6 +639,8 @@ fn allocation_replacements_are_append_only_and_invalid_changes_are_atomic() {
             db,
             "--contribution-id",
             &contribution,
+            "--effective-date",
+            "2026-01-01",
             "--instrument-id",
             instrument_id,
             "--cash-amount-minor",
@@ -639,12 +683,14 @@ fn multi_instrument_action_is_atomic_and_positions_aggregate_active_allocations(
     let stock_id = stock["instrument"]["id"].as_str().unwrap();
     let allocations = serde_json::json!([
         {
+            "effective_date": "2026-01-01",
             "instrument_id": usd_id,
             "cash_amount_minor": 400,
             "cash_currency": "COP",
             "acquired_quantity": "1.25"
         },
         {
+            "effective_date": "2026-01-01",
             "instrument_id": stock_id,
             "cash_amount_minor": 600,
             "cash_currency": "COP",
@@ -659,6 +705,8 @@ fn multi_instrument_action_is_atomic_and_positions_aggregate_active_allocations(
         db,
         "--contribution-id",
         &contribution,
+        "--effective-date",
+        "2026-01-01",
         "--allocations-json",
         &allocations,
         "--json",
@@ -674,6 +722,8 @@ fn multi_instrument_action_is_atomic_and_positions_aggregate_active_allocations(
         db,
         "--contribution-id",
         &second_contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         usd_id,
         "--cash-amount-minor",
@@ -710,12 +760,14 @@ fn multi_instrument_action_is_atomic_and_positions_aggregate_active_allocations(
     );
     let invalid_allocations = serde_json::json!([
         {
+            "effective_date": "2026-01-01",
             "instrument_id": usd_id,
             "cash_amount_minor": 400,
             "cash_currency": "COP",
             "acquired_quantity": "1"
         },
         {
+            "effective_date": "2026-01-01",
             "instrument_id": "instr_missing",
             "cash_amount_minor": 600,
             "cash_currency": "COP",
@@ -730,6 +782,8 @@ fn multi_instrument_action_is_atomic_and_positions_aggregate_active_allocations(
         db,
         "--contribution-id",
         &rejected_contribution,
+        "--effective-date",
+        "2026-01-01",
         "--allocations-json",
         &invalid_allocations,
         "--json",
@@ -818,6 +872,8 @@ fn investment_allocations_keep_expense_income_transfer_and_contribution_reports_
         db,
         "--contribution-id",
         &contribution,
+        "--effective-date",
+        "2026-01-01",
         "--instrument-id",
         instrument_id,
         "--cash-amount-minor",

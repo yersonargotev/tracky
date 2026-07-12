@@ -31,6 +31,10 @@ pub struct BrokerageBuyInput {
     pub fee_minor: i64,
     pub fee_treatment: String,
     pub component_id: Option<String>,
+    pub funded_by_external_minor: i64,
+    pub funded_by_existing_cash_minor: i64,
+    pub funded_by_reinvestment_minor: i64,
+    pub funded_by_investment_income_minor: i64,
 }
 #[derive(Debug, Clone)]
 pub struct BrokerageSellInput {
@@ -203,6 +207,7 @@ struct ReplacementHead {
     funding_allocation_id: Option<String>,
     gross_amount_minor: i64,
     currency: String,
+    historical_cost_minor: i64,
 }
 
 pub fn open_brokerage(c: &mut Connection, input: BrokerageOpenInput) -> Result<BrokerageResponse> {
@@ -290,6 +295,27 @@ pub fn buy(c: &mut Connection, i: BrokerageBuyInput) -> Result<BrokerageResponse
         Some(x) => x,
         None => return Ok(err(command, "amount_overflow", "gross_amount_minor")),
     };
+    let attributed = i
+        .funded_by_external_minor
+        .checked_add(i.funded_by_existing_cash_minor)
+        .and_then(|v| v.checked_add(i.funded_by_reinvestment_minor))
+        .and_then(|v| v.checked_add(i.funded_by_investment_income_minor));
+    if [
+        i.funded_by_external_minor,
+        i.funded_by_existing_cash_minor,
+        i.funded_by_reinvestment_minor,
+        i.funded_by_investment_income_minor,
+    ]
+    .iter()
+    .any(|v| *v < 0)
+        || attributed != Some(cost)
+    {
+        return Ok(err(
+            command,
+            "funding_attribution_mismatch",
+            "funding_attribution",
+        ));
+    }
     let cash_out = match i.gross_amount_minor.checked_add(i.fee_minor) {
         Some(value) => value,
         None => return Ok(err(command, "amount_overflow", "fee_minor")),
@@ -319,7 +345,19 @@ pub fn buy(c: &mut Connection, i: BrokerageBuyInput) -> Result<BrokerageResponse
     if let Some(e) = validate(&tx, &i.account_id, &t, None)? {
         return Ok(e);
     }
-    insert(&tx, &i.account_id, &t, 1, None, None)?;
+    let revision_id = insert(&tx, &i.account_id, &t, 1, None, None)?;
+    let unattributed = if attributed == Some(0) { cost } else { 0 };
+    tx.execute(
+        "INSERT INTO brokerage_buy_funding_attributions(operation_revision_id,external_capital_minor,existing_cash_minor,reinvested_minor,investment_income_minor,unattributed_minor) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![revision_id, i.funded_by_external_minor, i.funded_by_existing_cash_minor, i.funded_by_reinvestment_minor, i.funded_by_investment_income_minor, unattributed],
+    )?;
+    if crate::investment_reports::validate_brokerage_attribution(&tx, "9999-12-31").is_err() {
+        return Ok(err(
+            command,
+            "funding_provenance_unavailable",
+            "funding_attribution",
+        ));
+    }
     tx.commit()?;
     inspect(c, command, Some(&i.account_id), false)
 }
@@ -482,7 +520,7 @@ pub fn replace_operation(
         return Ok(err(command, "correction_reason_required", "reason"));
     }
     let tx = c.transaction()?;
-    let old: Option<ReplacementHead> = tx.query_row("SELECT r.id,r.account_id,r.revision,r.operation_type,r.funding_allocation_id,r.gross_amount_minor,r.currency FROM brokerage_operation_heads h JOIN brokerage_operation_revisions r ON r.id=h.current_revision_id WHERE h.operation_id=?1",params![i.operation_id],|r|Ok(ReplacementHead { revision_id:r.get(0)?, account_id:r.get(1)?, revision:r.get(2)?, operation_type:r.get(3)?, funding_allocation_id:r.get(4)?, gross_amount_minor:r.get(5)?, currency:r.get(6)? })).optional()?;
+    let old: Option<ReplacementHead> = tx.query_row("SELECT r.id,r.account_id,r.revision,r.operation_type,r.funding_allocation_id,r.gross_amount_minor,r.currency,r.historical_cost_minor FROM brokerage_operation_heads h JOIN brokerage_operation_revisions r ON r.id=h.current_revision_id WHERE h.operation_id=?1",params![i.operation_id],|r|Ok(ReplacementHead { revision_id:r.get(0)?, account_id:r.get(1)?, revision:r.get(2)?, operation_type:r.get(3)?, funding_allocation_id:r.get(4)?, gross_amount_minor:r.get(5)?, currency:r.get(6)?, historical_cost_minor:r.get(7)? })).optional()?;
     let Some(old) = old else {
         return Ok(err(command, "operation_not_found", "operation_id"));
     };
@@ -493,6 +531,7 @@ pub fn replace_operation(
     let old_allocation = old.funding_allocation_id;
     let old_gross = old.gross_amount_minor;
     let old_currency = old.currency;
+    let old_cost = old.historical_cost_minor;
     let x = i.replacement;
     let mut t = Terms {
         kind: x.operation_type,
@@ -532,6 +571,13 @@ pub fn replace_operation(
         ));
     }
     recompute(&tx, &account, &mut t, Some(&i.operation_id))?;
+    if old_kind == "buy" && t.cost != old_cost {
+        return Ok(err(
+            command,
+            "buy_funding_attribution_immutable",
+            "replacement_json",
+        ));
+    }
     if let Some(e) = validate(&tx, &account, &t, Some(&i.operation_id))? {
         return Ok(e);
     }
@@ -543,10 +589,25 @@ pub fn replace_operation(
         Some(&i.reason),
         Some(&old_id),
     )?;
+    if old_kind == "buy" {
+        tx.execute(
+            "INSERT INTO brokerage_buy_funding_attributions(operation_revision_id,external_capital_minor,existing_cash_minor,reinvested_minor,investment_income_minor,unattributed_minor)
+             SELECT ?1,external_capital_minor,existing_cash_minor,reinvested_minor,investment_income_minor,unattributed_minor
+             FROM brokerage_buy_funding_attributions WHERE operation_revision_id=?2",
+            params![id, old_id],
+        )?;
+    }
     tx.execute(
         "UPDATE brokerage_operation_heads SET current_revision_id=?1 WHERE operation_id=?2",
         params![id, i.operation_id],
     )?;
+    if crate::investment_reports::validate_brokerage_attribution(&tx, "9999-12-31").is_err() {
+        return Ok(err(
+            command,
+            "funding_provenance_unavailable",
+            "replacement_json",
+        ));
+    }
     if state(&tx, &account).is_err() {
         return Ok(err(
             command,

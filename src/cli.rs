@@ -361,6 +361,14 @@ struct BrokerageBuyArgs {
     fee_treatment: String,
     #[arg(long = "component-id")]
     component_id: Option<String>,
+    #[arg(long = "funded-by-external-minor", default_value_t = 0)]
+    funded_by_external_minor: i64,
+    #[arg(long = "funded-by-existing-cash-minor", default_value_t = 0)]
+    funded_by_existing_cash_minor: i64,
+    #[arg(long = "funded-by-reinvestment-minor", default_value_t = 0)]
+    funded_by_reinvestment_minor: i64,
+    #[arg(long = "funded-by-investment-income-minor", default_value_t = 0)]
+    funded_by_investment_income_minor: i64,
     #[arg(long)]
     json: bool,
 }
@@ -716,6 +724,8 @@ struct InvestmentAllocateArgs {
     db: PathBuf,
     #[arg(long = "contribution-id")]
     contribution_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: Option<String>,
     #[arg(long = "allocations-json", value_name = "JSON")]
     allocations_json: Option<String>,
     #[arg(long = "instrument-id")]
@@ -746,6 +756,8 @@ struct InvestmentReplaceAllocationArgs {
     db: PathBuf,
     #[arg(long = "allocation-id")]
     allocation_id: String,
+    #[arg(long = "effective-date")]
+    effective_date: String,
     #[arg(long = "instrument-id")]
     instrument_id: String,
     #[arg(long = "cash-amount-minor")]
@@ -1509,6 +1521,10 @@ where
                             fee_minor: a.fee_minor,
                             fee_treatment: a.fee_treatment,
                             component_id: a.component_id,
+                            funded_by_external_minor: a.funded_by_external_minor,
+                            funded_by_existing_cash_minor: a.funded_by_existing_cash_minor,
+                            funded_by_reinvestment_minor: a.funded_by_reinvestment_minor,
+                            funded_by_investment_income_minor: a.funded_by_investment_income_minor,
                         },
                     )
                 },
@@ -2144,6 +2160,20 @@ fn investment_allocate_command<W: Write>(
             );
         };
         vec![AllocationLegInput {
+            effective_date: match args.effective_date {
+                Some(value) => value,
+                None => {
+                    return write_investment_response(
+                        stdout,
+                        investment_cli_validation_error(
+                            "investments allocate",
+                            "effective_date_required",
+                            "Allocation effective date is required.",
+                            "effective_date",
+                        ),
+                    )
+                }
+            },
             instrument_id,
             cash_amount_minor,
             cash_currency,
@@ -2186,6 +2216,7 @@ fn investment_replace_allocation_command<W: Write>(
             AllocationReplacementInput {
                 allocation_id: args.allocation_id,
                 allocation: AllocationLegInput {
+                    effective_date: args.effective_date,
                     instrument_id: args.instrument_id,
                     cash_amount_minor: args.cash_amount_minor,
                     cash_currency: args.cash_currency,

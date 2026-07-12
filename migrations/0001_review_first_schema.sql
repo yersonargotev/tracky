@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS investment_allocation_revisions (
     cash_amount_minor INTEGER NOT NULL CHECK (cash_amount_minor > 0),
     cash_currency TEXT NOT NULL,
     acquired_quantity TEXT NOT NULL,
+    effective_date TEXT,
     fee_amount_minor INTEGER CHECK (fee_amount_minor > 0),
     fee_currency TEXT,
     fee_treatment TEXT CHECK (fee_treatment IN ('capitalized', 'separate')),
@@ -325,6 +326,14 @@ CREATE TABLE IF NOT EXISTS brokerage_operation_revisions (
 CREATE TABLE IF NOT EXISTS brokerage_operation_heads (
     operation_id TEXT PRIMARY KEY,
     current_revision_id TEXT NOT NULL UNIQUE REFERENCES brokerage_operation_revisions(id)
+);
+CREATE TABLE IF NOT EXISTS brokerage_buy_funding_attributions (
+    operation_revision_id TEXT PRIMARY KEY REFERENCES brokerage_operation_revisions(id),
+    external_capital_minor INTEGER NOT NULL CHECK (external_capital_minor >= 0),
+    existing_cash_minor INTEGER NOT NULL CHECK (existing_cash_minor >= 0),
+    reinvested_minor INTEGER NOT NULL CHECK (reinvested_minor >= 0),
+    investment_income_minor INTEGER NOT NULL CHECK (investment_income_minor >= 0),
+    unattributed_minor INTEGER NOT NULL CHECK (unattributed_minor >= 0)
 );
 CREATE INDEX IF NOT EXISTS idx_brokerage_component ON brokerage_operation_revisions(component_id) WHERE component_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_brokerage_account ON brokerage_operation_revisions(account_id);

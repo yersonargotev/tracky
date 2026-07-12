@@ -14,14 +14,14 @@ The report must complement rather than redefine the existing income/expense summ
 
 ## Acceptance criteria
 
-- [ ] Date-range reporting exposes external capital contributed, gross acquisitions, reinvestment, capital withdrawn, and net external contribution separately.
-- [ ] Depositing into a brokerage and then buying a security with the same cash cannot double-count invested capital.
-- [ ] Interest, dividends, realized results, fees, commissions, and withholding are separately visible and reconcile to their underlying events.
-- [ ] Closing positions show quantity, historical cost, cost currency, latest observed value, valuation currency, observation date, and freshness when available.
-- [ ] Pending allocation and unreconciled snapshot differences remain visible in report output.
-- [ ] Multi-currency totals remain separated unless an explicit dated conversion source is included.
-- [ ] Existing expense/income and excluded-transfer totals remain compatible and exclude confirmed investment principal.
-- [ ] Stable CLI/JSON output and focused tests cover USD or digital-dollar acquisition, CDT, brokerage lifecycle, missing values, stale snapshots, and cross-currency reporting.
+- [x] Date-range reporting exposes external capital contributed, gross acquisitions, reinvestment, capital withdrawn, and net external contribution separately.
+- [x] Depositing into a brokerage and then buying a security with the same cash cannot double-count invested capital.
+- [x] Interest, dividends, realized results, fees, commissions, and withholding are separately visible and reconcile to their underlying events.
+- [x] Closing positions show quantity, historical cost, cost currency, latest observed value, valuation currency, observation date, and freshness when available.
+- [x] Pending allocation and unreconciled snapshot differences remain visible in report output.
+- [x] Multi-currency totals remain separated unless an explicit dated conversion source is included.
+- [x] Existing expense/income and excluded-transfer totals remain compatible and exclude confirmed investment principal.
+- [x] Stable CLI/JSON output and focused tests cover USD or digital-dollar acquisition, CDT, brokerage lifecycle, missing values, stale snapshots, and cross-currency reporting.
 
 ## Blocked by
 

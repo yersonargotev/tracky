@@ -23,9 +23,9 @@ fn consolidated_report_separates_capital_acquisitions_returns_currencies_and_pen
     c.execute_batch("INSERT INTO institutions(id,name) VALUES('inst_bank','bank'),('inst_broker','broker');
       INSERT INTO accounts(id,institution_id,label,kind,currency,is_owned) VALUES('bank_cop','inst_bank','bank','checking','COP',1),('broker_cop','inst_broker','broker','brokerage','COP',1);
       INSERT INTO investment_instruments(id,name,instrument_type,denomination_currency,provider) VALUES('stock','stock','security','COP','broker'),('usdc','USDC','dollar_referenced_digital_asset','USD','wallet');
-      INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency,transaction_kind,investment_allocation_status) VALUES('contrib','bank_cop','2026-06-01','investment',-100000,'COP','investment_contribution','pending_allocation'),('contrib_usd','bank_cop','2026-06-02','digital dollar',-5000,'USD','investment_contribution','pending_allocation');
-      INSERT INTO investment_allocation_revisions(id,allocation_id,revision,contribution_transaction_id,instrument_id,cash_amount_minor,cash_currency,acquired_quantity,provenance_source) VALUES('ar1','a1',1,'contrib','stock',60000,'COP','3.000000001','manual_entry'),('ar2','a2',1,'contrib_usd','usdc',5000,'USD','5000.000000000000000001','manual_entry');
-      INSERT INTO investment_allocation_heads(allocation_id,current_revision_id) VALUES('a1','ar1'),('a2','ar2');
+      INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency,transaction_kind,investment_allocation_status) VALUES('contrib','bank_cop','2026-06-01','investment',-100000,'COP','investment_contribution','pending_allocation'),('contrib_usd','bank_cop','2026-06-02','digital dollar',-5000,'USD','investment_contribution','pending_allocation'),('contrib_future','bank_cop','2026-06-03','later acquisition',-1000,'COP','investment_contribution','pending_allocation');
+      INSERT INTO investment_allocation_revisions(id,allocation_id,revision,contribution_transaction_id,instrument_id,cash_amount_minor,cash_currency,acquired_quantity,effective_date,provenance_source) VALUES('ar1','a1',1,'contrib','stock',60000,'COP','3.000000001','2026-06-04','manual_entry'),('ar2','a2',1,'contrib_usd','usdc',5000,'USD','5000.000000000000000001','2026-06-02','manual_entry'),('ar3','a3',1,'contrib_future','stock',1000,'COP','0.1','2026-07-01','manual_entry');
+      INSERT INTO investment_allocation_heads(allocation_id,current_revision_id) VALUES('a1','ar1'),('a2','ar2'),('a3','ar3');
       INSERT INTO brokerage_accounts(account_id,opened_date,provenance_source) VALUES('broker_cop','2026-01-01','manual_entry');
       INSERT INTO brokerage_operation_revisions(id,operation_id,revision,account_id,operation_type,effective_date,currency,gross_amount_minor,net_cash_minor,funding_allocation_id,provenance_source) VALUES('brd','deposit',1,'broker_cop','deposit','2026-06-03','COP',60000,60000,'a1','manual_entry'),('brb','buy',1,'broker_cop','buy','2026-06-04','COP',60000,-60000,NULL,'manual_entry'),('brv','dividend',1,'broker_cop','dividend','2026-06-10','COP',1000,850,NULL,'manual_entry'),('brs','sell',1,'broker_cop','sell','2026-06-15','COP',30000,28500,NULL,'manual_entry'),('brw','withdraw',1,'broker_cop','withdrawal','2026-06-20','COP',2000,-2000,NULL,'manual_entry');
       INSERT INTO brokerage_operation_heads(operation_id,current_revision_id) VALUES('deposit','brd'),('buy','brb'),('dividend','brv'),('sell','brs'),('withdraw','brw');
@@ -49,7 +49,7 @@ fn consolidated_report_separates_capital_acquisitions_returns_currencies_and_pen
     assert_eq!(j["schema_version"], "tracky.investment-report.v1");
     assert_eq!(
         j["capital_external"]["external_capital_contributed"],
-        serde_json::json!([{"currency":"COP","amount_minor":100000},{"currency":"USD","amount_minor":5000}])
+        serde_json::json!([{"currency":"COP","amount_minor":101000},{"currency":"USD","amount_minor":5000}])
     );
     assert_eq!(
         j["capital_external"]["capital_withdrawn"],
@@ -65,7 +65,7 @@ fn consolidated_report_separates_capital_acquisitions_returns_currencies_and_pen
     );
     assert_eq!(
         j["acquisitions_and_reinvestment"]["funded_by_external_contribution"][0]["amount_minor"],
-        60000
+        5000
     );
     assert_eq!(
         j["acquisitions_and_reinvestment"]["reinvestment"],
@@ -114,12 +114,17 @@ fn consolidated_report_separates_capital_acquisitions_returns_currencies_and_pen
             .as_array()
             .unwrap()
             .len(),
-        1
+        2
     );
     assert_eq!(
         j["pending_and_reconciliation"]["provider_events"][0]["event_id"],
         "evt"
     );
+    assert!(j["pending_and_reconciliation"]["allocations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|x| x["contribution_id"] == "contrib_future" && x["status"] == "pending"));
     assert_eq!(before, fs::metadata(&path).unwrap().modified().unwrap());
 }
 
@@ -158,7 +163,7 @@ fn report_covers_cdt_renewal_and_uses_only_applicable_closing_snapshot() {
       INSERT INTO accounts(id,institution_id,label,currency,kind,is_owned) VALUES('acct','bank','CDT','COP','investment',1);
       INSERT INTO investment_instruments(id,name,instrument_type,denomination_currency,provider) VALUES('cdt','CDT','fixed_income','COP','bank');
       INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency,transaction_kind,investment_allocation_status) VALUES('capital','acct','2026-06-01','capital',-100000,'COP','investment_contribution','pending_allocation');
-      INSERT INTO investment_allocation_revisions(id,allocation_id,revision,contribution_transaction_id,instrument_id,cash_amount_minor,cash_currency,acquired_quantity,provenance_source) VALUES('rev','alloc',1,'capital','cdt',100000,'COP','1','manual_entry');
+      INSERT INTO investment_allocation_revisions(id,allocation_id,revision,contribution_transaction_id,instrument_id,cash_amount_minor,cash_currency,acquired_quantity,effective_date,provenance_source) VALUES('rev','alloc',1,'capital','cdt',100000,'COP','1','2026-06-01','manual_entry');
       INSERT INTO investment_allocation_heads(allocation_id,current_revision_id) VALUES('alloc','rev');
       INSERT INTO cdt_positions(id,instrument_id,account_id,constituent_allocation_id) VALUES('pos','cdt','acct','alloc');
       INSERT INTO cdt_operation_revisions(id,operation_id,revision,cdt_position_id,operation_type,effective_date,currency,principal_before_minor,principal_after_minor,external_capital_minor,capitalized_interest_minor,gross_interest_minor,maturity_date,provenance_source) VALUES

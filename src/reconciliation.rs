@@ -451,7 +451,7 @@ fn derived(
     if let Some(inst) = instrument {
         let mut qty: i128 = 0;
         let mut cost = 0i64;
-        let mut st=c.prepare("SELECT r.acquired_quantity,r.cash_amount_minor,COALESCE(r.fee_amount_minor,0),r.fee_treatment FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions ct ON ct.id=r.contribution_transaction_id WHERE ct.account_id=?1 AND r.instrument_id=?2 AND r.cash_currency=?3 AND ct.posted_date<=?4 AND NOT EXISTS(SELECT 1 FROM investment_allocation_consumptions x WHERE x.allocation_id=r.allocation_id)")?;
+        let mut st=c.prepare("SELECT r.acquired_quantity,r.cash_amount_minor,COALESCE(r.fee_amount_minor,0),r.fee_treatment FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions ct ON ct.id=r.contribution_transaction_id WHERE ct.account_id=?1 AND r.instrument_id=?2 AND r.cash_currency=?3 AND r.effective_date<=?4 AND NOT EXISTS(SELECT 1 FROM investment_allocation_consumptions x WHERE x.allocation_id=r.allocation_id)")?;
         let rows = st.query_map(params![account, inst, currency, date], |r| {
             Ok((
                 r.get::<_, String>(0)?,
@@ -571,7 +571,7 @@ fn apply_cash_adjustments(
 fn derived_keys(c: &Connection, date: &str) -> Result<Vec<(String, Option<String>, String)>> {
     let mut out = vec![];
     for sql in [
-        "SELECT DISTINCT ct.account_id,r.instrument_id,r.cash_currency FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions ct ON ct.id=r.contribution_transaction_id WHERE ct.posted_date<=?1 AND NOT EXISTS(SELECT 1 FROM investment_allocation_consumptions x WHERE x.allocation_id=r.allocation_id)",
+        "SELECT DISTINCT ct.account_id,r.instrument_id,r.cash_currency FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions ct ON ct.id=r.contribution_transaction_id WHERE r.effective_date<=?1 AND NOT EXISTS(SELECT 1 FROM investment_allocation_consumptions x WHERE x.allocation_id=r.allocation_id)",
         "SELECT DISTINCT r.account_id,r.instrument_id,r.currency FROM brokerage_operation_revisions r WHERE r.effective_date<=?1 AND r.id=(SELECT rr.id FROM brokerage_operation_revisions rr WHERE rr.operation_id=r.operation_id AND rr.effective_date<=?1 ORDER BY rr.revision DESC LIMIT 1)",
         "SELECT DISTINCT r.account_id,NULL,r.currency FROM brokerage_operation_revisions r WHERE r.effective_date<=?1 AND r.id=(SELECT rr.id FROM brokerage_operation_revisions rr WHERE rr.operation_id=r.operation_id AND rr.effective_date<=?1 ORDER BY rr.revision DESC LIMIT 1)",
         "SELECT DISTINCT p.account_id,p.instrument_id,r.currency FROM cdt_positions p JOIN cdt_operation_revisions r ON r.cdt_position_id=p.id WHERE r.effective_date<=?1 AND r.id=(SELECT rr.id FROM cdt_operation_revisions rr WHERE rr.operation_id=r.operation_id AND rr.effective_date<=?1 ORDER BY rr.revision DESC LIMIT 1)",

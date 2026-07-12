@@ -625,6 +625,12 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(REVIEW_FIRST_SCHEMA)?;
     add_column_if_missing(
         connection,
+        "investment_allocation_revisions",
+        "effective_date",
+        "ALTER TABLE investment_allocation_revisions ADD COLUMN effective_date TEXT",
+    )?;
+    add_column_if_missing(
+        connection,
         "provenance",
         "investment_document_event_id",
         "ALTER TABLE provenance ADD COLUMN investment_document_event_id TEXT REFERENCES investment_document_events(id)",
