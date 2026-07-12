@@ -15,6 +15,7 @@ use crate::investments::{
     list_instruments, list_positions, replace_allocation, AllocationInput, AllocationLegInput,
     AllocationReplacementInput, InstrumentCreateInput, InstrumentResponse, InvestmentResponse,
 };
+use crate::operations;
 use crate::pdf::{
     hex_sha256, inspect_pdf, source_document_id, supported_institution_hint_from_path, AccountHint,
     CredentialSource, DocumentDuplicateState, DocumentDuplicateStatus, ExtractorState,
@@ -107,6 +108,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    Backup(BackupArgs),
+    Integrity(IntegrityArgs),
+    Export(ExportArgs),
     Pdf(PdfCommand),
     Import(ImportCommand),
     Candidates(CandidatesCommand),
@@ -121,6 +125,34 @@ enum Commands {
     Brokerages(BrokeragesCommand),
     Snapshots(SnapshotsCommand),
     InvestmentDocuments(InvestmentDocumentsCommand),
+}
+
+#[derive(Debug, Parser)]
+struct BackupArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    destination: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct IntegrityArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
+struct ExportArgs {
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "include-review-audit")]
+    include_review_audit: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Parser)]
@@ -1389,6 +1421,25 @@ where
     W: Write,
 {
     match cli.command {
+        Commands::Backup(args) => {
+            require_json(args.json, "backup")?;
+            let destination = args.destination.unwrap_or_else(|| {
+                let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ").to_string();
+                operations::default_backup_path(&args.db, &timestamp)
+            });
+            let response = operations::backup(&args.db, &destination);
+            write_json_response(&mut stdout, response.ok, response, "writing backup JSON")
+        }
+        Commands::Integrity(args) => {
+            require_json(args.json, "integrity")?;
+            let response = operations::integrity(&args.db);
+            write_json_response(&mut stdout, response.ok, response, "writing integrity JSON")
+        }
+        Commands::Export(args) => {
+            require_json(args.json, "export")?;
+            let response = operations::export(&args.db, args.include_review_audit);
+            write_json_response(&mut stdout, response.ok, response, "writing export JSON")
+        }
         Commands::Pdf(pdf) => match pdf.command {
             PdfCommands::Inspect(args) => inspect_command(args, env_lookup, inspector, &mut stdout),
         },

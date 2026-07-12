@@ -12,12 +12,12 @@ Add operational commands that make the local-first SQLite database safe to use a
 
 ## Acceptance criteria
 
-- [ ] A user can create a timestamped SQLite backup from the CLI.
-- [ ] A user can run an integrity/check command that reports migration version, table counts, and obvious broken links.
-- [ ] A user can export canonical transactions, transaction lines, accounts, categories, income sources, transfers, and provenance links to CSV or JSON.
-- [ ] Export excludes pending/rejected candidates by default but can include review/audit data with an explicit flag.
-- [ ] Commands avoid writing to real home/config paths unless explicitly requested.
-- [ ] Tests cover backup creation, export shape, and integrity failure reporting.
+- [x] A user can create a timestamped SQLite backup from the CLI.
+- [x] A user can run an integrity/check command that reports migration version, table counts, and obvious broken links.
+- [x] A user can export canonical transactions, transaction lines, accounts, categories, income sources, transfers, and provenance links to CSV or JSON.
+- [x] Export excludes pending/rejected candidates by default but can include review/audit data with an explicit flag.
+- [x] Commands avoid writing to real home/config paths unless explicitly requested.
+- [x] Tests cover backup creation, export shape, and integrity failure reporting.
 
 ## Blocked by
 
