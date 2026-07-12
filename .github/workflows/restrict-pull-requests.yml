@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   close-untrusted:
-    if: github.event.pull_request.author_association != 'OWNER' && github.event.pull_request.author_association != 'MEMBER' && github.event.pull_request.author_association != 'COLLABORATOR'
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.author_association != 'OWNER' && github.event.pull_request.author_association != 'MEMBER' && github.event.pull_request.author_association != 'COLLABORATOR'
     runs-on: ubuntu-latest
     steps:
       - name: Close pull request
