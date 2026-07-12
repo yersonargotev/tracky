@@ -8,14 +8,14 @@ Labels: `ready-for-agent`
 
 ## What to build
 
-Extend the review-first import workflow to investment-provider documents so Tracky can reduce manual entry for trii, Wenia, and CDT records. Use a common investment-document boundary with provider-specific adapters rather than embedding provider assumptions in the canonical investment model.
+Extend the review-first import workflow to investment-provider documents so Tracky can reduce manual entry for Wenia and CDT records. Use a common investment-document boundary with provider-specific adapters rather than embedding provider assumptions in the canonical investment model. Trii is outside this scope because it does not provide an accessible statement from which to build and validate a responsible adapter.
 
 Implementation must be driven by representative, user-authorized source artifacts or privacy-safe fixtures derived from them. A bank description alone is not sufficient evidence of a specific security, digital asset, quantity, rate, or position.
 
 ## Acceptance criteria
 
 - [x] Investment documents are inspected and imported into reviewable provider events or snapshots before they can affect canonical positions.
-- [ ] Provider-specific adapters cover the representative trii movement/portfolio, Wenia movement, and CDT certificate/statement formats selected during implementation.
+- [x] Provider-specific adapters cover the representative Wenia and CDT certificate/statement formats selected during implementation; Trii remains explicitly unsupported until a representative statement becomes accessible.
 - [x] Each supported adapter has privacy-safe generated or redacted fixtures grounded in a representative artifact; no parser is claimed complete from filename or marketing-page assumptions alone.
 - [x] Imported deposits and snapshots map to the shared investment vocabulary without losing provider evidence; unsupported purchases, sales, dividends, fees, conversions, and incomplete CDT terms remain pending rather than being invented.
 - [x] Reconciliation links provider movements to bank-side contributions or withdrawals when evidence matches and surfaces unmatched or ambiguous rows for review.
@@ -37,8 +37,8 @@ Implementation must be driven by representative, user-authorized source artifact
 - `src/investment_documents.rs` and
   `docs/contracts/investment-provider-documents-json.md` define the common content-detected
   boundary, pending events, exact values, provenance, review, and durable deduplication.
-- Trii is explicitly unsupported because it provides no downloadable statement. Its adapter
-  criterion remains unchecked.
+- Trii is explicitly outside the supported adapter scope because it provides no accessible
+  statement from which to derive and validate a responsible parser.
 - Wenia evidence supports a portfolio snapshot, not movements. Plenti and NU show aggregate
   CDT balance/open/return wording but no contract identifier, maturity, or agreed rate; no CDT
   terms are invented.
@@ -50,8 +50,8 @@ Implementation must be driven by representative, user-authorized source artifact
 - Read-only reconciliation candidates are direction- and semantics-aware and distinguish unique,
   ambiguous, unmatched, already-reconciled, and incompatible results. Explicit selection is
   atomic and durable uniqueness prevents either side from being consumed twice.
-- Broad criteria for trii and unsupported purchases, sales, dividends, fees, conversions, or CDT
-  terms remain unchecked because no representative evidence supports them.
+- Unsupported purchases, sales, dividends, fees, conversions, or CDT terms remain pending because
+  no representative evidence supports promoting them into canonical operations.
 - Typed movement actions require provider and counterpart accounts and compare direction, shared
   semantics, date, amount, currency, and durable external references. Inspection expands the
   accepted canonical target or immutable snapshot chain.
