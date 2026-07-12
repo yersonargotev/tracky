@@ -34,7 +34,7 @@ pub(crate) fn detect_and_parse(
     };
     let rows = logical_rows(lines);
     let mut events = match provider {
-        Provider::Nu => parse_nu(source, lines),
+        Provider::Nu => parse_nu(source, lines, &rows),
         Provider::Plenti => parse_plenti(source, &rows),
         _ => parse_wenia(source, &rows),
     };
@@ -51,54 +51,86 @@ pub(crate) fn detect_and_parse(
 }
 
 fn logical_rows(lines: &[ExtractedLine]) -> Vec<ExtractedLine> {
-    let mut cells = lines.to_vec();
+    let mut rows = lines
+        .iter()
+        .filter(|line| line.bbox.is_none())
+        .cloned()
+        .map(|line| vec![line])
+        .collect::<Vec<_>>();
+    let mut cells = lines
+        .iter()
+        .filter(|line| line.bbox.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
     cells.sort_by(|a, b| {
-        let ay = a.bbox.map(|x| x.y).unwrap_or(0.0);
-        let by = b.bbox.map(|x| x.y).unwrap_or(0.0);
+        let ay = a.bbox.expect("layout cells have bounds").y;
+        let by = b.bbox.expect("layout cells have bounds").y;
         a.page
             .cmp(&b.page)
             .then_with(|| ay.total_cmp(&by))
-            .then_with(|| {
-                a.bbox
-                    .map(|x| x.x)
-                    .unwrap_or(0.0)
-                    .total_cmp(&b.bbox.map(|x| x.x).unwrap_or(0.0))
-            })
+            .then_with(|| a.bbox.unwrap().x.total_cmp(&b.bbox.unwrap().x))
     });
-    let mut rows: Vec<ExtractedLine> = Vec::new();
     for cell in cells {
-        let y = cell.bbox.map(|x| x.y).unwrap_or(0.0);
+        let y = cell.bbox.expect("layout cells have bounds").y;
         if let Some(row) = rows.last_mut() {
-            let row_y = row.bbox.map(|x| x.y).unwrap_or(0.0);
-            if row.bbox.is_some()
-                && cell.bbox.is_some()
-                && row.page == cell.page
-                && (row_y - y).abs() <= 3.0
-            {
-                row.text.push(' ');
-                row.text.push_str(&cell.text);
+            let first = &row[0];
+            let row_y = first.bbox.map(|bounds| bounds.y);
+            if first.page == cell.page && row_y.is_some_and(|row_y| (row_y - y).abs() <= 3.0) {
+                row.push(cell);
                 continue;
             }
         }
-        rows.push(cell);
+        rows.push(vec![cell]);
     }
-    rows
+    rows.into_iter()
+        .map(|mut cells| {
+            cells.sort_by(|a, b| {
+                a.bbox
+                    .map(|bounds| bounds.x)
+                    .unwrap_or(0.0)
+                    .total_cmp(&b.bbox.map(|bounds| bounds.x).unwrap_or(0.0))
+            });
+            let mut row = cells.remove(0);
+            for cell in cells {
+                row.text.push(' ');
+                row.text.push_str(&cell.text);
+            }
+            row
+        })
+        .collect()
 }
 
-fn parse_nu(source: &str, lines: &[ExtractedLine]) -> Vec<ProviderEvent> {
+fn parse_nu(
+    source: &str,
+    lines: &[ExtractedLine],
+    logical_rows: &[ExtractedLine],
+) -> Vec<ProviderEvent> {
     let re=Regex::new(r"(?i)(\d{2})\s+(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\s+(Abriste\s+un\s+CDT|Recibiste\s+dinero\s+de\s+un\s+CDT|Enviaste\s+a\s+Plenti)\s+([+-]?\$\s*[\d.,]+)").unwrap();
     let Some(year) = year_from(lines) else {
         return vec![];
     };
-    let text = lines
+    let linear_text = lines
         .iter()
         .filter(|x| x.bbox.is_none())
         .map(|x| x.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    re.captures_iter(&text)
+    let mut rows = logical_rows
+        .iter()
         .enumerate()
-        .filter_map(|(index, c)| {
+        .filter(|(_, row)| row.bbox.is_some())
+        .map(|(index, row)| (row.page, index + 1, row.text.clone()))
+        .collect::<Vec<_>>();
+    rows.extend(
+        re.captures_iter(&linear_text)
+            .enumerate()
+            .filter_map(|(index, captures)| {
+                Some((1, index + 1, captures.get(0)?.as_str().to_owned()))
+            }),
+    );
+    rows.iter()
+        .filter_map(|(page, row_index, text)| {
+            let c = re.captures(text)?;
             let kind = c[3].to_lowercase();
             let typ = if kind.starts_with("abriste") {
                 "cdt_opening"
@@ -122,8 +154,8 @@ fn parse_nu(source: &str, lines: &[ExtractedLine]) -> Vec<ProviderEvent> {
                 instrument_hint: None,
                 quantity: None,
                 external_reference: None,
-                page_number: 1,
-                row_index: index + 1,
+                page_number: *page,
+                row_index: *row_index,
                 evidence_redaction: redact(c.get(0)?.as_str()),
                 fingerprint: fp,
                 status: ReviewStatus::PendingReview,

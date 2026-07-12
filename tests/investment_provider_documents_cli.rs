@@ -17,19 +17,49 @@ fn synthetic_encrypted_nu_pdf(path: &std::path::Path, password: &str) {
         operations: vec![
             Operation::new("BT", vec![]),
             Operation::new("Tf", vec!["F1".into(), 12.into()]),
-            Operation::new("Td", vec![50.into(), 700.into()]),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    50.into(),
+                    700.into(),
+                ],
+            ),
             Operation::new(
                 "Tj",
                 vec![Object::string_literal(
                     "Llego tu extracto Junio 2026 CDT Nu",
                 )],
             ),
-            Operation::new("Td", vec![0.into(), (-20).into()]),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    360.into(),
+                    680.into(),
+                ],
+            ),
+            Operation::new("Tj", vec![Object::string_literal("-$2.000,00")]),
+            Operation::new(
+                "Tm",
+                vec![
+                    1.into(),
+                    0.into(),
+                    0.into(),
+                    1.into(),
+                    50.into(),
+                    680.into(),
+                ],
+            ),
             Operation::new(
                 "Tj",
-                vec![Object::string_literal(
-                    "16 jun Enviaste a Plenti -$2.000,00",
-                )],
+                vec![Object::string_literal("16 jun Enviaste a Plenti")],
             ),
             Operation::new("ET", vec![]),
         ],

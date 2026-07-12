@@ -329,6 +329,7 @@ fn extraction_error() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pdf::BBox;
 
     fn line(page: usize, text: &str) -> ExtractedLine {
         ExtractedLine {
@@ -336,6 +337,76 @@ mod tests {
             text: text.into(),
             bbox: None,
         }
+    }
+
+    fn cell(page: usize, text: &str, x: f32, y: f32) -> ExtractedLine {
+        ExtractedLine {
+            page,
+            text: text.into(),
+            bbox: Some(BBox {
+                x,
+                y,
+                width: 40.0,
+                height: 10.0,
+                unit: "pdf_point",
+            }),
+        }
+    }
+
+    #[test]
+    fn nu_amount_cell_fragment_is_parsed_from_its_visual_row() {
+        let lines = vec![
+            line(1, "Llegó tu extracto de Abril 2026 CDT Nu"),
+            cell(2, "07 abr Abriste un CDT", 40.0, 300.0),
+            cell(2, "-$1.234.567,89", 360.0, 301.0),
+        ];
+
+        let (_, events) = detect_and_parse("src", &lines).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, EventType::CdtOpening);
+        assert_eq!(events[0].provider_effective_date, "2026-04-07");
+        assert_eq!(events[0].amount_minor, Some(-123_456_789));
+        assert_eq!(events[0].page_number, 2);
+        assert!(events[0]
+            .evidence_redaction
+            .chars()
+            .all(|c| !c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn nu_date_description_and_amount_cells_form_one_stable_event() {
+        let lines = vec![
+            line(1, "Llegó tu extracto de Mayo 2026 CDT Nu"),
+            cell(3, "19 may", 40.0, 420.0),
+            cell(3, "Recibiste dinero de un CDT", 120.0, 420.0),
+            cell(3, "+$1.050.000,00", 370.0, 420.0),
+        ];
+
+        let (_, first) = detect_and_parse("src", &lines).unwrap();
+        let (_, second) = detect_and_parse("src", &lines).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].event_type, EventType::CdtReturn);
+        assert_eq!(first[0].provider_effective_date, "2026-05-19");
+        assert_eq!(first[0].amount_minor, Some(105_000_000));
+        assert_eq!(first[0].page_number, 3);
+    }
+
+    #[test]
+    fn nu_linear_and_layout_copies_of_a_movement_are_deduplicated() {
+        let lines = vec![
+            line(1, "Llegó tu extracto de Junio 2026 CDT Nu"),
+            line(2, "24 jun Abriste un CDT -$900.000,00"),
+            cell(2, "24 jun Abriste un CDT", 40.0, 300.0),
+            cell(2, "-$900.000,00", 360.0, 300.0),
+        ];
+
+        let (_, events) = detect_and_parse("src", &lines).unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].amount_minor, Some(-90_000_000));
     }
 
     #[test]

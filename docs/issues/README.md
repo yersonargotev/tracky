@@ -34,6 +34,7 @@ A slice is **completed** when every acceptance criterion in its issue file is ch
 26. `0028-track-complete-cdt-lifecycle.md` — exact constitution, renewal, redemption, and append-only CDT history.
 27. `0029-track-complete-brokerage-investment-lifecycle.md` — exact brokerage cash, securities, realized results, costs, withdrawals, and append-only history.
 28. `0030-reconcile-investment-positions-and-dated-valuations.md` — immutable dated snapshots, deterministic reconciliation, freshness, and reviewed append-only adjustments.
+29. `0035-parse-layout-fragmented-nu-investment-rows.md` — recover supported Nu movements when PDF extraction fragments visual rows.
 
 ## Pending queue
 
