@@ -112,6 +112,43 @@ pub struct CandidateReviewResponse {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CandidateActionExplanationResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    pub candidate_id: String,
+    pub actions: Vec<CandidateActionExplanation>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CandidateActionExplanation {
+    pub action: CandidateReviewAction,
+    pub status: CandidateActionStatus,
+    pub reason_code: &'static str,
+    pub dimensions: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateReviewAction {
+    AcceptIncome,
+    AcceptExpense,
+    AcceptInvestment,
+    AcceptTransferPair,
+    RejectDuplicate,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateActionStatus {
+    Available,
+    Blocked,
+    RequiresExplicitData,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct TransferReviewResponse {
     pub schema_version: &'static str,
     pub command: &'static str,
@@ -653,6 +690,8 @@ pub struct ReviewError {
 }
 
 pub const CANDIDATE_REVIEW_SCHEMA_VERSION: &str = "tracky.candidate-review.v1";
+pub const CANDIDATE_ACTION_EXPLANATION_SCHEMA_VERSION: &str =
+    "tracky.candidate-action-explanation.v1";
 pub const TRANSFER_REVIEW_SCHEMA_VERSION: &str = "tracky.transfer-review.v1";
 const OWN_ACCOUNT_TRANSFER_KIND: &str = "own_account_transfer";
 const CARD_PAYMENT_TRANSFER_KIND: &str = "card_payment";
@@ -3062,6 +3101,163 @@ pub fn list_likely_transfer_pairs(connection: &Connection) -> Result<TransferRev
     })
 }
 
+pub fn explain_candidate_actions(
+    connection: &Connection,
+    candidate_id: &str,
+) -> Result<CandidateActionExplanationResponse> {
+    let command = "candidates explain-actions";
+    let Some(candidate) = find_review_candidate(connection, candidate_id)? else {
+        return Ok(CandidateActionExplanationResponse {
+            schema_version: CANDIDATE_ACTION_EXPLANATION_SCHEMA_VERSION,
+            command,
+            ok: false,
+            candidate_id: candidate_id.to_string(),
+            actions: Vec::new(),
+            errors: vec![candidate_not_found_error(candidate_id, "candidate_id")],
+        });
+    };
+    let state_reason = typed_candidate_state_error(&candidate, "review action").map(|e| e.code);
+    let transfer_pairs = likely_transfer_pairs_from_candidates(
+        connection,
+        &list_review_candidates(connection, None, None)?,
+    )?;
+    let transfer_pair_count = transfer_pairs
+        .iter()
+        .filter(|pair| {
+            pair.from_candidate.id == candidate.id || pair.to_candidate.id == candidate.id
+        })
+        .count();
+    let base_dimensions = serde_json::json!({
+        "candidate_status": candidate.status,
+        "duplicate_status": candidate.duplicate_status.status,
+        "direction_hint": candidate.direction_hint,
+        "semantic_hint": candidate.semantic_hint,
+        "account_resolution_status": candidate.account_resolution.status,
+        "account_resolution_reason": candidate.account_resolution.reason,
+        "compatible_account_count": candidate.account_resolution.compatible_account_count,
+        "preventing_dimensions": candidate.account_resolution.preventing_dimensions,
+    });
+    let action = |action, status, reason_code, dimensions| CandidateActionExplanation {
+        action,
+        status,
+        reason_code,
+        dimensions,
+    };
+    let acceptance = |name: CandidateReviewAction,
+                      eligible: bool,
+                      explicit_data_reason: Option<&'static str>,
+                      shape_reason: &'static str| {
+        if let Some(reason) = state_reason {
+            action(
+                name,
+                CandidateActionStatus::Blocked,
+                reason,
+                base_dimensions.clone(),
+            )
+        } else if !eligible {
+            action(
+                name,
+                CandidateActionStatus::Blocked,
+                shape_reason,
+                base_dimensions.clone(),
+            )
+        } else if transfer_pair_count > 0 {
+            action(
+                name,
+                CandidateActionStatus::Blocked,
+                "candidate_possible_own_account_transfer",
+                base_dimensions.clone(),
+            )
+        } else {
+            action(
+                name,
+                if explicit_data_reason.is_some() {
+                    CandidateActionStatus::RequiresExplicitData
+                } else {
+                    CandidateActionStatus::Available
+                },
+                explicit_data_reason.unwrap_or("action_available"),
+                base_dimensions.clone(),
+            )
+        }
+    };
+    let mut actions = vec![
+        acceptance(
+            CandidateReviewAction::AcceptIncome,
+            is_income_candidate_shape(&candidate),
+            Some("income_source_and_kind_required"),
+            "candidate_not_income_eligible",
+        ),
+        acceptance(
+            CandidateReviewAction::AcceptExpense,
+            is_expense_candidate_shape(&candidate),
+            Some("expense_lines_required"),
+            "candidate_not_expense_eligible",
+        ),
+        acceptance(
+            CandidateReviewAction::AcceptInvestment,
+            is_investment_candidate_shape(&candidate),
+            None,
+            "candidate_not_investment_eligible",
+        ),
+    ];
+    let transfer_reason = if let Some(reason) = state_reason {
+        reason
+    } else if transfer_pair_count > 0 {
+        "action_available"
+    } else if candidate.account_id.is_none() {
+        "transfer_pair_account_unresolved"
+    } else {
+        "transfer_pair_not_matching"
+    };
+    let mut transfer_dimensions = base_dimensions.clone();
+    transfer_dimensions["matching_pair_count"] = serde_json::json!(transfer_pair_count);
+    actions.push(action(
+        CandidateReviewAction::AcceptTransferPair,
+        if transfer_reason == "action_available" {
+            CandidateActionStatus::Available
+        } else {
+            CandidateActionStatus::Blocked
+        },
+        transfer_reason,
+        transfer_dimensions,
+    ));
+    let rejection_reason = candidate_rejection_error(&candidate).map(|e| e.code);
+    let obvious_duplicate = is_obvious_unreviewed_duplicate(connection, &candidate)?;
+    actions.push(action(
+        CandidateReviewAction::RejectDuplicate,
+        if rejection_reason.is_none() && obvious_duplicate {
+            CandidateActionStatus::Available
+        } else {
+            CandidateActionStatus::Blocked
+        },
+        rejection_reason.unwrap_or(if obvious_duplicate {
+            "action_available"
+        } else {
+            "candidate_not_obvious_duplicate"
+        }),
+        base_dimensions.clone(),
+    ));
+    actions.push(action(
+        CandidateReviewAction::Reject,
+        if rejection_reason.is_none() {
+            CandidateActionStatus::Available
+        } else {
+            CandidateActionStatus::Blocked
+        },
+        rejection_reason.unwrap_or("action_available"),
+        base_dimensions,
+    ));
+    Ok(CandidateActionExplanationResponse {
+        schema_version: CANDIDATE_ACTION_EXPLANATION_SCHEMA_VERSION,
+        command,
+        ok: true,
+        candidate_id: candidate.id,
+        actions,
+        errors: Vec::new(),
+    })
+}
+
 pub fn accept_transfer_pair(
     connection: &mut Connection,
     from_candidate_id: &str,
@@ -3449,10 +3645,7 @@ pub fn accept_investment_candidate(
             serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
         ));
     }
-    if candidate.semantic_hint.as_deref() != Some("bank_movement")
-        || candidate.direction_hint.as_deref() != Some("outflow")
-        || candidate.amount_minor >= 0
-    {
+    if !is_investment_candidate_shape(&candidate) {
         return Ok(review_error_response(
             command,
             "conflict",
@@ -4909,6 +5102,12 @@ fn is_expense_candidate_shape(candidate: &ReviewCandidate) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_investment_candidate_shape(candidate: &ReviewCandidate) -> bool {
+    candidate.semantic_hint.as_deref() == Some("bank_movement")
+        && candidate.direction_hint.as_deref() == Some("outflow")
+        && candidate.amount_minor < 0
 }
 
 fn expense_amount_minor(candidate: &ReviewCandidate) -> i64 {

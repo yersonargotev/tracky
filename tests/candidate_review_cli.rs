@@ -114,6 +114,209 @@ fn tracky() -> &'static str {
 }
 
 #[test]
+fn candidate_review_cli_explains_all_actions_without_exposing_evidence_or_mutating() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Synthetic wallet", "wallet");
+    persist_pdf_import(
+        &mut connection,
+        inspect_response("abababababababababababababababababababababababababababababababab"),
+    )
+    .expect("persist synthetic import");
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET semantic_hint = 'card_charge' WHERE id = 'cand_review_002'",
+            [],
+        )
+        .expect("make synthetic expense candidate");
+    let before: (i64, String) = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM canonical_transactions), status FROM candidate_transactions WHERE id = 'cand_review_002'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("state before explain");
+    drop(connection);
+
+    let first = Command::new(tracky())
+        .args([
+            "candidates",
+            "explain-actions",
+            "cand_review_002",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("explain candidate actions");
+    let second = Command::new(tracky())
+        .args([
+            "candidates",
+            "explain-actions",
+            "cand_review_002",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("repeat explanation");
+    assert!(first.status.success());
+    assert_eq!(first.stdout, second.stdout);
+    let json: serde_json::Value = serde_json::from_slice(&first.stdout).expect("explanation JSON");
+    assert_eq!(
+        json["schema_version"],
+        "tracky.candidate-action-explanation.v1"
+    );
+    assert_eq!(json["actions"].as_array().unwrap().len(), 6);
+    assert_eq!(json["actions"][1]["action"], "accept_expense");
+    assert_eq!(json["actions"][1]["status"], "requires_explicit_data");
+    assert_eq!(json["actions"][1]["reason_code"], "expense_lines_required");
+    let serialized = String::from_utf8(first.stdout).expect("utf8 JSON");
+    assert!(!serialized.contains("Another redacted merchant"));
+    assert!(!serialized.contains("evidence"));
+    assert!(!serialized.contains("credential"));
+    let connection = Connection::open(&db_path).expect("reopen db");
+    let after: (i64, String) = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM canonical_transactions), status FROM candidate_transactions WHERE id = 'cand_review_002'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("state after explain");
+    assert_eq!(before, after);
+    drop(connection);
+    create_category_cli(db_path.to_str().unwrap(), "Synthetic expense");
+    let accepted = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-expense",
+            "cand_review_002",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--category-id",
+            "cat_synthetic_expense",
+            "--json",
+        ])
+        .output()
+        .expect("accept synthetic expense");
+    assert!(accepted.status.success());
+    let explained_after_accept = Command::new(tracky())
+        .args([
+            "candidates",
+            "explain-actions",
+            "cand_review_002",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("explain accepted candidate");
+    let accepted_json: serde_json::Value =
+        serde_json::from_slice(&explained_after_accept.stdout).expect("accepted explanation");
+    assert!(accepted_json["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action["status"] == "blocked"));
+}
+
+#[test]
+fn candidate_action_explanation_covers_duplicate_ambiguous_and_no_valid_action_states() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    persist_pdf_import(
+        &mut connection,
+        inspect_response("cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"),
+    )
+    .expect("persist synthetic import");
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET status = 'possible_duplicate', duplicate_status = 'exact_duplicate' WHERE id = 'cand_review_002'",
+            [],
+        )
+        .expect("mark possible duplicate");
+    drop(connection);
+    let explain = |candidate_id: &str| {
+        let output = Command::new(tracky())
+            .args([
+                "candidates",
+                "explain-actions",
+                candidate_id,
+                "--db",
+                db,
+                "--json",
+            ])
+            .output()
+            .expect("explain actions");
+        assert!(
+            output.status.success(),
+            "stdout: {}; stderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).expect("explanation JSON")
+    };
+    let duplicate = explain("cand_review_002");
+    assert_eq!(duplicate["actions"][4]["status"], "blocked");
+    assert_eq!(
+        duplicate["actions"][4]["reason_code"],
+        "candidate_not_obvious_duplicate"
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET account_id = NULL, account_resolution_json = '{\"status\":\"ambiguous\",\"reason\":\"multiple_compatible_accounts\",\"compatible_account_count\":2,\"preventing_dimensions\":[\"label_or_type\"]}' WHERE id = 'cand_review_002'",
+            [],
+        )
+        .expect("make account resolution ambiguous");
+    drop(connection);
+    let ambiguous = explain("cand_review_002");
+    assert_eq!(
+        ambiguous["actions"][3]["reason_code"],
+        "transfer_pair_account_unresolved"
+    );
+    assert_eq!(
+        ambiguous["actions"][3]["dimensions"]["account_resolution_reason"],
+        "multiple_compatible_accounts"
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET account_resolution_json = '{\"status\":\"unresolved\",\"reason\":\"no_match\",\"compatible_account_count\":0,\"preventing_dimensions\":[\"institution\"]}' WHERE id = 'cand_review_002'",
+            [],
+        )
+        .expect("make account unresolved");
+    drop(connection);
+    let unresolved = explain("cand_review_002");
+    assert_eq!(
+        unresolved["actions"][3]["dimensions"]["account_resolution_status"],
+        "unresolved"
+    );
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET status = 'rejected' WHERE id = 'cand_review_002'",
+            [],
+        )
+        .expect("mark reviewed");
+    drop(connection);
+    let reviewed = explain("cand_review_002");
+    assert!(reviewed["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|action| action["status"] == "blocked"));
+}
+
+#[test]
 fn candidate_list_exposes_machine_readable_account_resolution() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("tracky.sqlite");
@@ -1030,6 +1233,25 @@ fn candidate_review_cli_resolves_owned_bank_movement_pair_coherently() {
     assert_eq!(
         listed["transfer_pairs"][0]["transfer_kind"],
         "own_account_transfer"
+    );
+    let explained = Command::new(tracky())
+        .args([
+            "candidates",
+            "explain-actions",
+            "cand_owned_bank_inflow",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("explain transfer-like candidate");
+    assert!(explained.status.success());
+    let explained: serde_json::Value =
+        serde_json::from_slice(&explained.stdout).expect("transfer explanation JSON");
+    assert_eq!(explained["actions"][3]["status"], "available");
+    assert_eq!(
+        explained["actions"][0]["reason_code"],
+        "candidate_possible_own_account_transfer"
     );
     let import_batch_id = listed["transfer_pairs"][0]["from_candidate"]["import_batch_id"]
         .as_str()

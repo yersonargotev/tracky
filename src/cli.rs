@@ -33,12 +33,13 @@ use crate::storage::{
     batch_review_error_response_with_dry_run, category_registry_error_response,
     compare_duplicate_candidate, create_category, create_income_source, create_manual_expense,
     create_manual_income, create_manual_investment, create_manual_transfer,
-    duplicate_import_response, finance_report_error_response, find_source_document_by_hash,
-    income_source_registry_error_response, inspect_canonical_transaction,
-    list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
-    list_owned_accounts, list_review_candidates, persist_pdf_import, register_owned_account,
-    reject_candidate, replace_expense_transaction_lines, review_error_response,
-    suggest_batch_actions, summarize_finances, summarize_import_batch, transfer_error_response,
+    duplicate_import_response, explain_candidate_actions, finance_report_error_response,
+    find_source_document_by_hash, income_source_registry_error_response,
+    inspect_canonical_transaction, list_canonical_transactions, list_categories,
+    list_income_sources, list_likely_transfer_pairs, list_owned_accounts, list_review_candidates,
+    persist_pdf_import, register_owned_account, reject_candidate,
+    replace_expense_transaction_lines, review_error_response, suggest_batch_actions,
+    summarize_finances, summarize_import_batch, transfer_error_response,
     update_canonical_transaction, AccountRegisterInput, AccountRegistryResponse,
     BatchActionRequest, BatchReviewResponse, CandidateReviewResponse, CategoryCreateInput,
     CategoryRegistryResponse, ExpenseLineInput, FinanceReportResponse, ImportPdfResponse,
@@ -884,6 +885,7 @@ enum CandidateCommands {
     SuggestActions(CandidateSuggestActionsArgs),
     ApplyActions(CandidateApplyActionsArgs),
     AssignAccount(CandidateAssignAccountArgs),
+    ExplainActions(CandidateActionArgs),
     Accept(CandidateActionArgs),
     AcceptIncome(CandidateIncomeAcceptArgs),
     AcceptExpense(CandidateExpenseAcceptArgs),
@@ -1477,6 +1479,9 @@ where
             }
             CandidateCommands::AssignAccount(args) => {
                 candidate_assign_account_command(args, &mut stdout)
+            }
+            CandidateCommands::ExplainActions(args) => {
+                candidate_explain_actions_command(args, &mut stdout)
             }
             CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
             CandidateCommands::AcceptIncome(args) => {
@@ -3190,6 +3195,25 @@ where
     let mut connection = open_review_database(&args.db)?;
     let response = accept_candidate(&mut connection, &args.candidate_id)?;
     write_candidate_review_response(stdout, response)
+}
+
+fn candidate_explain_actions_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) =
+        require_candidate_json(args.json, stdout, "candidates explain-actions")?
+    {
+        return Ok(exit_code);
+    }
+    let connection = open_readonly_database(&args.db)?;
+    let response = explain_candidate_actions(&connection, &args.candidate_id)?;
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing candidate action explanation JSON",
+    )
 }
 
 fn candidate_assign_account_command<W>(
