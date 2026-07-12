@@ -43,6 +43,51 @@ fn migrations_create_review_first_tables() {
 }
 
 #[test]
+fn migrations_expand_legacy_transfer_pair_kind_without_losing_indexes() {
+    let (_dir, connection) = temporary_database();
+    connection
+        .execute_batch(
+            "CREATE TABLE canonical_transfer_pairs (
+               id TEXT PRIMARY KEY,
+               transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment')),
+               posted_date TEXT NOT NULL,
+               amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+               currency TEXT NOT NULL,
+               from_account_id TEXT NOT NULL REFERENCES accounts(id),
+               to_account_id TEXT NOT NULL REFERENCES accounts(id),
+               from_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+               to_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+               from_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+               to_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+               accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+             );",
+        )
+        .expect("create legacy transfer-pair table");
+
+    apply_migrations(&connection).expect("migrate transfer-pair kind");
+
+    let sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='canonical_transfer_pairs'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read migrated table SQL");
+    let index_count: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN (
+               'idx_canonical_transfer_pairs_from_candidate',
+               'idx_canonical_transfer_pairs_to_candidate'
+             )",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count rebuilt indexes");
+    assert!(sql.contains("'own_account_transfer'"));
+    assert_eq!(index_count, 2);
+}
+
+#[test]
 fn migrations_create_investment_instrument_and_append_only_allocation_tables() {
     let (_dir, connection) = temporary_database();
     apply_migrations(&connection).expect("apply migrations");

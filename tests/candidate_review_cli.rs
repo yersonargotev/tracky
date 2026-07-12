@@ -624,6 +624,142 @@ fn candidate_review_cli_lists_and_accepts_nequi_to_rappicard_pse_pair() {
 }
 
 #[test]
+fn candidate_review_cli_resolves_owned_bank_movement_pair_coherently() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "synthetic_a", "Primary wallet", "wallet");
+    register_account(&connection, "synthetic_b", "Savings pocket", "savings");
+    for fixture in [
+        TransferCandidateFixture {
+            hash: "3131313131313131313131313131313131313131313131313131313131313131",
+            institution: "synthetic_a",
+            account_label: "Primary wallet",
+            candidate_id: "cand_owned_bank_outflow",
+            description: "OWN ACCOUNT MOVE OUT REDACTED",
+            amount_minor: -321_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+        TransferCandidateFixture {
+            hash: "3232323232323232323232323232323232323232323232323232323232323232",
+            institution: "synthetic_b",
+            account_label: "Savings pocket",
+            candidate_id: "cand_owned_bank_inflow",
+            description: "OWN ACCOUNT MOVE IN REDACTED",
+            amount_minor: 321_000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+    ] {
+        persist_pdf_import(&mut connection, transfer_inspect_response(fixture))
+            .expect("persist owned bank movement");
+    }
+    drop(connection);
+    create_income_source_cli(db, "Synthetic income");
+    create_category_cli(db, "Synthetic expense");
+
+    let listed = Command::new(tracky())
+        .args(["candidates", "list-transfer-pairs", "--db", db, "--json"])
+        .output()
+        .expect("list bank transfer pair");
+    assert!(listed.status.success());
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("list JSON");
+    assert_eq!(listed["transfer_pairs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        listed["transfer_pairs"][0]["transfer_kind"],
+        "own_account_transfer"
+    );
+    let import_batch_id = listed["transfer_pairs"][0]["from_candidate"]["import_batch_id"]
+        .as_str()
+        .unwrap();
+    let suggested = Command::new(tracky())
+        .args([
+            "candidates",
+            "suggest-actions",
+            "--db",
+            db,
+            "--import-batch-id",
+            import_batch_id,
+            "--json",
+        ])
+        .output()
+        .expect("suggest bank transfer pair");
+    assert!(suggested.status.success());
+    let suggested: serde_json::Value =
+        serde_json::from_slice(&suggested.stdout).expect("suggestions JSON");
+    assert_eq!(suggested["suggestions"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        suggested["suggestions"][0]["proposed_action"],
+        "accept_transfer_pair"
+    );
+
+    for args in [
+        vec![
+            "candidates",
+            "accept-income",
+            "cand_owned_bank_inflow",
+            "--db",
+            db,
+            "--income-source-id",
+            "incsrc_synthetic_income",
+            "--income-kind",
+            "other",
+            "--json",
+        ],
+        vec![
+            "candidates",
+            "accept-expense",
+            "cand_owned_bank_outflow",
+            "--db",
+            db,
+            "--category-id",
+            "cat_synthetic_expense",
+            "--json",
+        ],
+    ] {
+        let refused = Command::new(tracky())
+            .args(args)
+            .output()
+            .expect("refuse typed review");
+        assert!(!refused.status.success());
+        let refused: serde_json::Value =
+            serde_json::from_slice(&refused.stdout).expect("refusal JSON");
+        assert_eq!(
+            refused["errors"][0]["code"],
+            "candidate_possible_own_account_transfer"
+        );
+    }
+
+    let accepted = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-transfer-pair",
+            "cand_owned_bank_outflow",
+            "cand_owned_bank_inflow",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("accept bank transfer pair");
+    assert!(
+        accepted.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&accepted.stdout),
+        String::from_utf8_lossy(&accepted.stderr)
+    );
+    let accepted: serde_json::Value =
+        serde_json::from_slice(&accepted.stdout).expect("accept JSON");
+    assert_eq!(
+        accepted["transfer_pair"]["transfer_kind"],
+        "own_account_transfer"
+    );
+}
+
+#[test]
 fn candidate_review_cli_refuses_non_matching_or_unresolved_transfer_pairs() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("tracky.sqlite");

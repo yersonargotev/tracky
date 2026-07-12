@@ -23,16 +23,28 @@ unresolved condition without falsely claiming that a valid pair exists.
 
 ## Acceptance criteria
 
-- [ ] One shared, direction-aware rule set governs transfer suspicion, pair suggestions, and pair
+- [x] One shared, direction-aware rule set governs transfer suspicion, pair suggestions, and pair
   acceptance across bank movements and card payments.
-- [ ] A candidate is never blocked from every supported review action solely because the transfer
+- [x] A candidate is never blocked from every supported review action solely because the transfer
   predicates disagree.
-- [ ] The confirmed privacy-safe Nequi/Nu stranded shape has a deterministic actionable outcome.
-- [ ] Existing accepted Nequi-to-Rappi card-payment pairs remain compatible and non-transfer
+- [x] The confirmed privacy-safe Nequi/Nu stranded shape has a deterministic actionable outcome.
+- [x] Existing accepted Nequi-to-Rappi card-payment pairs remain compatible and non-transfer
   income/expenses do not become permissive.
-- [ ] Public tests cover suggestion, direct acceptance, individual-review refusal, and the
+- [x] Public tests cover suggestion, direct acceptance, individual-review refusal, and the
   previously stranded boundary without real descriptions, amounts, or account identifiers.
 
 ## Blocked by
 
 - None — can start immediately.
+
+## Reconciliation evidence
+
+- `src/storage.rs` now derives individual typed-review suspicion from the same admissible pairs used
+  by listing, batch suggestions, direct acceptance, and batch action preflight.
+- The shared direction-aware shape accepts an owned bank outflow paired with either a card-payment
+  candidate or an owned bank-movement inflow, while preserving the transfer-review JSON schema and
+  distinguishing `card_payment` from `own_account_transfer`. The migration expands the persisted
+  kind constraint without losing existing card-payment pairs or indexes.
+- `tests/candidate_review_cli.rs` covers privacy-safe bank-to-bank listing, batch suggestion, typed
+  income/expense refusal, and direct pair acceptance alongside the existing Nequi-to-Rappi
+  regression coverage; `tests/storage_migrations.rs` covers legacy-schema evolution.

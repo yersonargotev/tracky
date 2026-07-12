@@ -623,6 +623,7 @@ const INCOME_KINDS: &[&str] = &[
 /// Apply Tracky's SQLite migrations needed for the review-first import store.
 pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(REVIEW_FIRST_SCHEMA)?;
+    migrate_canonical_transfer_pair_kind_check(connection)?;
     add_column_if_missing(
         connection,
         "investment_allocation_revisions",
@@ -739,7 +740,7 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         CREATE INDEX IF NOT EXISTS idx_transaction_lines_category ON transaction_lines(category_id);
         CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
             id TEXT PRIMARY KEY,
-            transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment')),
+            transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment', 'own_account_transfer')),
             posted_date TEXT NOT NULL,
             amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
             currency TEXT NOT NULL,
@@ -816,6 +817,43 @@ fn migrate_provider_provenance_check(connection: &Connection) -> rusqlite::Resul
          SELECT id,candidate_transaction_id,canonical_transaction_id,investment_document_event_id,investment_snapshot_id,source_document_id,import_batch_id,page_number,row_index,bbox_x,bbox_y,bbox_width,bbox_height,bbox_unit,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,raw_evidence_ref,confidence,created_at FROM provenance;
          DROP TABLE provenance;
          ALTER TABLE provenance_v2 RENAME TO provenance;
+         COMMIT;
+         PRAGMA foreign_keys=ON;",
+    )
+}
+
+fn migrate_canonical_transfer_pair_kind_check(connection: &Connection) -> rusqlite::Result<()> {
+    let sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='canonical_transfer_pairs'",
+        [],
+        |row| row.get(0),
+    )?;
+    if sql.contains("'own_account_transfer'") {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         BEGIN IMMEDIATE;
+         CREATE TABLE canonical_transfer_pairs_v2 (
+           id TEXT PRIMARY KEY,
+           transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment', 'own_account_transfer')),
+           posted_date TEXT NOT NULL,
+           amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+           currency TEXT NOT NULL,
+           from_account_id TEXT NOT NULL REFERENCES accounts(id),
+           to_account_id TEXT NOT NULL REFERENCES accounts(id),
+           from_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+           to_candidate_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+           from_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+           to_canonical_transaction_id TEXT NOT NULL UNIQUE REFERENCES canonical_transactions(id),
+           accepted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         );
+         INSERT INTO canonical_transfer_pairs_v2
+         SELECT * FROM canonical_transfer_pairs;
+         DROP TABLE canonical_transfer_pairs;
+         ALTER TABLE canonical_transfer_pairs_v2 RENAME TO canonical_transfer_pairs;
+         CREATE INDEX idx_canonical_transfer_pairs_from_candidate ON canonical_transfer_pairs(from_candidate_id);
+         CREATE INDEX idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);
          COMMIT;
          PRAGMA foreign_keys=ON;",
     )
@@ -2873,7 +2911,7 @@ pub fn accept_transfer_pair(
     .expect("accepted to account remains owned");
     let transfer_pair = ReviewTransferPair {
         id: transfer_pair_id(from_candidate_id, to_candidate_id),
-        transfer_kind: CARD_PAYMENT_TRANSFER_KIND,
+        transfer_kind: eligible_pair.transfer_kind,
         posted_date: from_candidate.posted_date.clone(),
         amount_minor: from_candidate.amount_minor.abs(),
         currency: from_candidate.currency.clone(),
@@ -3001,7 +3039,7 @@ pub fn accept_income_candidate(
             }),
         ));
     }
-    if has_matching_owned_account_outflow(&tx, &candidate)? {
+    if candidate_has_likely_transfer_pair(&tx, &candidate)? {
         return Ok(review_error_response(
             "candidates accept-income",
             "conflict",
@@ -3124,7 +3162,7 @@ pub fn accept_expense_candidate(
             }),
         ));
     }
-    if has_matching_owned_account_counterparty_candidate(&tx, &candidate)? {
+    if candidate_has_likely_transfer_pair(&tx, &candidate)? {
         return Ok(review_error_response(
             "candidates accept-expense",
             "conflict",
@@ -3268,7 +3306,7 @@ pub fn accept_investment_candidate(
             }),
         ));
     }
-    if has_matching_owned_account_counterparty_candidate(&tx, &candidate)? {
+    if candidate_has_likely_transfer_pair(&tx, &candidate)? {
         return Ok(review_error_response(
             command,
             "conflict",
@@ -3462,7 +3500,7 @@ pub fn accept_candidate(
         ));
     }
     if candidate.semantic_hint.as_deref() == Some("card_payment")
-        || has_matching_owned_account_counterparty_candidate(&tx, &candidate)?
+        || candidate_has_likely_transfer_pair(&tx, &candidate)?
     {
         return Ok(review_error_response(
             "candidates accept",
@@ -3748,7 +3786,7 @@ fn build_transfer_pair(
         .ok_or(TransferPairError::AccountNotOwned)?;
     Ok(ReviewTransferPair {
         id: transfer_pair_id(&from_candidate.id, &to_candidate.id),
-        transfer_kind: CARD_PAYMENT_TRANSFER_KIND,
+        transfer_kind: transfer_kind_for_destination(&to_candidate),
         posted_date: from_candidate.posted_date.clone(),
         amount_minor: from_candidate.amount_minor.abs(),
         currency: from_candidate.currency.clone(),
@@ -3774,14 +3812,19 @@ fn validate_transfer_pair_shape(
     {
         return Err(TransferPairError::NotReviewable);
     }
-    if from_candidate.semantic_hint.as_deref() != Some("bank_movement")
-        || to_candidate.semantic_hint.as_deref() != Some("card_payment")
-    {
+    if from_candidate.semantic_hint.as_deref() != Some("bank_movement") {
         return Err(TransferPairError::NotMatching);
     }
     if from_candidate.direction_hint.as_deref() != Some("outflow")
         || from_candidate.amount_minor >= 0
     {
+        return Err(TransferPairError::NotMatching);
+    }
+    let destination_is_card_payment = to_candidate.semantic_hint.as_deref() == Some("card_payment");
+    let destination_is_bank_inflow = to_candidate.semantic_hint.as_deref() == Some("bank_movement")
+        && to_candidate.direction_hint.as_deref() == Some("inflow")
+        && to_candidate.amount_minor > 0;
+    if !destination_is_card_payment && !destination_is_bank_inflow {
         return Err(TransferPairError::NotMatching);
     }
     if from_candidate.posted_date != to_candidate.posted_date {
@@ -3795,6 +3838,14 @@ fn validate_transfer_pair_shape(
         return Err(TransferPairError::NotMatching);
     }
     Ok(())
+}
+
+fn transfer_kind_for_destination(candidate: &ReviewCandidate) -> &'static str {
+    if candidate.semantic_hint.as_deref() == Some("card_payment") {
+        CARD_PAYMENT_TRANSFER_KIND
+    } else {
+        OWN_ACCOUNT_TRANSFER_KIND
+    }
 }
 
 fn is_unreviewed_candidate_status(status: &CandidateStatus) -> bool {
@@ -4496,7 +4547,7 @@ fn apply_transfer_pair_rows(
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             pair.id,
-            CARD_PAYMENT_TRANSFER_KIND,
+            pair.transfer_kind,
             pair.posted_date,
             pair.amount_minor,
             pair.currency,
@@ -4590,102 +4641,16 @@ fn expense_amount_minor(candidate: &ReviewCandidate) -> i64 {
     -candidate.amount_minor.abs()
 }
 
-fn has_matching_owned_account_outflow(
+fn candidate_has_likely_transfer_pair(
     connection: &Connection,
     candidate: &ReviewCandidate,
 ) -> Result<bool> {
-    let Some(candidate_account_id) = candidate.account_id.as_deref() else {
-        return Ok(false);
-    };
-    if owned_account_by_id(connection, candidate_account_id)?.is_none() {
-        return Ok(false);
-    }
-    let mut statement = connection.prepare(
-        "SELECT c.account_id
-         FROM candidate_transactions c
-         WHERE c.id <> ?1
-           AND c.status IN ('pending_review', 'possible_duplicate')
-           AND c.canonical_transaction_id IS NULL
-           AND c.account_id IS NOT NULL
-           AND c.account_id <> ?2
-           AND c.posted_date = ?3
-           AND UPPER(c.currency) = UPPER(?4)
-           AND ABS(c.amount_minor) = ?5
-           AND c.amount_minor < 0
-           AND c.direction_hint = 'outflow'
-           AND c.semantic_hint = 'bank_movement'",
-    )?;
-    let rows = statement.query_map(
-        params![
-            candidate.id,
-            candidate_account_id,
-            candidate.posted_date,
-            candidate.currency,
-            candidate.amount_minor.abs()
-        ],
-        |row| row.get::<_, String>(0),
-    )?;
-    for row in rows {
-        let account_id = row?;
-        if owned_account_by_id(connection, &account_id)?.is_some() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn has_matching_owned_account_counterparty_candidate(
-    connection: &Connection,
-    candidate: &ReviewCandidate,
-) -> Result<bool> {
-    if candidate.semantic_hint.as_deref() != Some("bank_movement")
-        || candidate.direction_hint.as_deref() != Some("outflow")
-    {
-        return Ok(false);
-    }
-    let Some(candidate_account_id) = candidate.account_id.as_deref() else {
-        return Ok(false);
-    };
-    if owned_account_by_id(connection, candidate_account_id)?.is_none() {
-        return Ok(false);
-    }
-    let mut statement = connection.prepare(
-        "SELECT c.account_id
-         FROM candidate_transactions c
-         WHERE c.id <> ?1
-           AND c.status IN ('pending_review', 'possible_duplicate')
-           AND c.canonical_transaction_id IS NULL
-           AND c.account_id IS NOT NULL
-           AND c.account_id <> ?2
-           AND c.posted_date = ?3
-           AND UPPER(c.currency) = UPPER(?4)
-           AND ABS(c.amount_minor) = ?5
-           AND (
-               c.semantic_hint = 'card_payment'
-               OR (
-                   c.semantic_hint = 'bank_movement'
-                   AND c.direction_hint = 'inflow'
-                   AND c.amount_minor > 0
-               )
-           )",
-    )?;
-    let rows = statement.query_map(
-        params![
-            candidate.id,
-            candidate_account_id,
-            candidate.posted_date,
-            candidate.currency,
-            candidate.amount_minor.abs()
-        ],
-        |row| row.get::<_, String>(0),
-    )?;
-    for row in rows {
-        let account_id = row?;
-        if owned_account_by_id(connection, &account_id)?.is_some() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    let candidates = list_review_candidates(connection, None, None)?;
+    likely_transfer_pairs_from_candidates(connection, &candidates).map(|pairs| {
+        pairs.iter().any(|pair| {
+            pair.from_candidate.id == candidate.id || pair.to_candidate.id == candidate.id
+        })
+    })
 }
 
 fn normalize_income_kind(kind: &str) -> String {

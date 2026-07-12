@@ -174,7 +174,7 @@ CREATE TABLE IF NOT EXISTS transaction_duplicate_markers (
 
 CREATE TABLE IF NOT EXISTS canonical_transfer_pairs (
     id TEXT PRIMARY KEY,
-    transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment')),
+    transfer_kind TEXT NOT NULL CHECK (transfer_kind IN ('card_payment', 'own_account_transfer')),
     posted_date TEXT NOT NULL,
     amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
     currency TEXT NOT NULL,
