@@ -145,6 +145,23 @@ fn integrity_check_execution_failure_is_operational() {
 }
 
 #[test]
+fn integrity_distinguishes_actual_sqlite_corruption() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("corrupt.sqlite3");
+    let c = database(&path);
+    c.execute("INSERT INTO categories(id,name) VALUES('c','Food')", [])
+        .unwrap();
+    drop(c);
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let half = file.metadata().unwrap().len() / 2;
+    file.set_len(half).unwrap();
+    drop(file);
+    let (ok, json) = run(&["integrity", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(!ok);
+    assert_eq!(json["errors"][0]["category"], "sqlite_corruption");
+}
+
+#[test]
 fn empty_export_is_stable_and_read_only() {
     let temp = tempdir().unwrap();
     let path = temp.path().join("empty.sqlite3");
@@ -251,6 +268,7 @@ fn export_preserves_exact_canonical_links_and_review_is_opt_in_and_redacted() {
     c.execute("INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size) VALUES('doc','/secret/private.pdf',?1,'application/pdf',1)",params!["a".repeat(64)]).unwrap();
     c.execute("INSERT INTO import_batches(id,source_document_id,started_at,status) VALUES('batch','doc','2026-01-01','completed')",[]).unwrap();
     c.execute("INSERT INTO candidate_transactions(id,import_batch_id,source_document_id,posted_date,description,amount_minor,currency,confidence,status) VALUES('candidate','batch','doc','2026-01-01','pending',123,'COP',1.0,'rejected')",[]).unwrap();
+    c.execute("INSERT INTO candidate_transactions(id,import_batch_id,source_document_id,posted_date,description,amount_minor,currency,confidence,status) VALUES('pending','batch','doc','2026-01-02','pending',124,'COP',1.0,'pending_review')",[]).unwrap();
     c.execute("INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency) VALUES('txn','acc','2026-01-02','exact',9007199254740991,'COP')",[]).unwrap();
     c.execute("INSERT INTO provenance(id,canonical_transaction_id,source_document_id,extractor_name,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,raw_evidence_ref,confidence) VALUES('prov','txn','doc','x','p','1','redacted','<redacted>','not_stored','/secret/raw',1.0)",[]).unwrap();
     drop(c);
@@ -273,10 +291,77 @@ fn export_preserves_exact_canonical_links_and_review_is_opt_in_and_redacted() {
     ]);
     assert!(ok);
     assert_eq!(
-        audit["entities"]["review_candidates"][0]["status"],
-        "rejected"
+        audit["entities"]["review_candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
     );
+    assert!(audit["entities"]["import_batches"][0]
+        .get("error_details_json")
+        .is_none());
     assert!(!serde_json::to_string(&audit)
         .unwrap()
         .contains("private.pdf"));
+}
+
+#[test]
+fn backup_default_name_is_timestamped_adjacent_and_home_is_untouched() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let source = temp.path().join("ledger.sqlite3");
+    drop(database(&source));
+    let output = Command::new(env!("CARGO_BIN_EXE_tracky"))
+        .env("HOME", &home)
+        .args(["backup", "--db", source.to_str().unwrap(), "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let destination = json["destination"].as_str().unwrap();
+    assert!(destination.starts_with(temp.path().to_str().unwrap()));
+    assert!(destination.contains("ledger-20"));
+    assert!(destination.ends_with("Z.sqlite3"));
+    assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+}
+
+#[test]
+fn integrity_accepts_new_and_populated_databases() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("valid.sqlite3");
+    drop(database(&path));
+    assert!(run(&["integrity", "--db", path.to_str().unwrap(), "--json"]).0);
+    let c = Connection::open(&path).unwrap();
+    c.execute("INSERT INTO institutions(id,name) VALUES('i','Bank')", [])
+        .unwrap();
+    c.execute("INSERT INTO accounts(id,institution_id,label,currency,is_owned) VALUES('a','i','Wallet','COP',1)",[]).unwrap();
+    c.execute("INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency) VALUES('t','a','2026-01-01','income',10,'COP')",[]).unwrap();
+    drop(c);
+    let (ok, json) = run(&["integrity", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(ok);
+    assert!(serde_json::to_string(&json["counts"])
+        .unwrap()
+        .contains("canonical_transactions"));
+}
+
+#[test]
+fn integrity_reports_imported_transfer_and_provenance_failures() {
+    let temp = tempdir().unwrap();
+    let path = temp.path().join("broken-imported.sqlite3");
+    let c = database(&path);
+    c.execute("PRAGMA foreign_keys=OFF", []).unwrap();
+    c.execute("INSERT INTO institutions(id,name) VALUES('i','Bank')", [])
+        .unwrap();
+    c.execute("INSERT INTO accounts(id,institution_id,label,currency,is_owned) VALUES('a','i','A','COP',1),('b','i','B','COP',1)",[]).unwrap();
+    c.execute("INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency) VALUES('f','a','2026-01-01','from',-100,'COP'),('t','b','2026-01-01','to',99,'COP')",[]).unwrap();
+    c.execute("INSERT INTO canonical_transfer_pairs(id,transfer_kind,posted_date,amount_minor,currency,from_account_id,to_account_id,from_candidate_id,to_candidate_id,from_canonical_transaction_id,to_canonical_transaction_id) VALUES('pair','card_payment','2026-01-01',100,'COP','a','b','fc','tc','f','t')",[]).unwrap();
+    c.execute("INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size) VALUES('d','redacted',?1,'application/pdf',1)",params!["b".repeat(64)]).unwrap();
+    c.execute("INSERT INTO provenance(id,canonical_transaction_id,source_document_id,extractor_name,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence) VALUES('prov-broken','missing','d','x','p','1','r','r','not_stored',1)",[]).unwrap();
+    drop(c);
+    let (ok, json) = run(&["integrity", "--db", path.to_str().unwrap(), "--json"]);
+    assert!(!ok);
+    let findings = serde_json::to_string(&json["findings"]).unwrap();
+    assert!(findings.contains("transfer_leg_missing_or_incompatible"));
+    assert!(findings.contains("provenance_target_missing"));
 }

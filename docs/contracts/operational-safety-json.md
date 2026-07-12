@@ -36,7 +36,7 @@ and manual-entry provenance. IDs, nullable fields, dates, currencies, and intege
 amounts are preserved; relations are not replaced with display names.
 
 `--include-review-audit` additionally includes candidate transactions of every status, import
-batches, safe source-document metadata, and candidate provenance. Candidate status is the review
+batches (without arbitrary importer error payloads), safe source-document metadata, and candidate provenance. Candidate status is the review
 decision record exposed by this schema. Source input names, content hashes, raw evidence refs,
 bounding boxes, credentials, passwords, environment secrets, and binary/raw evidence are never
 exported. Only `evidence_text_redacted` and its redaction/storage policy may appear.

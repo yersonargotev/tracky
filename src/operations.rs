@@ -22,6 +22,7 @@ pub struct OperationError {
 #[serde(rename_all = "snake_case")]
 pub enum OperationErrorCategory {
     Operational,
+    SqliteCorruption,
     SchemaIncompatibility,
 }
 
@@ -145,10 +146,9 @@ pub fn backup(source: &Path, destination: &Path) -> BackupResponse {
         drop(destination_db);
         fs::hard_link(&temporary, destination)
             .with_context(|| format!("publishing backup {}", destination.display()))?;
-        if let Err(remove_error) = fs::remove_file(&temporary) {
-            let _ = fs::remove_file(destination);
-            return Err(remove_error).context("removing temporary backup link");
-        }
+        // Publication is the commit point. Failure to remove the hidden second link does not
+        // invalidate the already verified, atomically published backup.
+        let _ = fs::remove_file(&temporary);
         Ok(())
     })();
     match outcome {
@@ -205,8 +205,16 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
             }
         }
         Err(e) => {
+            let category = match &e {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ErrorCode::DatabaseCorrupt =>
+                {
+                    OperationErrorCategory::SqliteCorruption
+                }
+                _ => OperationErrorCategory::Operational,
+            };
             r.errors.push(error(
-                OperationErrorCategory::Operational,
+                category,
                 "integrity_check_failed",
                 e.to_string(),
                 "db",
@@ -375,7 +383,7 @@ pub fn export(path: &Path, include_review_audit: bool) -> ExportResponse {
     if include_review_audit {
         let extra=[
       ExportQuery{name:"review_candidates",sql:"SELECT id,import_batch_id,source_document_id,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,posted_date,description,amount_minor,currency,balance_minor,direction_hint,semantic_hint,confidence,status,duplicate_status,fingerprint,validation_warnings_json,canonical_transaction_id,created_at FROM candidate_transactions ORDER BY import_batch_id,id"},
-      ExportQuery{name:"import_batches",sql:"SELECT id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count,error_details_json FROM import_batches ORDER BY started_at,id"},
+      ExportQuery{name:"import_batches",sql:"SELECT id,source_document_id,started_at,completed_at,status,candidate_count,error_count,duplicate_count FROM import_batches ORDER BY started_at,id"},
       ExportQuery{name:"source_documents",sql:"SELECT id,mime_type,byte_size,institution_id,institution_hint,account_id,account_label_hint,account_currency_hint,account_masked_identifier_hint,imported_at,duplicate_of_source_document_id FROM source_documents ORDER BY imported_at,id"},
       ExportQuery{name:"review_provenance",sql:"SELECT id,candidate_transaction_id,canonical_transaction_id,source_document_id,import_batch_id,page_number,row_index,extractor_name,extractor_version,parser_id,parser_version,evidence_redaction,evidence_text_redacted,raw_storage_policy,confidence,created_at FROM provenance WHERE candidate_transaction_id IS NOT NULL ORDER BY candidate_transaction_id,id"}];
         if let Err(e) = export_queries(&c, &mut r, &extra) {
