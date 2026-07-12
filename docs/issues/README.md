@@ -35,6 +35,7 @@ A slice is **completed** when every acceptance criterion in its issue file is ch
 27. `0029-track-complete-brokerage-investment-lifecycle.md` — exact brokerage cash, securities, realized results, costs, withdrawals, and append-only history.
 28. `0030-reconcile-investment-positions-and-dated-valuations.md` — immutable dated snapshots, deterministic reconciliation, freshness, and reviewed append-only adjustments.
 29. `0035-parse-layout-fragmented-nu-investment-rows.md` — recover supported Nu movements when PDF extraction fragments visual rows.
+30. `0036-import-ordinary-nu-account-movements.md` — import ordinary Nu debits and credits beside investment events.
 
 ## Pending queue
 
@@ -46,7 +47,14 @@ These issues retain unchecked criteria and are not represented as completed:
 4. `0032-add-consolidated-monthly-investment-reports.md` — monthly investment flows, positions, and valuation freshness; newly unlocked by completed 0030.
 5. `0033-extend-export-backup-and-integrity-for-investments.md` — operational safety for investment data.
 6. `0034-add-investment-review-and-reporting-to-tui.md` — investment workflow in the shared TUI model.
-7. `0036-import-ordinary-nu-account-movements.md` — import ordinary Nu debits and credits from the same statement as its investment events.
+7. `0037-align-transfer-suspicion-and-resolution.md` — prevent transfer-like candidates from becoming stranded between incompatible review predicates.
+8. `0038-make-owned-account-resolution-tolerant-and-explainable.md` — resolve unique accounts without requiring parser-owned display labels.
+9. `0039-assign-owned-account-to-imported-candidate.md` — assign or correct a candidate account through an audited review action.
+10. `0040-add-typed-atomic-batch-review-actions.md` — atomically apply explicit income, expense, and transfer decisions in bulk.
+11. `0041-explain-candidate-review-actions.md` — explain available and blocked review actions through deterministic JSON.
+12. `0042-record-audited-not-transfer-decision.md` — explicitly dismiss a false transfer hypothesis without bypassing typed review.
+13. `0043-enrich-provider-cdt-events-into-lifecycle.md` — combine provider evidence with explicit terms to create canonical CDT operations.
+14. `0044-add-date-scoped-review-planning.md` — plan and apply review by posted-date range without dropping imported evidence.
 
 Implementation should proceed from the dependency frontier: any issue whose listed blockers are complete may start. The investment-tracking expansion is grounded in `docs/research/investment-tracking-model.md`; provider adapters additionally require representative, user-authorized artifacts or privacy-safe fixtures derived from them.
 
