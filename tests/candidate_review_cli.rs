@@ -169,7 +169,7 @@ fn candidate_review_cli_explains_all_actions_without_exposing_evidence_or_mutati
         json["schema_version"],
         "tracky.candidate-action-explanation.v1"
     );
-    assert_eq!(json["actions"].as_array().unwrap().len(), 6);
+    assert_eq!(json["actions"].as_array().unwrap().len(), 7);
     assert_eq!(json["actions"][1]["action"], "accept_expense");
     assert_eq!(json["actions"][1]["status"], "requires_explicit_data");
     assert_eq!(json["actions"][1]["reason_code"], "expense_lines_required");
@@ -1338,6 +1338,371 @@ fn candidate_review_cli_resolves_owned_bank_movement_pair_coherently() {
         accepted["transfer_pair"]["transfer_kind"],
         "own_account_transfer"
     );
+}
+
+#[test]
+fn candidate_review_cli_records_not_transfer_before_typed_acceptance() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "synthetic_a", "Primary wallet", "wallet");
+    register_account(&connection, "synthetic_b", "Savings pocket", "savings");
+    for fixture in [
+        TransferCandidateFixture {
+            hash: "4141414141414141414141414141414141414141414141414141414141414141",
+            institution: "synthetic_a",
+            account_label: "Primary wallet",
+            candidate_id: "cand_not_transfer_outflow",
+            description: "SYNTHETIC OUT REDACTED",
+            amount_minor: -456_000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+        TransferCandidateFixture {
+            hash: "4242424242424242424242424242424242424242424242424242424242424242",
+            institution: "synthetic_b",
+            account_label: "Savings pocket",
+            candidate_id: "cand_not_transfer_income",
+            description: "SYNTHETIC IN REDACTED",
+            amount_minor: 456_000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        },
+    ] {
+        persist_pdf_import(&mut connection, transfer_inspect_response(fixture))
+            .expect("persist synthetic candidate");
+    }
+    drop(connection);
+    create_income_source_cli(db, "Synthetic source");
+    create_category_cli(db, "Synthetic expense");
+
+    let before = Command::new(tracky())
+        .args([
+            "candidates",
+            "explain-actions",
+            "cand_not_transfer_income",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("explain before decision");
+    assert!(before.status.success());
+    let before: serde_json::Value = serde_json::from_slice(&before.stdout).expect("before JSON");
+    assert_eq!(before["actions"][0]["status"], "blocked");
+    assert_eq!(before["actions"][6]["action"], "decide_not_transfer");
+    assert_eq!(before["actions"][6]["status"], "requires_explicit_data");
+
+    let decided = Command::new(tracky())
+        .args([
+            "candidates",
+            "decide-not-transfer",
+            "cand_not_transfer_income",
+            "--reason",
+            "Reviewer confirmed unrelated synthetic movements",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("record not-transfer decision");
+    assert!(
+        decided.status.success(),
+        "stdout: {} stderr: {}",
+        String::from_utf8_lossy(&decided.stdout),
+        String::from_utf8_lossy(&decided.stderr)
+    );
+    let decided: serde_json::Value =
+        serde_json::from_slice(&decided.stdout).expect("decision JSON");
+    assert_eq!(decided["decision"]["decision"], "not_transfer");
+    assert_eq!(
+        decided["decision"]["candidate_id"],
+        "cand_not_transfer_income"
+    );
+    assert_eq!(decided["candidate"]["status"], "pending_review");
+    assert!(decided["canonical_transaction"].is_null());
+
+    let after = Command::new(tracky())
+        .args([
+            "candidates",
+            "explain-actions",
+            "cand_not_transfer_income",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("explain after decision");
+    assert!(after.status.success());
+    let after: serde_json::Value = serde_json::from_slice(&after.stdout).expect("after JSON");
+    assert_eq!(after["actions"][0]["status"], "requires_explicit_data");
+    assert_eq!(after["actions"][3]["status"], "blocked");
+    assert_eq!(
+        after["actions"][3]["reason_code"],
+        "candidate_decided_not_transfer"
+    );
+    assert_eq!(after["actions"][6]["status"], "blocked");
+    assert_eq!(
+        after["actions"][6]["reason_code"],
+        "not_transfer_already_decided"
+    );
+
+    let pair = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-transfer-pair",
+            "cand_not_transfer_outflow",
+            "cand_not_transfer_income",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("refuse contradictory transfer pair");
+    assert!(!pair.status.success());
+    let pair: serde_json::Value = serde_json::from_slice(&pair.stdout).expect("pair JSON");
+    assert_eq!(pair["errors"][0]["code"], "candidate_decided_not_transfer");
+
+    let listed = Command::new(tracky())
+        .args(["candidates", "list-transfer-pairs", "--db", db, "--json"])
+        .output()
+        .expect("list pairs after decision");
+    assert!(listed.status.success());
+    let listed: serde_json::Value = serde_json::from_slice(&listed.stdout).expect("list JSON");
+    assert_eq!(listed["transfer_pairs"], serde_json::json!([]));
+    let import_batch_id = decided["candidate"]["import_batch_id"].as_str().unwrap();
+    let suggested = Command::new(tracky())
+        .args([
+            "candidates",
+            "suggest-actions",
+            "--db",
+            db,
+            "--import-batch-id",
+            import_batch_id,
+            "--json",
+        ])
+        .output()
+        .expect("suggest actions after decision");
+    assert!(suggested.status.success());
+    let suggested: serde_json::Value =
+        serde_json::from_slice(&suggested.stdout).expect("suggestions JSON");
+    assert_eq!(suggested["suggestions"], serde_json::json!([]));
+
+    let undecided_counterpart = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-expense",
+            "cand_not_transfer_outflow",
+            "--db",
+            db,
+            "--category-id",
+            "cat_synthetic_expense",
+            "--json",
+        ])
+        .output()
+        .expect("keep undecided counterpart blocked");
+    assert!(!undecided_counterpart.status.success());
+    let undecided_counterpart: serde_json::Value =
+        serde_json::from_slice(&undecided_counterpart.stdout).expect("counterpart JSON");
+    assert_eq!(
+        undecided_counterpart["errors"][0]["code"],
+        "candidate_possible_own_account_transfer"
+    );
+
+    let exported = Command::new(tracky())
+        .args(["export", "--db", db, "--include-review-audit", "--json"])
+        .output()
+        .expect("export review audit");
+    assert!(exported.status.success());
+    let exported: serde_json::Value =
+        serde_json::from_slice(&exported.stdout).expect("export JSON");
+    let audit = &exported["entities"]["candidate_transfer_decisions"][0];
+    assert_eq!(audit["decision"], "not_transfer");
+    assert_eq!(
+        audit["reviewer_reason"],
+        "Reviewer confirmed unrelated synthetic movements"
+    );
+    let evidence: serde_json::Value =
+        serde_json::from_str(audit["suspicion_evidence_json"].as_str().unwrap())
+            .expect("structured suspicion evidence");
+    assert_eq!(
+        evidence[0]["counterpart_candidate_id"],
+        "cand_not_transfer_outflow"
+    );
+
+    let integrity = Command::new(tracky())
+        .args(["integrity", "--db", db, "--json"])
+        .output()
+        .expect("run integrity");
+    assert!(integrity.status.success());
+
+    let accepted = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-income",
+            "cand_not_transfer_income",
+            "--db",
+            db,
+            "--income-source-id",
+            "incsrc_synthetic_source",
+            "--income-kind",
+            "other",
+            "--json",
+        ])
+        .output()
+        .expect("accept income after decision");
+    assert!(accepted.status.success());
+
+    let connection = Connection::open(&db_path).expect("corrupt audit fixture");
+    connection
+        .execute(
+            "UPDATE candidate_transfer_decisions
+             SET suspicion_evidence_json = json_set(
+                 suspicion_evidence_json, '$[0].amount_minor', 999999999
+             )",
+            [],
+        )
+        .expect("semantically corrupt structured evidence");
+    drop(connection);
+    let integrity = Command::new(tracky())
+        .args(["integrity", "--db", db, "--json"])
+        .output()
+        .expect("detect corrupt audit evidence");
+    assert!(!integrity.status.success());
+    let integrity: serde_json::Value =
+        serde_json::from_slice(&integrity.stdout).expect("integrity JSON");
+    assert!(integrity["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|finding| { finding["code"] == "candidate_transfer_decision_invalid" }));
+}
+
+#[test]
+fn candidate_review_cli_refuses_invalid_not_transfer_bypasses_atomically() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let db = db_path.to_str().unwrap();
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nequi", "Nequi wallet", "wallet");
+    register_account(&connection, "rappi", "RappiCard", "credit_card");
+    let (from_candidate_id, to_candidate_id) =
+        persist_transfer_candidates(&mut connection, 4_590_000);
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "4343434343434343434343434343434343434343434343434343434343434343",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            candidate_id: "cand_without_transfer_suspicion",
+            description: "UNRELATED SYNTHETIC MOVEMENT",
+            amount_minor: 12_300,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist unmatched candidate");
+    drop(connection);
+
+    for (candidate_id, reason, expected_code) in [
+        (to_candidate_id.as_str(), "   ", "reviewer_reason_required"),
+        (
+            "cand_without_transfer_suspicion",
+            "Reviewer checked the evidence",
+            "candidate_has_no_transfer_suspicion",
+        ),
+    ] {
+        let output = Command::new(tracky())
+            .args([
+                "candidates",
+                "decide-not-transfer",
+                candidate_id,
+                "--reason",
+                reason,
+                "--db",
+                db,
+                "--json",
+            ])
+            .output()
+            .expect("refuse invalid decision");
+        assert!(!output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("error JSON");
+        assert_eq!(json["errors"][0]["code"], expected_code);
+    }
+
+    let connection = Connection::open(&db_path).expect("open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_not_transfer_audit
+             AFTER INSERT ON candidate_transfer_decisions
+             BEGIN SELECT RAISE(ABORT, 'synthetic audit failure'); END;",
+        )
+        .expect("create synthetic failure trigger");
+    drop(connection);
+    let failed = Command::new(tracky())
+        .args([
+            "candidates",
+            "decide-not-transfer",
+            &to_candidate_id,
+            "--reason",
+            "Reviewer checked the evidence",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("inject atomic failure");
+    assert!(!failed.status.success());
+    let exported = Command::new(tracky())
+        .args(["export", "--db", db, "--include-review-audit", "--json"])
+        .output()
+        .expect("export after rollback");
+    assert!(exported.status.success());
+    let exported: serde_json::Value =
+        serde_json::from_slice(&exported.stdout).expect("export JSON");
+    assert_eq!(
+        exported["entities"]["candidate_transfer_decisions"],
+        serde_json::json!([])
+    );
+
+    let connection = Connection::open(&db_path).expect("drop failure trigger");
+    connection
+        .execute("DROP TRIGGER fail_not_transfer_audit", [])
+        .expect("drop trigger");
+    drop(connection);
+    let accepted = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-transfer-pair",
+            &from_candidate_id,
+            &to_candidate_id,
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("accept transfer pair");
+    assert!(accepted.status.success());
+    let reviewed = Command::new(tracky())
+        .args([
+            "candidates",
+            "decide-not-transfer",
+            &to_candidate_id,
+            "--reason",
+            "Contradictory late decision",
+            "--db",
+            db,
+            "--json",
+        ])
+        .output()
+        .expect("refuse reviewed candidate");
+    assert!(!reviewed.status.success());
+    let reviewed: serde_json::Value =
+        serde_json::from_slice(&reviewed.stdout).expect("reviewed JSON");
+    assert_eq!(reviewed["errors"][0]["code"], "candidate_already_accepted");
 }
 
 #[test]

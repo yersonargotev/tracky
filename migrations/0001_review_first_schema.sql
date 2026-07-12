@@ -126,6 +126,15 @@ CREATE TABLE IF NOT EXISTS candidate_account_assignment_events (
 CREATE INDEX IF NOT EXISTS idx_candidate_account_assignment_events_candidate
 ON candidate_account_assignment_events(candidate_transaction_id, revision);
 
+CREATE TABLE IF NOT EXISTS candidate_transfer_decisions (
+    id TEXT PRIMARY KEY,
+    candidate_transaction_id TEXT NOT NULL UNIQUE REFERENCES candidate_transactions(id),
+    decision TEXT NOT NULL CHECK (decision = 'not_transfer'),
+    reviewer_reason TEXT NOT NULL CHECK (length(trim(reviewer_reason)) > 0),
+    suspicion_evidence_json TEXT NOT NULL CHECK (json_valid(suspicion_evidence_json)),
+    reviewed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
 CREATE TABLE IF NOT EXISTS provenance (
     id TEXT PRIMARY KEY,
     candidate_transaction_id TEXT UNIQUE REFERENCES candidate_transactions(id),

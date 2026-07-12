@@ -33,13 +33,13 @@ use crate::storage::{
     batch_review_error_response_with_dry_run, category_registry_error_response,
     compare_duplicate_candidate, create_category, create_income_source, create_manual_expense,
     create_manual_income, create_manual_investment, create_manual_transfer,
-    duplicate_import_response, explain_candidate_actions, finance_report_error_response,
-    find_source_document_by_hash, income_source_registry_error_response,
-    inspect_canonical_transaction, list_canonical_transactions, list_categories,
-    list_income_sources, list_likely_transfer_pairs, list_owned_accounts, list_review_candidates,
-    persist_pdf_import, register_owned_account, reject_candidate,
-    replace_expense_transaction_lines, review_error_response, suggest_batch_actions,
-    summarize_finances, summarize_import_batch, transfer_error_response,
+    decide_candidate_not_transfer, duplicate_import_response, explain_candidate_actions,
+    finance_report_error_response, find_source_document_by_hash,
+    income_source_registry_error_response, inspect_canonical_transaction,
+    list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
+    list_owned_accounts, list_review_candidates, persist_pdf_import, register_owned_account,
+    reject_candidate, replace_expense_transaction_lines, review_error_response,
+    suggest_batch_actions, summarize_finances, summarize_import_batch, transfer_error_response,
     update_canonical_transaction, AccountRegisterInput, AccountRegistryResponse,
     BatchActionRequest, BatchReviewResponse, CandidateReviewResponse, CategoryCreateInput,
     CategoryRegistryResponse, ExpenseLineInput, FinanceReportResponse, ImportPdfResponse,
@@ -886,6 +886,7 @@ enum CandidateCommands {
     ApplyActions(CandidateApplyActionsArgs),
     AssignAccount(CandidateAssignAccountArgs),
     ExplainActions(CandidateActionArgs),
+    DecideNotTransfer(CandidateNotTransferArgs),
     Accept(CandidateActionArgs),
     AcceptIncome(CandidateIncomeAcceptArgs),
     AcceptExpense(CandidateExpenseAcceptArgs),
@@ -1284,6 +1285,18 @@ struct CandidateAssignAccountArgs {
 }
 
 #[derive(Debug, Parser)]
+struct CandidateNotTransferArgs {
+    #[arg(value_name = "CANDIDATE_ID")]
+    candidate_id: String,
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long, value_name = "TEXT")]
+    reason: String,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Parser)]
 struct CandidateIncomeAcceptArgs {
     /// Candidate transaction id.
     #[arg(value_name = "CANDIDATE_ID")]
@@ -1482,6 +1495,9 @@ where
             }
             CandidateCommands::ExplainActions(args) => {
                 candidate_explain_actions_command(args, &mut stdout)
+            }
+            CandidateCommands::DecideNotTransfer(args) => {
+                candidate_decide_not_transfer_command(args, &mut stdout)
             }
             CandidateCommands::Accept(args) => candidate_accept_command(args, &mut stdout),
             CandidateCommands::AcceptIncome(args) => {
@@ -3213,6 +3229,29 @@ where
         response.ok,
         response,
         "writing candidate action explanation JSON",
+    )
+}
+
+fn candidate_decide_not_transfer_command<W>(
+    args: CandidateNotTransferArgs,
+    stdout: &mut W,
+) -> Result<i32>
+where
+    W: Write,
+{
+    if let Some(exit_code) =
+        require_candidate_json(args.json, stdout, "candidates decide-not-transfer")?
+    {
+        return Ok(exit_code);
+    }
+    let mut connection = open_review_database(&args.db)?;
+    let response =
+        decide_candidate_not_transfer(&mut connection, &args.candidate_id, &args.reason)?;
+    write_json_response(
+        stdout,
+        response.ok,
+        response,
+        "writing candidate not-transfer decision JSON",
     )
 }
 

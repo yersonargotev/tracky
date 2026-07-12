@@ -6,7 +6,7 @@ use crate::pdf::{
 };
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -129,6 +129,62 @@ pub struct CandidateActionExplanation {
     pub dimensions: serde_json::Value,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CandidateTransferDecisionResponse {
+    pub schema_version: &'static str,
+    pub command: &'static str,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate: Option<ReviewCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<CandidateTransferDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_transaction: Option<CanonicalTransaction>,
+    pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CandidateTransferDecision {
+    pub id: String,
+    pub candidate_id: String,
+    pub decision: CandidateTransferDecisionKind,
+    pub reviewer_reason: String,
+    pub suspicion_evidence: Vec<CandidateTransferSuspicionEvidence>,
+    pub reviewed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CandidateTransferSuspicionEvidence {
+    pub transfer_kind: CandidateTransferSuspicionKind,
+    pub role: CandidateTransferSuspicionRole,
+    pub counterpart_candidate_id: String,
+    pub posted_date: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub from_account_id: String,
+    pub to_account_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateTransferSuspicionKind {
+    CardPayment,
+    OwnAccountTransfer,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateTransferSuspicionRole {
+    From,
+    To,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateTransferDecisionKind {
+    NotTransfer,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum CandidateReviewAction {
@@ -138,6 +194,7 @@ pub enum CandidateReviewAction {
     AcceptTransferPair,
     RejectDuplicate,
     Reject,
+    DecideNotTransfer,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -692,6 +749,8 @@ pub struct ReviewError {
 pub const CANDIDATE_REVIEW_SCHEMA_VERSION: &str = "tracky.candidate-review.v1";
 pub const CANDIDATE_ACTION_EXPLANATION_SCHEMA_VERSION: &str =
     "tracky.candidate-action-explanation.v1";
+pub const CANDIDATE_TRANSFER_DECISION_SCHEMA_VERSION: &str =
+    "tracky.candidate-transfer-decision.v1";
 pub const TRANSFER_REVIEW_SCHEMA_VERSION: &str = "tracky.transfer-review.v1";
 const OWN_ACCOUNT_TRANSFER_KIND: &str = "own_account_transfer";
 const CARD_PAYMENT_TRANSFER_KIND: &str = "card_payment";
@@ -3117,7 +3176,7 @@ pub fn explain_candidate_actions(
         });
     };
     let state_reason = typed_candidate_state_error(&candidate, "review action").map(|e| e.code);
-    let transfer_pairs = likely_transfer_pairs_from_candidates(
+    let transfer_pairs = admissible_transfer_pairs_from_candidates(
         connection,
         &list_review_candidates(connection, None, None)?,
     )?;
@@ -3127,6 +3186,7 @@ pub fn explain_candidate_actions(
             pair.from_candidate.id == candidate.id || pair.to_candidate.id == candidate.id
         })
         .count();
+    let not_transfer_decision = candidate_transfer_decision(connection, &candidate.id)?;
     let base_dimensions = serde_json::json!({
         "candidate_status": candidate.status,
         "duplicate_status": candidate.duplicate_status.status,
@@ -3161,7 +3221,7 @@ pub fn explain_candidate_actions(
                 shape_reason,
                 base_dimensions.clone(),
             )
-        } else if transfer_pair_count > 0 {
+        } else if transfer_pair_count > 0 && not_transfer_decision.is_none() {
             action(
                 name,
                 CandidateActionStatus::Blocked,
@@ -3203,6 +3263,8 @@ pub fn explain_candidate_actions(
     ];
     let transfer_reason = if let Some(reason) = state_reason {
         reason
+    } else if not_transfer_decision.is_some() {
+        "candidate_decided_not_transfer"
     } else if transfer_pair_count > 0 {
         "action_available"
     } else if candidate.account_id.is_none() {
@@ -3246,7 +3308,29 @@ pub fn explain_candidate_actions(
             CandidateActionStatus::Blocked
         },
         rejection_reason.unwrap_or("action_available"),
-        base_dimensions,
+        base_dimensions.clone(),
+    ));
+    actions.push(action(
+        CandidateReviewAction::DecideNotTransfer,
+        if state_reason.is_some() || not_transfer_decision.is_some() || transfer_pair_count == 0 {
+            CandidateActionStatus::Blocked
+        } else {
+            CandidateActionStatus::RequiresExplicitData
+        },
+        if let Some(reason) = state_reason {
+            reason
+        } else if not_transfer_decision.is_some() {
+            "not_transfer_already_decided"
+        } else if transfer_pair_count == 0 {
+            "candidate_has_no_transfer_suspicion"
+        } else {
+            "reviewer_reason_required"
+        },
+        serde_json::json!({
+            "candidate_status": candidate.status,
+            "matching_pair_count": transfer_pair_count,
+            "not_transfer_decision_recorded": not_transfer_decision.is_some(),
+        }),
     ));
     Ok(CandidateActionExplanationResponse {
         schema_version: CANDIDATE_ACTION_EXPLANATION_SCHEMA_VERSION,
@@ -3254,6 +3338,176 @@ pub fn explain_candidate_actions(
         ok: true,
         candidate_id: candidate.id,
         actions,
+        errors: Vec::new(),
+    })
+}
+
+fn candidate_transfer_decision(
+    connection: &Connection,
+    candidate_id: &str,
+) -> Result<Option<CandidateTransferDecision>> {
+    let row = connection
+        .query_row(
+            "SELECT id, decision, reviewer_reason, suspicion_evidence_json, reviewed_at
+             FROM candidate_transfer_decisions WHERE candidate_transaction_id = ?1",
+            params![candidate_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    row.map(
+        |(id, decision, reviewer_reason, evidence, reviewed_at): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        )| {
+            let decision = match decision.as_str() {
+                "not_transfer" => CandidateTransferDecisionKind::NotTransfer,
+                other => anyhow::bail!("unsupported candidate transfer decision: {other}"),
+            };
+            Ok(CandidateTransferDecision {
+                id,
+                candidate_id: candidate_id.to_string(),
+                decision,
+                reviewer_reason,
+                suspicion_evidence: serde_json::from_str(&evidence)
+                    .context("parsing candidate transfer suspicion evidence")?,
+                reviewed_at,
+            })
+        },
+    )
+    .transpose()
+}
+
+pub fn decide_candidate_not_transfer(
+    connection: &mut Connection,
+    candidate_id: &str,
+    reviewer_reason: &str,
+) -> Result<CandidateTransferDecisionResponse> {
+    let command = "candidates decide-not-transfer";
+    let error = |category, code, message: &str, path, details| CandidateTransferDecisionResponse {
+        schema_version: CANDIDATE_TRANSFER_DECISION_SCHEMA_VERSION,
+        command,
+        ok: false,
+        candidate: None,
+        decision: None,
+        canonical_transaction: None,
+        errors: vec![ReviewError {
+            category,
+            code,
+            message: message.to_string(),
+            path,
+            recoverable: true,
+            details,
+        }],
+    };
+    if reviewer_reason.trim().is_empty() {
+        return Ok(error(
+            "validation_failure",
+            "reviewer_reason_required",
+            "A reviewer reason is required for a not-transfer decision.",
+            "reason",
+            serde_json::json!({}),
+        ));
+    }
+    let tx = connection
+        .transaction()
+        .context("starting not-transfer decision transaction")?;
+    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
+        return Ok(error(
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.",
+            "candidate_id",
+            serde_json::json!({"candidate_id": candidate_id}),
+        ));
+    };
+    if let Some(state_error) = typed_candidate_state_error(&candidate, "not-transfer decision") {
+        return Ok(error(
+            state_error.category,
+            state_error.code,
+            &state_error.message,
+            state_error.path,
+            state_error.details,
+        ));
+    }
+    if candidate_transfer_decision(&tx, candidate_id)?.is_some() {
+        return Ok(error(
+            "conflict",
+            "not_transfer_already_decided",
+            "Candidate already has a not-transfer decision.",
+            "candidate_id",
+            serde_json::json!({"candidate_id": candidate_id}),
+        ));
+    }
+    let pairs =
+        admissible_transfer_pairs_from_candidates(&tx, &list_review_candidates(&tx, None, None)?)?;
+    let evidence: Vec<CandidateTransferSuspicionEvidence> = pairs
+        .iter()
+        .filter(|pair| {
+            pair.from_candidate.id == candidate.id || pair.to_candidate.id == candidate.id
+        })
+        .map(|pair| CandidateTransferSuspicionEvidence {
+            transfer_kind: if pair.transfer_kind == CARD_PAYMENT_TRANSFER_KIND {
+                CandidateTransferSuspicionKind::CardPayment
+            } else {
+                CandidateTransferSuspicionKind::OwnAccountTransfer
+            },
+            role: if pair.from_candidate.id == candidate.id {
+                CandidateTransferSuspicionRole::From
+            } else {
+                CandidateTransferSuspicionRole::To
+            },
+            counterpart_candidate_id: if pair.from_candidate.id == candidate.id {
+                pair.to_candidate.id.clone()
+            } else {
+                pair.from_candidate.id.clone()
+            },
+            posted_date: pair.posted_date.clone(),
+            amount_minor: pair.amount_minor,
+            currency: pair.currency.clone(),
+            from_account_id: pair.from_account.id.clone(),
+            to_account_id: pair.to_account.id.clone(),
+        })
+        .collect();
+    if evidence.is_empty() {
+        return Ok(error(
+            "conflict",
+            "candidate_has_no_transfer_suspicion",
+            "Candidate has no admissible transfer hypothesis to dismiss.",
+            "candidate_id",
+            serde_json::json!({"candidate_id": candidate_id}),
+        ));
+    }
+    let decision_id = candidate_transfer_decision_id(candidate_id);
+    tx.execute(
+        "INSERT INTO candidate_transfer_decisions
+         (id, candidate_transaction_id, decision, reviewer_reason, suspicion_evidence_json)
+         VALUES (?1, ?2, 'not_transfer', ?3, ?4)",
+        params![
+            decision_id,
+            candidate_id,
+            reviewer_reason.trim(),
+            serde_json::to_string(&evidence).context("serializing transfer suspicion evidence")?
+        ],
+    )?;
+    tx.commit().context("committing not-transfer decision")?;
+    Ok(CandidateTransferDecisionResponse {
+        schema_version: CANDIDATE_TRANSFER_DECISION_SCHEMA_VERSION,
+        command,
+        ok: true,
+        candidate: find_review_candidate(connection, candidate_id)?,
+        decision: candidate_transfer_decision(connection, candidate_id)?,
+        canonical_transaction: None,
         errors: Vec::new(),
     })
 }
@@ -4141,15 +4395,37 @@ fn likely_transfer_pairs_from_candidates(
     connection: &Connection,
     candidates: &[ReviewCandidate],
 ) -> Result<Vec<ReviewTransferPair>> {
+    transfer_pairs_from_candidates(connection, candidates, false)
+}
+
+fn admissible_transfer_pairs_from_candidates(
+    connection: &Connection,
+    candidates: &[ReviewCandidate],
+) -> Result<Vec<ReviewTransferPair>> {
+    transfer_pairs_from_candidates(connection, candidates, true)
+}
+
+fn transfer_pairs_from_candidates(
+    connection: &Connection,
+    candidates: &[ReviewCandidate],
+    include_decided: bool,
+) -> Result<Vec<ReviewTransferPair>> {
     let mut pairs = Vec::new();
     for from_candidate in candidates {
         for to_candidate in candidates {
             if from_candidate.id == to_candidate.id {
                 continue;
             }
-            if let Ok(pair) =
+            let pair = if include_decided {
+                build_transfer_pair_evidence(
+                    connection,
+                    from_candidate.clone(),
+                    to_candidate.clone(),
+                )
+            } else {
                 build_transfer_pair(connection, from_candidate.clone(), to_candidate.clone())
-            {
+            };
+            if let Ok(pair) = pair {
                 pairs.push(pair);
             }
         }
@@ -4170,6 +4446,7 @@ enum TransferPairError {
     AccountNotOwned,
     NotReviewable,
     NotMatching,
+    DecidedNotTransfer,
 }
 
 #[derive(Debug)]
@@ -4213,6 +4490,7 @@ impl TransferPairError {
             Self::AccountNotOwned => "transfer_pair_account_not_owned",
             Self::NotReviewable => "transfer_pair_not_reviewable",
             Self::NotMatching => "transfer_pair_not_matching",
+            Self::DecidedNotTransfer => "candidate_decided_not_transfer",
         }
     }
 
@@ -4226,11 +4504,25 @@ impl TransferPairError {
             Self::NotMatching => {
                 "transfer pair date, amount, currency, direction, or semantic hints do not match"
             }
+            Self::DecidedNotTransfer => "candidate has an audited not-transfer decision",
         }
     }
 }
 
 fn build_transfer_pair(
+    connection: &Connection,
+    from_candidate: ReviewCandidate,
+    to_candidate: ReviewCandidate,
+) -> std::result::Result<ReviewTransferPair, TransferPairBuildError> {
+    if candidate_transfer_decision(connection, &from_candidate.id)?.is_some()
+        || candidate_transfer_decision(connection, &to_candidate.id)?.is_some()
+    {
+        return Err(TransferPairError::DecidedNotTransfer.into());
+    }
+    build_transfer_pair_evidence(connection, from_candidate, to_candidate)
+}
+
+fn build_transfer_pair_evidence(
     connection: &Connection,
     from_candidate: ReviewCandidate,
     to_candidate: ReviewCandidate,
@@ -5118,8 +5410,11 @@ fn candidate_has_likely_transfer_pair(
     connection: &Connection,
     candidate: &ReviewCandidate,
 ) -> Result<bool> {
+    if candidate_transfer_decision(connection, &candidate.id)?.is_some() {
+        return Ok(false);
+    }
     let candidates = list_review_candidates(connection, None, None)?;
-    likely_transfer_pairs_from_candidates(connection, &candidates).map(|pairs| {
+    admissible_transfer_pairs_from_candidates(connection, &candidates).map(|pairs| {
         pairs.iter().any(|pair| {
             pair.from_candidate.id == candidate.id || pair.to_candidate.id == candidate.id
         })
@@ -6198,6 +6493,11 @@ fn candidate_account_assignment_id(candidate_id: &str, account_id: &str) -> Stri
         .as_nanos();
     let digest = Sha256::digest(format!("{candidate_id}|{account_id}|{nonce}").as_bytes());
     format!("assignment_{}", hex_digest(&digest))
+}
+
+fn candidate_transfer_decision_id(candidate_id: &str) -> String {
+    let digest = Sha256::digest(format!("not_transfer|{candidate_id}").as_bytes());
+    format!("cand_transfer_decision_{digest:x}")
 }
 
 fn transfer_pair_id(from_candidate_id: &str, to_candidate_id: &str) -> String {
