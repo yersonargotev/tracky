@@ -1,5 +1,6 @@
 pub mod brokerage;
 pub mod cdt;
+pub mod cdt_provider_enrichment;
 pub mod cli;
 mod investment_document_parsers;
 mod investment_document_review;

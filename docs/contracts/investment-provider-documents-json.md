@@ -25,6 +25,9 @@ tracky investment-documents reconcile-withdrawal EVENT_ID --db PATH \
   --event-account-id PROVIDER_ACCOUNT_ID --counterpart-account-id ACCOUNT_ID \
   (--canonical-transaction-id ID | --provider-event-id ID) --json
 tracky investment-documents reject EVENT_ID --db PATH --json
+tracky investment-documents cdt-actions EVENT_ID --db PATH --json
+tracky investment-documents enrich-cdt EVENT_ID --db PATH --request-json JSON \
+  (--dry-run | --apply) --json
 ```
 
 `inspect` is read-only. `import` writes one source document, one import batch, and pending
@@ -36,6 +39,16 @@ event semantics, owned counterpart account, external reference when present, exa
 currency, and supported target kind. It reports
 `unique_match`, `ambiguous_match`, `unmatched`, `already_reconciled`, or `incompatible`; zero or
 multiple matches remain pending. Provider-event pairs are consumed atomically at both ends.
+
+CDT enrichment uses `tracky.cdt-provider-enrichment.v1`. `cdt-actions` opens the database
+read-only and reports imported date, currency, and amount separately from the exact reviewer
+fields required for compatible constitution, renewal, redemption, or exact existing-operation
+link actions. The tagged
+`request-json` supplies one explicit action. `--dry-run` validates against an in-memory SQLite
+backup; `--apply` atomically creates or exactly links the lifecycle operation, accepts the single-use event, and
+records both immutable imported evidence and reviewer-supplied terms. A return's net cash comes
+from the imported amount; principal, interest, deductions, maturity, rate, payment mode,
+renewal terms, contract identifier, and allocation/position identities are never inferred.
 
 Every response contains `schema_version`, `command`, `ok`, `events`, and `errors`. Events
 preserve source-document and batch ids, canonical provenance id, provider/parser versions,

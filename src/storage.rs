@@ -772,6 +772,7 @@ const INCOME_KINDS: &[&str] = &[
 /// Apply Tracky's SQLite migrations needed for the review-first import store.
 pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(REVIEW_FIRST_SCHEMA)?;
+    migrate_cdt_enrichment_vocabulary(connection)?;
     migrate_canonical_transfer_pair_kind_check(connection)?;
     add_column_if_missing(
         connection,
@@ -791,6 +792,7 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         "investment_snapshot_id",
         "ALTER TABLE provenance ADD COLUMN investment_snapshot_id TEXT REFERENCES investment_snapshots(id)",
     )?;
+    add_column_if_missing(connection,"provenance","cdt_operation_revision_id","ALTER TABLE provenance ADD COLUMN cdt_operation_revision_id TEXT REFERENCES cdt_operation_revisions(id)")?;
     migrate_provider_provenance_check(connection)?;
     add_column_if_missing(
         connection,
@@ -937,6 +939,52 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
             ON canonical_transactions(investment_fee_component_id)
             WHERE investment_fee_component_id IS NOT NULL;",
     )
+}
+
+fn migrate_cdt_enrichment_vocabulary(connection: &Connection) -> rusqlite::Result<()> {
+    // SQLite cannot widen CHECK vocabularies in place. These compatibility rebuilds intentionally
+    // mirror the canonical definitions in 0001; migration tests cover fresh and legacy schemas.
+    let event_sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='investment_document_events'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !event_sql.contains("enrich_cdt_constitution") {
+        connection.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;
+        DROP TRIGGER IF EXISTS validate_investment_document_event_insert; DROP TRIGGER IF EXISTS validate_investment_document_event_update;
+        CREATE TABLE investment_document_events_v3 (
+          id TEXT PRIMARY KEY, source_document_id TEXT NOT NULL REFERENCES source_documents(id), import_batch_id TEXT NOT NULL REFERENCES import_batches(id), account_id TEXT REFERENCES accounts(id),
+          provider TEXT NOT NULL CHECK(provider IN ('nu','wenia','plenti')), parser_id TEXT NOT NULL, parser_version TEXT NOT NULL,
+          event_type TEXT NOT NULL CHECK(event_type IN ('deposit','withdrawal','cdt_opening','cdt_return','observed_cash','observed_position')), provider_effective_date TEXT NOT NULL, currency TEXT NOT NULL,
+          amount_minor INTEGER, instrument_hint TEXT, quantity TEXT, external_reference TEXT, page_number INTEGER NOT NULL CHECK(page_number>0), row_index INTEGER NOT NULL CHECK(row_index>0), evidence_redaction TEXT NOT NULL,
+          fingerprint TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'pending_review' CHECK(status IN ('pending_review','accepted','rejected')),
+          decision TEXT CHECK(decision IS NULL OR decision IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','enrich_cdt_constitution','enrich_cdt_renewal','enrich_cdt_redemption','reject')),
+          reconciled_kind TEXT CHECK(reconciled_kind IS NULL OR reconciled_kind IN ('canonical_transaction','provider_event','investment_snapshot','cdt_operation')), reconciled_id TEXT,
+          accepted_snapshot_id TEXT UNIQUE REFERENCES investment_snapshots(id), reviewed_at TEXT, created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          CHECK(amount_minor IS NOT NULL OR quantity IS NOT NULL), CHECK((status='pending_review' AND decision IS NULL AND reviewed_at IS NULL) OR (status<>'pending_review' AND decision IS NOT NULL AND reviewed_at IS NOT NULL)));
+        INSERT INTO investment_document_events_v3 SELECT id,source_document_id,import_batch_id,account_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,instrument_hint,quantity,external_reference,page_number,row_index,evidence_redaction,fingerprint,status,decision,reconciled_kind,reconciled_id,accepted_snapshot_id,reviewed_at,created_at FROM investment_document_events;
+        DROP TABLE investment_document_events; ALTER TABLE investment_document_events_v3 RENAME TO investment_document_events;
+        CREATE UNIQUE INDEX idx_investment_document_provider_reference ON investment_document_events(provider,external_reference) WHERE external_reference IS NOT NULL;
+        CREATE UNIQUE INDEX idx_investment_document_reconciliation ON investment_document_events(reconciled_kind,reconciled_id) WHERE reconciled_id IS NOT NULL;
+        CREATE INDEX idx_investment_document_batch ON investment_document_events(import_batch_id);
+        COMMIT; PRAGMA foreign_keys=ON;")?;
+    }
+    let cdt_sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='cdt_operation_revisions'",
+        [],
+        |r| r.get(0),
+    )?;
+    if !cdt_sql.contains("provider_document_contractual_enrichment") {
+        connection.execute_batch("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE;
+        CREATE TABLE cdt_operation_revisions_v2 (
+          id TEXT PRIMARY KEY,operation_id TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>0),cdt_position_id TEXT NOT NULL REFERENCES cdt_positions(id),operation_type TEXT NOT NULL CHECK(operation_type IN ('constitution','renewal','redemption')),effective_date TEXT NOT NULL,currency TEXT NOT NULL,
+          principal_before_minor INTEGER NOT NULL CHECK(principal_before_minor>=0),principal_after_minor INTEGER NOT NULL CHECK(principal_after_minor>=0),principal_returned_minor INTEGER NOT NULL DEFAULT 0 CHECK(principal_returned_minor>=0),external_capital_minor INTEGER NOT NULL DEFAULT 0 CHECK(external_capital_minor>=0),capitalized_interest_minor INTEGER NOT NULL DEFAULT 0 CHECK(capitalized_interest_minor>=0),gross_interest_minor INTEGER NOT NULL DEFAULT 0 CHECK(gross_interest_minor>=0),withholding_minor INTEGER NOT NULL DEFAULT 0 CHECK(withholding_minor>=0),other_deductions_minor INTEGER NOT NULL DEFAULT 0 CHECK(other_deductions_minor>=0),net_cash_received_minor INTEGER NOT NULL DEFAULT 0 CHECK(net_cash_received_minor>=0),
+          funding_allocation_id TEXT REFERENCES investment_allocation_heads(allocation_id),maturity_date TEXT NOT NULL,agreed_rate TEXT,payment_mode TEXT,payment_periodicity TEXT,renewal_terms TEXT,contract_identifier TEXT,allows_partial_redemption INTEGER NOT NULL DEFAULT 0 CHECK(allows_partial_redemption IN(0,1)),deduction_component_id TEXT,deduction_expense_transaction_id TEXT REFERENCES canonical_transactions(id),provenance_source TEXT NOT NULL CHECK(provenance_source IN ('manual_entry','provider_document_contractual_enrichment')),correction_reason TEXT,replaces_revision_id TEXT REFERENCES cdt_operation_revisions_v2(id),created_at TEXT NOT NULL DEFAULT(strftime('%Y-%m-%dT%H:%M:%fZ','now')),UNIQUE(operation_id,revision));
+        INSERT INTO cdt_operation_revisions_v2 SELECT * FROM cdt_operation_revisions; DROP TABLE cdt_operation_revisions; ALTER TABLE cdt_operation_revisions_v2 RENAME TO cdt_operation_revisions;
+        CREATE INDEX idx_cdt_operation_revisions_position ON cdt_operation_revisions(cdt_position_id); CREATE INDEX idx_cdt_funding_allocation ON cdt_operation_revisions(funding_allocation_id); CREATE INDEX idx_cdt_deduction_component ON cdt_operation_revisions(deduction_component_id); CREATE INDEX idx_cdt_deduction_expense ON cdt_operation_revisions(deduction_expense_transaction_id);
+        COMMIT; PRAGMA foreign_keys=ON;")?;
+    }
+    Ok(())
 }
 
 fn migrate_provider_provenance_check(connection: &Connection) -> rusqlite::Result<()> {

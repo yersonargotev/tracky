@@ -8,6 +8,7 @@ use crate::cdt::{
     replace_cdt_operation, CdtConstitutionInput, CdtOperationReplacement,
     CdtOperationReplacementInput, CdtRedemptionInput, CdtRenewalInput, CdtResponse, CdtTermsInput,
 };
+use crate::cdt_provider_enrichment;
 use crate::investment_documents;
 use crate::investment_reports::{self, InvestmentReportResponse};
 use crate::investments::{
@@ -169,6 +170,8 @@ enum InvestmentDocumentCommands {
     InspectEvent(InvestmentDocumentInspectEventArgs),
     Candidates(InvestmentDocumentCandidatesArgs),
     AcceptSnapshot(InvestmentDocumentAcceptSnapshotArgs),
+    CdtActions(InvestmentDocumentInspectEventArgs),
+    EnrichCdt(InvestmentDocumentCdtEnrichArgs),
     ReconcileDeposit(InvestmentDocumentReconcileArgs),
     ReconcileWithdrawal(InvestmentDocumentReconcileArgs),
     Reject(InvestmentDocumentInspectEventArgs),
@@ -202,6 +205,20 @@ struct InvestmentDocumentAcceptSnapshotArgs {
     account_id: String,
     #[arg(long = "instrument-id")]
     instrument_id: String,
+    #[arg(long)]
+    json: bool,
+}
+#[derive(Debug, Parser)]
+struct InvestmentDocumentCdtEnrichArgs {
+    event_id: String,
+    #[arg(long)]
+    db: PathBuf,
+    #[arg(long = "request-json")]
+    request_json: String,
+    #[arg(long, conflicts_with = "apply", required_unless_present = "apply")]
+    dry_run: bool,
+    #[arg(long, conflicts_with = "dry_run", required_unless_present = "dry_run")]
+    apply: bool,
     #[arg(long)]
     json: bool,
 }
@@ -1860,6 +1877,31 @@ where
                 writeln!(&mut stdout)?;
                 Ok(if r.ok { 0 } else { 2 })
             }
+            InvestmentDocumentCommands::CdtActions(a) => {
+                require_json(a.json, "investment-documents cdt-actions")?;
+                let c = Connection::open_with_flags(&a.db, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+                let r = cdt_provider_enrichment::preview(&c, &a.event_id)?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
+            InvestmentDocumentCommands::EnrichCdt(a) => {
+                require_json(a.json, "investment-documents enrich-cdt")?;
+                let request = match cdt_provider_enrichment::parse_request(&a.request_json) {
+                    Ok(request) => request,
+                    Err(r) => {
+                        serde_json::to_writer(&mut stdout, &*r)?;
+                        writeln!(&mut stdout)?;
+                        return Ok(2);
+                    }
+                };
+                let mut c = Connection::open(&a.db)?;
+                apply_migrations(&c)?;
+                let r = cdt_provider_enrichment::enrich(&mut c, &a.event_id, request, a.dry_run)?;
+                serde_json::to_writer(&mut stdout, &r)?;
+                writeln!(&mut stdout)?;
+                Ok(if r.ok { 0 } else { 2 })
+            }
             InvestmentDocumentCommands::ReconcileDeposit(ref a)
             | InvestmentDocumentCommands::ReconcileWithdrawal(ref a) => {
                 let deposit = matches!(&x.command, InvestmentDocumentCommands::ReconcileDeposit(_));
@@ -2028,6 +2070,7 @@ fn cdt_constitute_command<W: Write>(args: CdtConstituteArgs, stdout: &mut W) -> 
                 currency: args.currency,
                 constitution_date: args.constitution_date,
                 terms: args.terms.into(),
+                provider_enrichment: None,
             },
         )?,
     )
@@ -2063,6 +2106,7 @@ fn cdt_renew_command<W: Write>(args: CdtRenewArgs, stdout: &mut W) -> Result<i32
                 deduction_component_id: args.deduction_component_id,
                 deduction_expense_transaction_id: args.deduction_expense_transaction_id,
                 terms: args.terms.into(),
+                provider_enrichment: None,
             },
         )?,
     )
@@ -2095,6 +2139,7 @@ fn cdt_redeem_command<W: Write>(args: CdtRedeemArgs, stdout: &mut W) -> Result<i
                 net_cash_received_minor: args.net_cash_received_minor,
                 deduction_component_id: args.deduction_component_id,
                 deduction_expense_transaction_id: args.deduction_expense_transaction_id,
+                provider_enrichment: None,
             },
         )?,
     )

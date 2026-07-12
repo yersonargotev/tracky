@@ -26,6 +26,62 @@ pub struct CdtConstitutionInput {
     pub currency: String,
     pub constitution_date: String,
     pub terms: CdtTermsInput,
+    pub provider_enrichment: Option<CdtProviderEnrichmentInput>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CdtProviderEnrichmentInput {
+    pub event_id: String,
+    pub reviewer_terms_json: String,
+    pub provider_evidence_json: String,
+    pub decision: CdtProviderDecision,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CdtProviderDecision {
+    Constitution,
+    Renewal,
+    Redemption,
+}
+impl CdtProviderDecision {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Constitution => "enrich_cdt_constitution",
+            Self::Renewal => "enrich_cdt_renewal",
+            Self::Redemption => "enrich_cdt_redemption",
+        }
+    }
+}
+
+pub fn link_provider_event_to_existing_operation(
+    connection: &mut Connection,
+    enrichment: CdtProviderEnrichmentInput,
+    operation_revision_id: &str,
+) -> Result<CdtResponse> {
+    let position_id = connection
+        .query_row(
+            "SELECT cdt_position_id FROM cdt_operation_revisions WHERE id=?1",
+            [operation_revision_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    let Some(position_id) = position_id else {
+        return Ok(error(
+            "investment-documents enrich-cdt",
+            "cdt_operation_not_found",
+            "Canonical CDT operation was not found.",
+            "operation_revision_id",
+        ));
+    };
+    let tx = connection.transaction()?;
+    link_provider_enrichment(&tx, Some(&enrichment), operation_revision_id)?;
+    tx.commit()?;
+    inspect_cdt(
+        connection,
+        &position_id,
+        "9999-12-31",
+        "investment-documents enrich-cdt",
+    )
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -83,6 +139,7 @@ pub struct CdtRenewalInput {
     pub deduction_component_id: Option<String>,
     pub deduction_expense_transaction_id: Option<String>,
     pub terms: CdtTermsInput,
+    pub provider_enrichment: Option<CdtProviderEnrichmentInput>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +153,7 @@ pub struct CdtRedemptionInput {
     pub net_cash_received_minor: i64,
     pub deduction_component_id: Option<String>,
     pub deduction_expense_transaction_id: Option<String>,
+    pub provider_enrichment: Option<CdtProviderEnrichmentInput>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,6 +335,7 @@ pub fn constitute_cdt(
         ));
     }
 
+    let provider_enrichment = input.provider_enrichment.clone();
     let position_id = unique_id("cdtpos", &input.allocation_id);
     let operation_id = unique_id("cdtop", &position_id);
     let revision_id = unique_id("cdtrev", &operation_id);
@@ -321,7 +380,7 @@ pub fn constitute_cdt(
         terms,
         deduction_component_id: None,
         deduction_expense_transaction_id: None,
-        provenance_source: "manual_entry".to_owned(),
+        provenance_source: provenance_source(&provider_enrichment),
         correction_reason: None,
         replaces_revision_id: None,
         created_at: String::new(),
@@ -331,6 +390,7 @@ pub fn constitute_cdt(
         "INSERT INTO cdt_operation_heads (operation_id, current_revision_id) VALUES (?1, ?2)",
         params![operation_id, revision_id],
     )?;
+    link_provider_enrichment(&tx, provider_enrichment.as_ref(), &revision_id)?;
     tx.commit()?;
     inspect_cdt(connection, &position_id, &input.constitution_date, command)
 }
@@ -428,6 +488,7 @@ pub fn renew_cdt(connection: &mut Connection, input: CdtRenewalInput) -> Result<
             "principal_minor",
         ));
     };
+    let provider_enrichment = input.provider_enrichment.clone();
     let operation_id = unique_id("cdtop", &input.position_id);
     let revision_id = unique_id("cdtrev", &operation_id);
     let tx = connection.transaction()?;
@@ -468,7 +529,7 @@ pub fn renew_cdt(connection: &mut Connection, input: CdtRenewalInput) -> Result<
         terms,
         deduction_component_id: input.deduction_component_id.clone(),
         deduction_expense_transaction_id: input.deduction_expense_transaction_id.clone(),
-        provenance_source: "manual_entry".to_owned(),
+        provenance_source: provenance_source(&provider_enrichment),
         correction_reason: None,
         replaces_revision_id: None,
         created_at: String::new(),
@@ -478,6 +539,7 @@ pub fn renew_cdt(connection: &mut Connection, input: CdtRenewalInput) -> Result<
         "INSERT INTO cdt_operation_heads (operation_id, current_revision_id) VALUES (?1, ?2)",
         params![operation_id, revision_id],
     )?;
+    link_provider_enrichment(&tx, provider_enrichment.as_ref(), &revision_id)?;
     tx.commit()?;
     inspect_cdt(
         connection,
@@ -598,6 +660,7 @@ pub fn redeem_cdt(connection: &mut Connection, input: CdtRedemptionInput) -> Res
             "redemption",
         ));
     }
+    let provider_enrichment = input.provider_enrichment.clone();
     let operation_id = unique_id("cdtop", &input.position_id);
     let revision_id = unique_id("cdtrev", &operation_id);
     let tx = connection.transaction()?;
@@ -622,7 +685,7 @@ pub fn redeem_cdt(connection: &mut Connection, input: CdtRedemptionInput) -> Res
         terms: current.terms.clone(),
         deduction_component_id: input.deduction_component_id.clone(),
         deduction_expense_transaction_id: input.deduction_expense_transaction_id.clone(),
-        provenance_source: "manual_entry".to_owned(),
+        provenance_source: provenance_source(&provider_enrichment),
         correction_reason: None,
         replaces_revision_id: None,
         created_at: String::new(),
@@ -632,6 +695,7 @@ pub fn redeem_cdt(connection: &mut Connection, input: CdtRedemptionInput) -> Res
         "INSERT INTO cdt_operation_heads (operation_id, current_revision_id) VALUES (?1, ?2)",
         params![operation_id, revision_id],
     )?;
+    link_provider_enrichment(&tx, provider_enrichment.as_ref(), &revision_id)?;
     tx.commit()?;
     inspect_cdt(
         connection,
@@ -1344,7 +1408,7 @@ fn insert_operation(
             renewal_terms, contract_identifier, allows_partial_redemption, deduction_component_id,
             deduction_expense_transaction_id, provenance_source, correction_reason, replaces_revision_id
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
-                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, 'manual_entry', ?27, ?28)",
+                   ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
         params![revision_id, operation.operation_id, operation.revision, position_id,
             operation.operation_type, operation.effective_date, operation.currency,
             operation.principal_before_minor, operation.principal_after_minor,
@@ -1356,7 +1420,7 @@ fn insert_operation(
             operation.terms.payment_mode, operation.terms.payment_periodicity,
             operation.terms.renewal_terms, operation.terms.contract_identifier,
             operation.terms.allows_partial_redemption, operation.deduction_component_id,
-            operation.deduction_expense_transaction_id, operation.correction_reason,
+            operation.deduction_expense_transaction_id, operation.provenance_source, operation.correction_reason,
             operation.replaces_revision_id],
     )?;
     Ok(())
@@ -1432,6 +1496,43 @@ fn error(
             details: serde_json::json!({}),
         }],
     }
+}
+
+fn provenance_source(enrichment: &Option<CdtProviderEnrichmentInput>) -> String {
+    if enrichment.is_some() {
+        "provider_document_contractual_enrichment".to_owned()
+    } else {
+        "manual_entry".to_owned()
+    }
+}
+
+fn link_provider_enrichment(
+    tx: &rusqlite::Transaction<'_>,
+    enrichment: Option<&CdtProviderEnrichmentInput>,
+    operation_revision_id: &str,
+) -> Result<()> {
+    let Some(enrichment) = enrichment else {
+        return Ok(());
+    };
+    tx.execute(
+        "INSERT INTO cdt_provider_enrichments(event_id,operation_revision_id,provider_evidence_json,reviewer_terms_json) VALUES(?1,?2,?3,?4)",
+        params![enrichment.event_id, operation_revision_id, enrichment.provider_evidence_json, enrichment.reviewer_terms_json],
+    )?;
+    let changed = tx.execute(
+        "UPDATE investment_document_events SET status='accepted',decision=?1,reconciled_kind='cdt_operation',reconciled_id=?2,reviewed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?3 AND status='pending_review'",
+        params![enrichment.decision.as_str(), operation_revision_id, enrichment.event_id],
+    )?;
+    if changed != 1 {
+        anyhow::bail!("provider event was already consumed");
+    }
+    let provenance_changed = tx.execute(
+        "UPDATE provenance SET cdt_operation_revision_id=?1 WHERE investment_document_event_id=?2",
+        params![operation_revision_id, enrichment.event_id],
+    )?;
+    if provenance_changed != 1 {
+        anyhow::bail!("provider event provenance was not found");
+    }
+    Ok(())
 }
 
 pub fn cdt_error(

@@ -144,7 +144,16 @@ pub struct InvestmentReportResponse {
     pub costs_and_withholding: CostSection,
     pub closing_positions: Vec<ClosingPosition>,
     pub pending_and_reconciliation: PendingSection,
+    pub cdt_provider_enrichments: Vec<CdtProviderEnrichmentReport>,
     pub errors: Vec<ReviewError>,
+}
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CdtProviderEnrichmentReport {
+    pub event_id: String,
+    pub operation_revision_id: String,
+    pub effective_date: String,
+    pub provider_evidence: serde_json::Value,
+    pub reviewer_terms: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -307,6 +316,7 @@ fn error(from: &str, to: &str, code: &'static str, path: &'static str) -> Invest
         costs_and_withholding: CostSection::default(),
         closing_positions: vec![],
         pending_and_reconciliation: PendingSection::default(),
+        cdt_provider_enrichments: vec![],
         errors: vec![ReviewError {
             category: "validation_failure",
             code,
@@ -1018,6 +1028,28 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
     let (pending, positions) = closing_state(c, to, aggregation.unattributed_withdrawals)?;
+    let mut enrichment_statement=c.prepare("SELECT x.event_id,x.operation_revision_id,r.effective_date,x.provider_evidence_json,x.reviewer_terms_json FROM cdt_provider_enrichments x JOIN cdt_operation_revisions r ON r.id=x.operation_revision_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,x.event_id")?;
+    let cdt_provider_enrichments = enrichment_statement
+        .query_map(params![from, to], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?
+        .map(|row| {
+            let (event_id, operation_revision_id, effective_date, evidence, terms) = row?;
+            Ok(CdtProviderEnrichmentReport {
+                event_id,
+                operation_revision_id,
+                effective_date,
+                provider_evidence: serde_json::from_str(&evidence)?,
+                reviewer_terms: serde_json::from_str(&terms)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(InvestmentReportResponse {
         schema_version: SCHEMA_VERSION,
         command: "reports investments",
@@ -1098,6 +1130,7 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
         },
         closing_positions: positions,
         pending_and_reconciliation: pending,
+        cdt_provider_enrichments,
         errors: vec![],
     })
 }

@@ -141,6 +141,7 @@ CREATE TABLE IF NOT EXISTS provenance (
     canonical_transaction_id TEXT REFERENCES canonical_transactions(id),
     investment_document_event_id TEXT UNIQUE REFERENCES investment_document_events(id),
     investment_snapshot_id TEXT REFERENCES investment_snapshots(id),
+    cdt_operation_revision_id TEXT REFERENCES cdt_operation_revisions(id),
     source_document_id TEXT NOT NULL REFERENCES source_documents(id),
     import_batch_id TEXT REFERENCES import_batches(id),
     page_number INTEGER,
@@ -160,7 +161,7 @@ CREATE TABLE IF NOT EXISTS provenance (
     raw_evidence_ref TEXT,
     confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    CHECK (candidate_transaction_id IS NOT NULL OR canonical_transaction_id IS NOT NULL OR investment_document_event_id IS NOT NULL)
+    CHECK (candidate_transaction_id IS NOT NULL OR canonical_transaction_id IS NOT NULL OR investment_document_event_id IS NOT NULL OR cdt_operation_revision_id IS NOT NULL)
 );
 
 CREATE TABLE IF NOT EXISTS transaction_fingerprints (
@@ -291,7 +292,7 @@ CREATE TABLE IF NOT EXISTS cdt_operation_revisions (
     allows_partial_redemption INTEGER NOT NULL DEFAULT 0 CHECK (allows_partial_redemption IN (0, 1)),
     deduction_component_id TEXT,
     deduction_expense_transaction_id TEXT REFERENCES canonical_transactions(id),
-    provenance_source TEXT NOT NULL CHECK (provenance_source IN ('manual_entry')),
+    provenance_source TEXT NOT NULL CHECK (provenance_source IN ('manual_entry','provider_document_contractual_enrichment')),
     correction_reason TEXT,
     replaces_revision_id TEXT REFERENCES cdt_operation_revisions(id),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -452,8 +453,8 @@ CREATE TABLE IF NOT EXISTS investment_document_events (
     evidence_redaction TEXT NOT NULL,
     fingerprint TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'pending_review' CHECK (status IN ('pending_review','accepted','rejected')),
-    decision TEXT CHECK (decision IS NULL OR decision IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','reject')),
-    reconciled_kind TEXT CHECK (reconciled_kind IS NULL OR reconciled_kind IN ('canonical_transaction','provider_event','investment_snapshot')),
+    decision TEXT CHECK (decision IS NULL OR decision IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','enrich_cdt_constitution','enrich_cdt_renewal','enrich_cdt_redemption','reject')),
+    reconciled_kind TEXT CHECK (reconciled_kind IS NULL OR reconciled_kind IN ('canonical_transaction','provider_event','investment_snapshot','cdt_operation')),
     reconciled_id TEXT,
     accepted_snapshot_id TEXT UNIQUE REFERENCES investment_snapshots(id),
     reviewed_at TEXT,
@@ -469,17 +470,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_investment_document_reconciliation
 ON investment_document_events(reconciled_kind, reconciled_id)
 WHERE reconciled_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_investment_document_batch ON investment_document_events(import_batch_id);
+CREATE TABLE IF NOT EXISTS cdt_provider_enrichments (
+    event_id TEXT PRIMARY KEY REFERENCES investment_document_events(id),
+    operation_revision_id TEXT NOT NULL UNIQUE REFERENCES cdt_operation_revisions(id),
+    provider_evidence_json TEXT NOT NULL CHECK (json_valid(provider_evidence_json)),
+    reviewer_terms_json TEXT NOT NULL CHECK (json_valid(reviewer_terms_json)),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
 CREATE TRIGGER IF NOT EXISTS validate_investment_document_event_insert
 BEFORE INSERT ON investment_document_events
 WHEN NEW.provider NOT IN ('nu','wenia','plenti')
-  OR (NEW.decision IS NOT NULL AND NEW.decision NOT IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','reject'))
-  OR (NEW.reconciled_kind IS NOT NULL AND NEW.reconciled_kind NOT IN ('canonical_transaction','provider_event','investment_snapshot'))
+  OR (NEW.decision IS NOT NULL AND NEW.decision NOT IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','enrich_cdt_constitution','enrich_cdt_renewal','enrich_cdt_redemption','reject'))
+  OR (NEW.reconciled_kind IS NOT NULL AND NEW.reconciled_kind NOT IN ('canonical_transaction','provider_event','investment_snapshot','cdt_operation'))
 BEGIN SELECT RAISE(ABORT,'invalid investment document vocabulary'); END;
 CREATE TRIGGER IF NOT EXISTS validate_investment_document_event_update
 BEFORE UPDATE ON investment_document_events
 WHEN NEW.provider NOT IN ('nu','wenia','plenti')
-  OR (NEW.decision IS NOT NULL AND NEW.decision NOT IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','reject'))
-  OR (NEW.reconciled_kind IS NOT NULL AND NEW.reconciled_kind NOT IN ('canonical_transaction','provider_event','investment_snapshot'))
+  OR (NEW.decision IS NOT NULL AND NEW.decision NOT IN ('reconcile_deposit','reconcile_withdrawal','accept_snapshot','enrich_cdt_constitution','enrich_cdt_renewal','enrich_cdt_redemption','reject'))
+  OR (NEW.reconciled_kind IS NOT NULL AND NEW.reconciled_kind NOT IN ('canonical_transaction','provider_event','investment_snapshot','cdt_operation'))
 BEGIN SELECT RAISE(ABORT,'invalid investment document vocabulary'); END;
 
 CREATE INDEX IF NOT EXISTS idx_accounts_owned_institution_currency ON accounts(is_owned, institution_id, currency);

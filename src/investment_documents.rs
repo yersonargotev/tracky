@@ -684,6 +684,9 @@ pub enum ReviewDecision {
     ReconcileDeposit,
     ReconcileWithdrawal,
     AcceptSnapshot,
+    EnrichCdtConstitution,
+    EnrichCdtRenewal,
+    EnrichCdtRedemption,
     Reject,
 }
 impl ReviewDecision {
@@ -692,6 +695,9 @@ impl ReviewDecision {
             Self::ReconcileDeposit => "reconcile_deposit",
             Self::ReconcileWithdrawal => "reconcile_withdrawal",
             Self::AcceptSnapshot => "accept_snapshot",
+            Self::EnrichCdtConstitution => "enrich_cdt_constitution",
+            Self::EnrichCdtRenewal => "enrich_cdt_renewal",
+            Self::EnrichCdtRedemption => "enrich_cdt_redemption",
             Self::Reject => "reject",
         }
     }
@@ -700,6 +706,9 @@ impl ReviewDecision {
             "reconcile_deposit" => Some(Self::ReconcileDeposit),
             "reconcile_withdrawal" => Some(Self::ReconcileWithdrawal),
             "accept_snapshot" => Some(Self::AcceptSnapshot),
+            "enrich_cdt_constitution" => Some(Self::EnrichCdtConstitution),
+            "enrich_cdt_renewal" => Some(Self::EnrichCdtRenewal),
+            "enrich_cdt_redemption" => Some(Self::EnrichCdtRedemption),
             "reject" => Some(Self::Reject),
             _ => None,
         }
@@ -712,6 +721,7 @@ pub enum ReconciliationKind {
     CanonicalTransaction,
     ProviderEvent,
     InvestmentSnapshot,
+    CdtOperation,
 }
 impl ReconciliationKind {
     pub(crate) fn as_str(self) -> &'static str {
@@ -720,6 +730,7 @@ impl ReconciliationKind {
             Self::CanonicalTransaction => "canonical_transaction",
             Self::ProviderEvent => "provider_event",
             Self::InvestmentSnapshot => "investment_snapshot",
+            Self::CdtOperation => "cdt_operation",
         }
     }
     pub(crate) fn parse(value: &str) -> Option<Self> {
@@ -728,6 +739,7 @@ impl ReconciliationKind {
             "canonical_transaction" => Some(Self::CanonicalTransaction),
             "provider_event" => Some(Self::ProviderEvent),
             "investment_snapshot" => Some(Self::InvestmentSnapshot),
+            "cdt_operation" => Some(Self::CdtOperation),
             _ => None,
         }
     }

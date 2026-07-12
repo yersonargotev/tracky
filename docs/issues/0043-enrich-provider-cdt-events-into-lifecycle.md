@@ -22,18 +22,33 @@ and its provenance.
 
 ## Acceptance criteria
 
-- [ ] A pending CDT provider event exposes the evidence-backed fields and the exact additional
+- [x] A pending CDT provider event exposes the evidence-backed fields and the exact additional
   terms required for each compatible lifecycle action.
-- [ ] Dry-run validates the resulting lifecycle operation without mutating provider review state or
+- [x] Dry-run validates the resulting lifecycle operation without mutating provider review state or
   canonical investments.
-- [ ] Explicit apply creates or links the canonical operation and accepts the provider event in one
+- [x] Explicit apply creates or links the canonical operation and accepts the provider event in one
   transaction with complete provenance.
-- [ ] Tracky never infers maturity, rate, payment mode, contract identifier, deductions, or
+- [x] Tracky never infers maturity, rate, payment mode, contract identifier, deductions, or
   principal components absent from evidence or reviewer input.
-- [ ] Ambiguous openings/returns, incompatible allocations/positions, reused events, and incomplete
+- [x] Ambiguous openings/returns, incompatible allocations/positions, reused events, and incomplete
   terms remain pending without partial writes.
-- [ ] Reports, export, backup, and integrity distinguish imported evidence from reviewer-supplied
+- [x] Reports, export, backup, and integrity distinguish imported evidence from reviewer-supplied
   contractual enrichment.
+
+## Completion evidence
+
+- `investment-documents cdt-actions` previews evidence-backed fields and typed compatible actions;
+  `enrich-cdt --dry-run|--apply` accepts a tagged explicit request through
+  `tracky.cdt-provider-enrichment.v1`.
+- `src/cdt_provider_enrichment.rs` reuses canonical CDT validators. Apply writes the operation,
+  event decision, `cdt_provider_enrichments` audit split, and canonical provenance link in one
+  transaction, or validates and links an exact existing operation; dry-run executes against an
+  in-memory SQLite backup.
+- `tests/cdt_provider_enrichment_cli.rs` uses synthetic redacted evidence for read-only preview and
+  dry-run, explicit apply, ambiguous return actions, incomplete input, and pending-state
+  preservation. Existing CDT, report, export, backup, integrity, and migration suites cover the
+  reused lifecycle and operational surfaces. Investment reports expose the imported-evidence and
+  reviewer-enrichment split for canonical CDT operations.
 
 ## Blocked by
 
