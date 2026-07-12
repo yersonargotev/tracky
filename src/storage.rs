@@ -458,8 +458,27 @@ pub struct BatchReviewResponse {
     pub suggestions: Vec<ReviewSuggestion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dry_run: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date_scope: Option<DateScopedReviewPlan>,
     pub action_results: Vec<BatchActionResult>,
     pub errors: Vec<ReviewError>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct DateScopedReviewPlan {
+    pub from: String,
+    pub to: String,
+    pub plan_id: String,
+    pub candidate_ids: Vec<String>,
+    pub selected_by_status_and_month: Vec<StatusMonthCount>,
+    pub excluded_by_status_and_month: Vec<StatusMonthCount>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct StatusMonthCount {
+    pub status: String,
+    pub month: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -2393,6 +2412,16 @@ pub fn list_review_candidates(
     import_batch_id: Option<&str>,
     status: Option<&str>,
 ) -> Result<Vec<ReviewCandidate>> {
+    list_review_candidates_in_range(connection, import_batch_id, status, None, None)
+}
+
+pub fn list_review_candidates_in_range(
+    connection: &Connection,
+    import_batch_id: Option<&str>,
+    status: Option<&str>,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<Vec<ReviewCandidate>> {
     if let Some(status) = status {
         validate_candidate_status_filter(status)?;
     }
@@ -2404,6 +2433,12 @@ pub fn list_review_candidates(
     if status.is_some() {
         filters.push("c.status = ?");
     }
+    if from.is_some() {
+        filters.push("c.posted_date >= ?");
+    }
+    if to.is_some() {
+        filters.push("c.posted_date <= ?");
+    }
     if !filters.is_empty() {
         sql.push_str(" WHERE ");
         sql.push_str(&filters.join(" AND "));
@@ -2411,16 +2446,23 @@ pub fn list_review_candidates(
     sql.push_str(" ORDER BY c.import_batch_id, p.row_index, c.id");
 
     let mut statement = connection.prepare(&sql)?;
-    let rows = match (import_batch_id, status) {
-        (Some(import_batch_id), Some(status)) => {
-            statement.query_map(params![import_batch_id, status], review_candidate_from_row)?
-        }
-        (Some(import_batch_id), None) => {
-            statement.query_map(params![import_batch_id], review_candidate_from_row)?
-        }
-        (None, Some(status)) => statement.query_map(params![status], review_candidate_from_row)?,
-        (None, None) => statement.query_map([], review_candidate_from_row)?,
-    };
+    let mut values: Vec<&str> = Vec::new();
+    if let Some(value) = import_batch_id {
+        values.push(value);
+    }
+    if let Some(value) = status {
+        values.push(value);
+    }
+    if let Some(value) = from {
+        values.push(value);
+    }
+    if let Some(value) = to {
+        values.push(value);
+    }
+    let rows = statement.query_map(
+        rusqlite::params_from_iter(values),
+        review_candidate_from_row,
+    )?;
     let mut candidates = Vec::new();
     for row in rows {
         let mut candidate = row?;
@@ -2528,6 +2570,7 @@ pub fn summarize_import_batch(
         comparison: None,
         suggestions: Vec::new(),
         dry_run: None,
+        date_scope: None,
         action_results: Vec::new(),
         errors: Vec::new(),
     })
@@ -2599,6 +2642,7 @@ pub fn compare_duplicate_candidate(
         }),
         suggestions: Vec::new(),
         dry_run: None,
+        date_scope: None,
         action_results: Vec::new(),
         errors: Vec::new(),
     })
@@ -2608,14 +2652,24 @@ pub fn suggest_batch_actions(
     connection: &Connection,
     import_batch_id: &str,
 ) -> Result<BatchReviewResponse> {
+    suggest_batch_actions_in_range(connection, import_batch_id, None, None)
+}
+
+pub fn suggest_batch_actions_in_range(
+    connection: &Connection,
+    import_batch_id: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Result<BatchReviewResponse> {
     if !import_batch_exists(connection, import_batch_id)? {
         return Ok(batch_not_found_response(
             "candidates suggest-actions",
             import_batch_id,
         ));
     }
-    let candidates = list_review_candidates(connection, Some(import_batch_id), None)?;
-    let all_candidates = list_review_candidates(connection, None, None)?;
+    let candidates =
+        list_review_candidates_in_range(connection, Some(import_batch_id), None, from, to)?;
+    let all_candidates = list_review_candidates_in_range(connection, None, None, from, to)?;
     let mut suggestions = Vec::new();
     for candidate in &candidates {
         if is_obvious_unreviewed_duplicate(connection, candidate)? {
@@ -2680,6 +2734,7 @@ pub fn suggest_batch_actions(
         comparison: None,
         suggestions,
         dry_run: None,
+        date_scope: None,
         action_results: Vec::new(),
         errors: Vec::new(),
     })
@@ -2740,6 +2795,119 @@ pub fn apply_batch_actions(
     }
     tx.commit().context("committing atomic batch review")?;
     Ok(batch_action_response(false, action_results))
+}
+
+pub fn apply_date_scoped_batch_actions(
+    connection: &mut Connection,
+    actions: &[BatchActionRequest],
+    from: &str,
+    to: &str,
+    approved_plan_id: Option<&str>,
+    dry_run: bool,
+) -> Result<BatchReviewResponse> {
+    let plan = build_date_scoped_review_plan(connection, actions, from, to)?;
+    let all = list_review_candidates(connection, None, None)?;
+    let by_id: BTreeMap<_, _> = all
+        .iter()
+        .map(|candidate| (candidate.id.as_str(), candidate))
+        .collect();
+    if let Some(candidate_id) = actions
+        .iter()
+        .flat_map(BatchActionRequest::candidate_ids)
+        .find(|id| {
+            by_id.get(id.as_str()).is_some_and(|candidate| {
+                candidate.posted_date.as_str() < from || candidate.posted_date.as_str() > to
+            })
+        })
+    {
+        let mut response = batch_review_error_response_with_dry_run(
+            "candidates apply-actions",
+            "validation_failure",
+            "candidate_outside_date_scope",
+            "Every explicit action candidate must be inside the approved posted-date range.",
+            "actions",
+            serde_json::json!({"candidate_id": candidate_id, "from": from, "to": to}),
+            dry_run,
+        );
+        response.date_scope = Some(plan);
+        return Ok(response);
+    }
+    if !dry_run && approved_plan_id != Some(plan.plan_id.as_str()) {
+        let code = if approved_plan_id.is_some() {
+            "stale_review_plan"
+        } else {
+            "plan_id_required"
+        };
+        let mut response = batch_review_error_response_with_dry_run(
+            "candidates apply-actions",
+            "conflict",
+            code,
+            "Apply requires the exact plan id returned by the date-scoped dry-run.",
+            "plan_id",
+            serde_json::json!({"provided_plan_id": approved_plan_id, "current_plan_id": plan.plan_id}),
+            dry_run,
+        );
+        response.date_scope = Some(plan);
+        return Ok(response);
+    }
+    let mut response = apply_batch_actions(connection, actions, dry_run)?;
+    response.date_scope = Some(plan);
+    Ok(response)
+}
+
+fn build_date_scoped_review_plan(
+    connection: &Connection,
+    actions: &[BatchActionRequest],
+    from: &str,
+    to: &str,
+) -> Result<DateScopedReviewPlan> {
+    let candidates = list_review_candidates(connection, None, None)?;
+    let mut selected = BTreeMap::new();
+    let mut excluded = BTreeMap::new();
+    for candidate in &candidates {
+        let key = (
+            candidate_status_value(&candidate.status).to_string(),
+            candidate.posted_date[..7].to_string(),
+        );
+        let groups =
+            if candidate.posted_date.as_str() >= from && candidate.posted_date.as_str() <= to {
+                &mut selected
+            } else {
+                &mut excluded
+            };
+        *groups.entry(key).or_insert(0usize) += 1;
+    }
+    let candidate_ids = actions
+        .iter()
+        .flat_map(BatchActionRequest::candidate_ids)
+        .collect::<Vec<_>>();
+    let review_snapshot = serde_json::to_string(&candidates)?;
+    let digest = Sha256::digest(format!("{from}|{to}|{actions:?}|{review_snapshot}").as_bytes());
+    let plan_id = format!(
+        "review_plan_{}",
+        digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
+    let groups = |values: BTreeMap<(String, String), usize>| {
+        values
+            .into_iter()
+            .map(|((status, month), count)| StatusMonthCount {
+                status,
+                month,
+                count,
+            })
+            .collect()
+    };
+    Ok(DateScopedReviewPlan {
+        from: from.to_string(),
+        to: to.to_string(),
+        plan_id,
+        candidate_ids,
+        selected_by_status_and_month: groups(selected),
+        excluded_by_status_and_month: groups(excluded),
+    })
 }
 
 fn prepare_batch_actions(
@@ -2808,6 +2976,7 @@ fn batch_action_response(
             comparison: None,
             suggestions: Vec::new(),
             dry_run: Some(dry_run),
+            date_scope: None,
             action_results,
             errors: vec![ReviewError {
                 category: "conflict",
@@ -2829,6 +2998,7 @@ fn batch_action_response(
         comparison: None,
         suggestions: Vec::new(),
         dry_run: Some(dry_run),
+        date_scope: None,
         action_results,
         errors: Vec::new(),
     }
@@ -3167,6 +3337,7 @@ pub fn batch_review_error_response(
         comparison: None,
         suggestions: Vec::new(),
         dry_run: None,
+        date_scope: None,
         action_results: Vec::new(),
         errors: vec![ReviewError {
             category,

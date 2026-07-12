@@ -29,6 +29,7 @@ struct CandidateSpec<'a> {
     direction_hint: DirectionHint,
     semantic_hint: SemanticHint,
     row_index: u32,
+    posted_date: &'a str,
 }
 
 fn candidate(spec: CandidateSpec<'_>) -> CandidateTransaction {
@@ -41,6 +42,7 @@ fn candidate(spec: CandidateSpec<'_>) -> CandidateTransaction {
         direction_hint,
         semantic_hint,
         row_index,
+        posted_date,
     } = spec;
     let source_document_id = format!("srcdoc_{}", &HASH[..26]);
     CandidateTransaction {
@@ -61,7 +63,7 @@ fn candidate(spec: CandidateSpec<'_>) -> CandidateTransaction {
             currency: "COP",
             masked_identifier: None,
         },
-        posted_date: "2026-06-15".to_string(),
+        posted_date: posted_date.to_string(),
         description: format!("Synthetic redacted movement {id}"),
         amount_minor,
         currency: "COP",
@@ -123,6 +125,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Outflow,
             semantic_hint: SemanticHint::BankMovement,
             row_index: 1,
+            posted_date: "2026-03-31",
         }),
         candidate(CandidateSpec {
             id: "cand_dup_b",
@@ -133,6 +136,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Outflow,
             semantic_hint: SemanticHint::BankMovement,
             row_index: 2,
+            posted_date: "2026-03-31",
         }),
         candidate(CandidateSpec {
             id: "cand_transfer_from",
@@ -143,6 +147,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Outflow,
             semantic_hint: SemanticHint::BankMovement,
             row_index: 3,
+            posted_date: "2026-06-15",
         }),
         candidate(CandidateSpec {
             id: "cand_transfer_to",
@@ -153,6 +158,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Inflow,
             semantic_hint: SemanticHint::CardPayment,
             row_index: 4,
+            posted_date: "2026-06-15",
         }),
         candidate(CandidateSpec {
             id: "cand_accepted",
@@ -163,6 +169,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Outflow,
             semantic_hint: SemanticHint::CardCharge,
             row_index: 5,
+            posted_date: "2026-06-15",
         }),
         candidate(CandidateSpec {
             id: "cand_rejected",
@@ -173,6 +180,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Outflow,
             semantic_hint: SemanticHint::CardPayment,
             row_index: 6,
+            posted_date: "2026-06-15",
         }),
         candidate(CandidateSpec {
             id: "cand_unresolved",
@@ -183,6 +191,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Inflow,
             semantic_hint: SemanticHint::BankMovement,
             row_index: 7,
+            posted_date: "2026-06-15",
         }),
         candidate(CandidateSpec {
             id: "cand_batch_income",
@@ -193,6 +202,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Inflow,
             semantic_hint: SemanticHint::BankMovement,
             row_index: 8,
+            posted_date: "2026-04-01",
         }),
         candidate(CandidateSpec {
             id: "cand_batch_expense",
@@ -203,6 +213,7 @@ fn inspect_response() -> PdfInspectResponse {
             direction_hint: DirectionHint::Outflow,
             semantic_hint: SemanticHint::CardCharge,
             row_index: 9,
+            posted_date: "2026-06-30",
         }),
     ];
     PdfInspectResponse {
@@ -411,6 +422,251 @@ fn group_count(value: &serde_json::Value, path: &str, key: &str) -> u64 {
         .unwrap_or_else(|| panic!("missing group {path}:{key}"))["count"]
         .as_u64()
         .expect("count")
+}
+
+#[test]
+fn candidate_listing_uses_inclusive_posted_date_boundaries() {
+    let fixture = fixture();
+    let output = run(&[
+        "candidates",
+        "list",
+        "--db",
+        fixture.db_path.to_str().unwrap(),
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-06-30",
+        "--json",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let body = json(&output);
+    let ids = body["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|candidate| candidate["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"cand_batch_income"));
+    assert!(ids.contains(&"cand_batch_expense"));
+    assert!(!ids.contains(&"cand_dup_a"));
+
+    let suggestions = run(&[
+        "candidates",
+        "suggest-actions",
+        "--db",
+        fixture.db_path.to_str().unwrap(),
+        "--import-batch-id",
+        &fixture.batch_id,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-06-30",
+        "--json",
+    ]);
+    assert!(suggestions.status.success());
+    assert!(json(&suggestions)["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|suggestion| suggestion["candidate_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|id| id != "cand_dup_a" && id != "cand_dup_b")));
+
+    for (from, to, code) in [
+        ("not-a-date", "2026-06-30", "invalid_from_date"),
+        ("2026-06-30", "2026-04-01", "invalid_date_range"),
+    ] {
+        let invalid = run(&[
+            "candidates",
+            "list",
+            "--db",
+            fixture.db_path.to_str().unwrap(),
+            "--from",
+            from,
+            "--to",
+            to,
+            "--json",
+        ]);
+        assert!(!invalid.status.success());
+        assert_eq!(json(&invalid)["errors"][0]["code"], code);
+    }
+}
+
+#[test]
+fn date_scoped_dry_run_plans_explicit_ids_and_apply_requires_the_approved_plan() {
+    let fixture = fixture();
+    let db = fixture.db_path.to_str().unwrap();
+    let action = format!(
+        "accept-income:cand_batch_income:{}:salary",
+        fixture.income_source_id
+    );
+    let before: (i64, i64, i64) = Connection::open(&fixture.db_path).unwrap().query_row(
+        "SELECT (SELECT COUNT(*) FROM candidate_transactions), (SELECT COUNT(*) FROM source_documents), (SELECT COUNT(*) FROM provenance)",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    let dry = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &action,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-01",
+        "--dry-run",
+        "--json",
+    ]);
+    assert!(
+        dry.status.success(),
+        "{}",
+        String::from_utf8_lossy(&dry.stdout)
+    );
+    let plan = json(&dry);
+    assert_eq!(
+        plan["date_scope"]["candidate_ids"],
+        serde_json::json!(["cand_batch_income"])
+    );
+    assert_eq!(
+        plan["date_scope"]["selected_by_status_and_month"][0],
+        serde_json::json!({"status":"pending_review","month":"2026-04","count":1})
+    );
+    assert!(plan["date_scope"]["excluded_by_status_and_month"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|group| group
+            == &serde_json::json!({"status":"possible_duplicate","month":"2026-03","count":2})));
+    let plan_id = plan["date_scope"]["plan_id"].as_str().unwrap();
+
+    let missing = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &action,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-01",
+        "--json",
+    ]);
+    assert_eq!(json(&missing)["errors"][0]["code"], "plan_id_required");
+
+    let applied = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &action,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-01",
+        "--plan-id",
+        plan_id,
+        "--json",
+    ]);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stdout)
+    );
+    let after: (i64, i64, i64) = Connection::open(&fixture.db_path).unwrap().query_row(
+        "SELECT (SELECT COUNT(*) FROM candidate_transactions), (SELECT COUNT(*) FROM source_documents), (SELECT COUNT(*) FROM provenance)",
+        [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap();
+    assert_eq!(after.0, before.0);
+    assert_eq!(after.1, before.1);
+    assert_eq!(after.2, before.2);
+    assert_eq!(
+        Connection::open(&fixture.db_path)
+            .unwrap()
+            .query_row(
+                "SELECT status FROM candidate_transactions WHERE id='cand_dup_a'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "possible_duplicate"
+    );
+}
+
+#[test]
+fn date_scoped_apply_rejects_stale_plans_atomically() {
+    let fixture = fixture();
+    let db = fixture.db_path.to_str().unwrap();
+    let action = format!(
+        "accept-income:cand_batch_income:{}:salary",
+        fixture.income_source_id
+    );
+    let dry = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &action,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-01",
+        "--dry-run",
+        "--json",
+    ]);
+    let plan_id = json(&dry)["date_scope"]["plan_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let reassigned_account = Connection::open(&fixture.db_path)
+        .unwrap()
+        .query_row(
+            "SELECT a.id FROM accounts a JOIN institutions i ON i.id=a.institution_id WHERE i.name='rappi'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    assert!(run(&[
+        "candidates",
+        "assign-account",
+        "cand_batch_income",
+        "--db",
+        db,
+        "--account-id",
+        &reassigned_account,
+        "--json"
+    ])
+    .status
+    .success());
+    let stale = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &action,
+        "--from",
+        "2026-04-01",
+        "--to",
+        "2026-04-01",
+        "--plan-id",
+        &plan_id,
+        "--json",
+    ]);
+    assert_eq!(json(&stale)["errors"][0]["code"], "stale_review_plan");
+    assert_eq!(Connection::open(&fixture.db_path).unwrap().query_row(
+        "SELECT COUNT(*) FROM canonical_transactions WHERE created_from_candidate_id='cand_batch_income'",
+        [], |row| row.get::<_, i64>(0),
+    ).unwrap(), 0);
 }
 
 #[test]

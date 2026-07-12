@@ -21,17 +21,28 @@ review selection, never source ingestion or evidence retention.
 
 ## Acceptance criteria
 
-- [ ] Candidate listing, action planning, and typed batch dry-run accept inclusive posted-date
+- [x] Candidate listing, action planning, and typed batch dry-run accept inclusive posted-date
   boundaries with stable validation errors.
-- [ ] The plan reports selected and excluded candidate counts grouped by status and month.
-- [ ] Applying a date-scoped plan can mutate only the explicit candidate IDs returned and approved
+- [x] The plan reports selected and excluded candidate counts grouped by status and month.
+- [x] Applying a date-scoped plan can mutate only the explicit candidate IDs returned and approved
   by its dry-run.
-- [ ] Out-of-range candidates, provider events, source documents, batches, and provenance remain
+- [x] Out-of-range candidates, provider events, source documents, batches, and provenance remain
   unchanged and inspectable.
-- [ ] Statement filename/month never overrides canonical `posted_date` selection.
-- [ ] Public tests cover cross-month statements, inclusive boundaries, stale plans, and atomic
+- [x] Statement filename/month never overrides canonical `posted_date` selection.
+- [x] Public tests cover cross-month statements, inclusive boundaries, stale plans, and atomic
   application.
 
 ## Blocked by
 
 - `0040-add-typed-atomic-batch-review-actions.md`
+
+## Reconciliation evidence
+
+- `src/cli.rs` exposes inclusive `--from`/`--to` filters on candidate listing and action
+  suggestions, plus date-scoped typed dry-run/apply with an explicit `--plan-id` approval.
+- `src/storage.rs` selects only by canonical candidate `posted_date`, reports selected and excluded
+  status/month groups, binds the plan id to explicit actions and current candidate state, and then
+  delegates mutation to the existing atomic batch preflight and transaction.
+- `tests/batch_review_cli.rs` uses only synthetic cross-month candidates and covers inclusive
+  boundaries, stable invalid ranges, excluded evidence retention, stale plans, explicit plan
+  approval, and atomic application.

@@ -30,24 +30,25 @@ use crate::reconciliation::{
 use crate::storage::{
     accept_candidate, accept_expense_candidate, accept_income_candidate,
     accept_investment_candidate, accept_transfer_pair, account_registry_error_response,
-    apply_batch_actions, apply_migrations, batch_review_error_response,
-    batch_review_error_response_with_dry_run, category_registry_error_response,
-    compare_duplicate_candidate, create_category, create_income_source, create_manual_expense,
-    create_manual_income, create_manual_investment, create_manual_transfer,
-    decide_candidate_not_transfer, duplicate_import_response, explain_candidate_actions,
-    finance_report_error_response, find_source_document_by_hash,
+    apply_batch_actions, apply_date_scoped_batch_actions, apply_migrations,
+    batch_review_error_response, batch_review_error_response_with_dry_run,
+    category_registry_error_response, compare_duplicate_candidate, create_category,
+    create_income_source, create_manual_expense, create_manual_income, create_manual_investment,
+    create_manual_transfer, decide_candidate_not_transfer, duplicate_import_response,
+    explain_candidate_actions, finance_report_error_response, find_source_document_by_hash,
     income_source_registry_error_response, inspect_canonical_transaction,
     list_canonical_transactions, list_categories, list_income_sources, list_likely_transfer_pairs,
-    list_owned_accounts, list_review_candidates, persist_pdf_import, register_owned_account,
-    reject_candidate, replace_expense_transaction_lines, review_error_response,
-    suggest_batch_actions, summarize_finances, summarize_import_batch, transfer_error_response,
-    update_canonical_transaction, AccountRegisterInput, AccountRegistryResponse,
-    BatchActionRequest, BatchReviewResponse, CandidateReviewResponse, CategoryCreateInput,
-    CategoryRegistryResponse, ExpenseLineInput, FinanceReportResponse, ImportPdfResponse,
-    IncomeSourceCreateInput, IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput,
-    ManualInvestmentInput, ManualTransactionResponse, ManualTransferInput,
-    TransactionLedgerResponse, TransactionListFilter, TransactionUpdateInput,
-    TransferReviewResponse, IMPORT_PDF_SCHEMA_VERSION,
+    list_owned_accounts, list_review_candidates_in_range, persist_pdf_import,
+    register_owned_account, reject_candidate, replace_expense_transaction_lines,
+    review_error_response, suggest_batch_actions_in_range, summarize_finances,
+    summarize_import_batch, transfer_error_response, update_canonical_transaction,
+    AccountRegisterInput, AccountRegistryResponse, BatchActionRequest, BatchReviewResponse,
+    CandidateReviewResponse, CategoryCreateInput, CategoryRegistryResponse, ExpenseLineInput,
+    FinanceReportResponse, ImportPdfResponse, IncomeSourceCreateInput,
+    IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput, ManualInvestmentInput,
+    ManualTransactionResponse, ManualTransferInput, TransactionLedgerResponse,
+    TransactionListFilter, TransactionUpdateInput, TransferReviewResponse,
+    IMPORT_PDF_SCHEMA_VERSION,
 };
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -1225,6 +1226,14 @@ struct CandidateListArgs {
     #[arg(long, value_name = "STATUS")]
     status: Option<String>,
 
+    /// Inclusive candidate posted-date lower boundary.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    from: Option<String>,
+
+    /// Inclusive candidate posted-date upper boundary.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    to: Option<String>,
+
     /// Emit machine-readable JSON.
     #[arg(long)]
     json: bool,
@@ -1258,6 +1267,10 @@ struct CandidateSuggestActionsArgs {
     db: PathBuf,
     #[arg(long = "import-batch-id", value_name = "ID")]
     import_batch_id: String,
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    from: Option<String>,
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    to: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -1270,6 +1283,12 @@ struct CandidateApplyActionsArgs {
     actions: Vec<String>,
     #[arg(long = "dry-run")]
     dry_run: bool,
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    from: Option<String>,
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    to: Option<String>,
+    #[arg(long = "plan-id", value_name = "ID")]
+    plan_id: Option<String>,
     #[arg(long)]
     json: bool,
 }
@@ -2990,11 +3009,18 @@ where
     if let Some(exit_code) = require_candidate_json(args.json, stdout, "candidates list")? {
         return Ok(exit_code);
     }
+    if let Some(response) =
+        candidate_date_range_error("candidates list", args.from.as_deref(), args.to.as_deref())
+    {
+        return write_candidate_review_response(stdout, response);
+    }
     let connection = open_review_database(&args.db)?;
-    let response = match list_review_candidates(
+    let response = match list_review_candidates_in_range(
         &connection,
         args.import_batch_id.as_deref(),
         args.status.as_deref(),
+        args.from.as_deref(),
+        args.to.as_deref(),
     ) {
         Ok(candidates) => CandidateReviewResponse {
             schema_version: crate::storage::CANDIDATE_REVIEW_SCHEMA_VERSION,
@@ -3017,6 +3043,27 @@ where
         ),
     };
     write_candidate_review_response(stdout, response)
+}
+
+fn candidate_date_range_error(
+    command: &'static str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Option<CandidateReviewResponse> {
+    let invalid = |code, path, value: Option<&str>| {
+        review_error_response(
+            command,
+            "validation_failure",
+            code,
+            "Candidate posted-date boundaries must be valid ISO calendar dates in ascending order."
+                .to_string(),
+            path,
+            true,
+            serde_json::json!({"value": value}),
+        )
+    };
+    posted_date_range_error(from, to)
+        .map(|(code, path)| invalid(code, path, if path == "to" { to } else { from }))
 }
 
 fn candidate_batch_summary_command<W: Write>(
@@ -3088,6 +3135,13 @@ fn candidate_suggest_actions_command<W: Write>(
     )? {
         return Ok(exit_code);
     }
+    if let Some(response) = batch_optional_date_range_error(
+        "candidates suggest-actions",
+        args.from.as_deref(),
+        args.to.as_deref(),
+    ) {
+        return write_batch_review_response(stdout, response);
+    }
     let connection = match open_readonly_database(&args.db) {
         Ok(connection) => connection,
         Err(_) => {
@@ -3100,7 +3154,13 @@ fn candidate_suggest_actions_command<W: Write>(
             )
         }
     };
-    let response = suggest_batch_actions(&connection, &args.import_batch_id).unwrap_or_else(|_| {
+    let response = suggest_batch_actions_in_range(
+        &connection,
+        &args.import_batch_id,
+        args.from.as_deref(),
+        args.to.as_deref(),
+    )
+    .unwrap_or_else(|_| {
         database_operation_batch_error(
             "candidates suggest-actions",
             Some(&args.import_batch_id),
@@ -3108,6 +3168,42 @@ fn candidate_suggest_actions_command<W: Write>(
         )
     });
     write_batch_review_response(stdout, response)
+}
+
+fn batch_optional_date_range_error(
+    command: &'static str,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Option<BatchReviewResponse> {
+    let error = |code, path| {
+        batch_review_error_response(
+            command,
+            None,
+            "validation_failure",
+            code,
+            "Candidate posted-date boundaries must be valid ISO dates in ascending order.",
+            path,
+            serde_json::json!({"from": from, "to": to}),
+        )
+    };
+    posted_date_range_error(from, to).map(|(code, path)| error(code, path))
+}
+
+fn posted_date_range_error(
+    from: Option<&str>,
+    to: Option<&str>,
+) -> Option<(&'static str, &'static str)> {
+    use chrono::NaiveDate;
+    if from.is_some_and(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err()) {
+        return Some(("invalid_from_date", "from"));
+    }
+    if to.is_some_and(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").is_err()) {
+        return Some(("invalid_to_date", "to"));
+    }
+    if from.zip(to).is_some_and(|(from, to)| from > to) {
+        return Some(("invalid_date_range", "date_scope"));
+    }
+    None
 }
 
 fn candidate_apply_actions_command<W: Write>(
@@ -3127,6 +3223,9 @@ fn candidate_apply_actions_command<W: Write>(
                 args.dry_run,
             ),
         );
+    }
+    if let Some(response) = batch_date_scope_error(&args) {
+        return write_batch_review_response(stdout, response);
     }
     let actions = match parse_batch_actions(&args.actions, args.dry_run) {
         Ok(actions) => actions,
@@ -3153,11 +3252,55 @@ fn candidate_apply_actions_command<W: Write>(
             }
         }
     };
-    let response =
-        apply_batch_actions(&mut connection, &actions, args.dry_run).unwrap_or_else(|_| {
-            database_operation_batch_error("candidates apply-actions", None, Some(args.dry_run))
-        });
+    let response = if let (Some(from), Some(to)) = (args.from.as_deref(), args.to.as_deref()) {
+        apply_date_scoped_batch_actions(
+            &mut connection,
+            &actions,
+            from,
+            to,
+            args.plan_id.as_deref(),
+            args.dry_run,
+        )
+    } else {
+        apply_batch_actions(&mut connection, &actions, args.dry_run)
+    }
+    .unwrap_or_else(|_| {
+        database_operation_batch_error("candidates apply-actions", None, Some(args.dry_run))
+    });
     write_batch_review_response(stdout, response)
+}
+
+fn batch_date_scope_error(args: &CandidateApplyActionsArgs) -> Option<BatchReviewResponse> {
+    let error =
+        |code, path, details| {
+            batch_review_error_response_with_dry_run(
+        "candidates apply-actions", "validation_failure", code,
+        "Date-scoped review requires valid inclusive ISO dates and an approved dry-run plan.",
+        path, details, args.dry_run,
+    )
+        };
+    if args.from.is_some() != args.to.is_some() {
+        return Some(error(
+            "date_scope_boundaries_required",
+            "date_scope",
+            serde_json::json!({"from": args.from, "to": args.to}),
+        ));
+    }
+    if args.from.is_none() && args.plan_id.is_some() {
+        return Some(error(
+            "date_scope_boundaries_required",
+            "date_scope",
+            serde_json::json!({"plan_id": args.plan_id}),
+        ));
+    }
+    if let Some((code, path)) = posted_date_range_error(args.from.as_deref(), args.to.as_deref()) {
+        return Some(error(
+            code,
+            path,
+            serde_json::json!({"from": args.from, "to": args.to}),
+        ));
+    }
+    None
 }
 
 fn parse_batch_actions(
