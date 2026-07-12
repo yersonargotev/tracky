@@ -20,7 +20,7 @@ pdfium-auto = "0.3.0"
 pdfium-render = "0.8"
 regex = "1.11"
 rpassword = "7.3"
-rusqlite = { version = "0.32.1", features = ["backup", "bundled"] }
+rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
