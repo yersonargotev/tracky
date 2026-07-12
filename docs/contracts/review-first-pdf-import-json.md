@@ -679,8 +679,8 @@ Issue 0019 adds stateless commands for reviewing large import batches. Every com
 | `candidates batch-summary --import-batch-id ID [--largest-limit 10]` | No; opens the existing database read-only | Group one import batch and show the largest absolute movements. |
 | `candidates compare-duplicate CANDIDATE_ID` | No; opens the existing database read-only | Compare the candidate with matched candidates, canonical records, fingerprints, duplicate markers, and redacted provenance/evidence. |
 | `candidates suggest-actions --import-batch-id ID` | No; opens the existing database read-only | Explain obvious duplicate rejections and structurally validated owned-account transfer pairs without applying them. A transfer pair is included when either candidate belongs to the selected batch, including pairs spanning two import batches. |
-| `candidates apply-actions --action ACTION [--action ACTION ...] --dry-run` | No; opens the existing database read-only | Preflight every explicit action and return per-action validation results. |
-| `candidates apply-actions --action ACTION [--action ACTION ...]` | Yes | Preflight the complete set, then apply all actions in one SQLite transaction or none. |
+| `candidates apply-actions --action ACTION [--action ACTION ...] --dry-run` | No; opens the existing database read-only | Preflight every explicit duplicate, transfer, income, or categorized/split expense action through the same typed validation used by its individual command and return per-action results. |
+| `candidates apply-actions --action ACTION [--action ACTION ...]` | Yes | Preflight the complete mixed set, then apply all actions in one SQLite transaction or none. |
 
 The batch summary uses deterministic `{ "key", "count" }` arrays for `by_status`, `by_duplicate_status`, `by_institution`, `by_account_resolution`, `by_direction_hint`, and `by_semantic_hint`. `largest_amounts` is ordered by descending `absolute_amount_minor` and then ascending `candidate_id`; each item includes candidate id, date, description, signed and absolute minor amount, currency, and status. `--largest-limit` defaults to 10 and must be greater than zero.
 
@@ -711,7 +711,9 @@ Apply accepts repeated explicit action values:
 
 - `--action reject-duplicate:CANDIDATE_ID`
 - `--action accept-transfer-pair:FROM_CANDIDATE_ID:TO_CANDIDATE_ID`
+- `--action accept-income:CANDIDATE_ID:INCOME_SOURCE_ID:INCOME_KIND`
+- `--action accept-expense:CANDIDATE_ID:CATEGORY_ID:AMOUNT_MINOR:CURRENCY[:CATEGORY_ID:AMOUNT_MINOR:CURRENCY...]`
 
-Each candidate id may appear in only one action in the submitted set. Every `action_results[]` item reports `action`, `candidate_ids`, `status` (`validated`, `failed`, or `applied`), `canonical_transaction_ids`, and stable `errors`. If any preflight fails, the top-level error is `batch_preflight_failed`, no action is written, and successful preflights remain labelled `validated`, not `applied`. Dry-run always stops after preflight.
+Income source and kind are always explicit. Expense actions contain one or more explicit lines; their amounts and currencies must balance exactly under the individual `accept-expense` rules. Each candidate id may appear in only one action in the submitted set. Input order determines `action_results[]` order. Every result reports `action`, `candidate_ids`, `status` (`validated`, `failed`, or `applied`), `canonical_transaction_ids`, and stable `errors`. If any preflight fails, the top-level error is `batch_preflight_failed`, no action is written, and successful preflights remain labelled `validated`, not `applied`. Dry-run always stops after preflight. Replaying an applied typed action is refused as already accepted.
 
 Stable validation/error codes include `json_output_required`, `import_batch_not_found`, `invalid_largest_limit`, `candidate_not_found`, `actions_required`, `candidate_ids_required`, `invalid_batch_action`, `candidate_reused_in_batch`, `candidate_not_obvious_duplicate`, `candidate_already_accepted`, `candidate_already_rejected`, the existing `transfer_pair_*` codes, `batch_preflight_failed`, `database_open_failed`, and `database_operation_failed`.

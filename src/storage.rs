@@ -448,42 +448,76 @@ pub struct ReviewSuggestion {
     pub evidence: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BatchActionKind {
-    RejectDuplicate,
-    AcceptTransferPair,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BatchActionRequest {
-    kind: BatchActionKind,
-    candidate_ids: Vec<String>,
+pub enum BatchActionRequest {
+    RejectDuplicate {
+        candidate_id: String,
+    },
+    AcceptTransferPair {
+        from_candidate_id: String,
+        to_candidate_id: String,
+    },
+    AcceptIncome {
+        candidate_id: String,
+        income_source_id: String,
+        income_kind: String,
+    },
+    AcceptExpense {
+        candidate_id: String,
+        expense_lines: Vec<ExpenseLineInput>,
+    },
 }
 
 impl BatchActionRequest {
     pub fn reject_duplicate(candidate_id: String) -> Self {
-        Self {
-            kind: BatchActionKind::RejectDuplicate,
-            candidate_ids: vec![candidate_id],
-        }
+        Self::RejectDuplicate { candidate_id }
     }
 
     pub fn accept_transfer_pair(from_candidate_id: String, to_candidate_id: String) -> Self {
-        Self {
-            kind: BatchActionKind::AcceptTransferPair,
-            candidate_ids: vec![from_candidate_id, to_candidate_id],
+        Self::AcceptTransferPair {
+            from_candidate_id,
+            to_candidate_id,
+        }
+    }
+
+    pub fn accept_income(
+        candidate_id: String,
+        income_source_id: String,
+        income_kind: String,
+    ) -> Self {
+        Self::AcceptIncome {
+            candidate_id,
+            income_source_id,
+            income_kind,
+        }
+    }
+
+    pub fn accept_expense(candidate_id: String, expense_lines: Vec<ExpenseLineInput>) -> Self {
+        Self::AcceptExpense {
+            candidate_id,
+            expense_lines,
         }
     }
 
     fn action(&self) -> &'static str {
-        match self.kind {
-            BatchActionKind::RejectDuplicate => "reject_duplicate",
-            BatchActionKind::AcceptTransferPair => "accept_transfer_pair",
+        match self {
+            Self::RejectDuplicate { .. } => "reject_duplicate",
+            Self::AcceptTransferPair { .. } => "accept_transfer_pair",
+            Self::AcceptIncome { .. } => "accept_income",
+            Self::AcceptExpense { .. } => "accept_expense",
         }
     }
 
-    fn candidate_ids(&self) -> &[String] {
-        &self.candidate_ids
+    fn candidate_ids(&self) -> Vec<String> {
+        match self {
+            Self::RejectDuplicate { candidate_id }
+            | Self::AcceptIncome { candidate_id, .. }
+            | Self::AcceptExpense { candidate_id, .. } => vec![candidate_id.clone()],
+            Self::AcceptTransferPair {
+                from_candidate_id,
+                to_candidate_id,
+            } => vec![from_candidate_id.clone(), to_candidate_id.clone()],
+        }
     }
 }
 
@@ -496,6 +530,8 @@ struct PreparedBatchAction {
 enum BatchActionMutation {
     RejectDuplicate { candidate_id: String },
     AcceptTransferPair { pair: Box<ReviewTransferPair> },
+    AcceptIncome { prepared: PreparedIncomeAcceptance },
+    AcceptExpense { prepared: PreparedExpenseAcceptance },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -525,7 +561,7 @@ pub struct TransactionUpdateInput {
     pub expense_lines: Option<Vec<ExpenseLineInput>>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExpenseLineInput {
     pub category_id: String,
     pub amount_minor: i64,
@@ -2545,6 +2581,14 @@ pub fn apply_batch_actions(
             BatchActionMutation::AcceptTransferPair { pair } => {
                 result.canonical_transaction_ids = apply_transfer_pair_rows(&tx, &pair)?;
             }
+            BatchActionMutation::AcceptIncome { prepared } => {
+                let canonical_id = apply_income_acceptance(&tx, &prepared)?;
+                result.canonical_transaction_ids = vec![canonical_id];
+            }
+            BatchActionMutation::AcceptExpense { prepared } => {
+                let canonical_id = apply_expense_acceptance(&tx, &prepared)?;
+                result.canonical_transaction_ids = vec![canonical_id];
+            }
         }
         result.status = "applied";
     }
@@ -2560,7 +2604,7 @@ fn prepare_batch_actions(
     let mut prepared_actions = Vec::new();
     let mut action_results = Vec::new();
     for action in actions {
-        let candidate_ids = action.candidate_ids().to_vec();
+        let candidate_ids = action.candidate_ids();
         let reused_id = candidate_ids
             .iter()
             .find(|candidate_id| !seen_candidate_ids.insert((*candidate_id).clone()))
@@ -2788,9 +2832,8 @@ fn preflight_batch_action(
     connection: &Connection,
     action: &BatchActionRequest,
 ) -> Result<std::result::Result<PreparedBatchAction, Vec<ReviewError>>> {
-    match action.kind {
-        BatchActionKind::RejectDuplicate => {
-            let candidate_id = &action.candidate_ids[0];
+    match action {
+        BatchActionRequest::RejectDuplicate { candidate_id } => {
             let Some(candidate) = find_review_candidate(connection, candidate_id)? else {
                 return Ok(Err(vec![candidate_not_found_error(
                     candidate_id,
@@ -2801,32 +2844,20 @@ fn preflight_batch_action(
                 return Ok(Err(vec![error]));
             }
             if !is_obvious_unreviewed_duplicate(connection, &candidate)? {
-                return Ok(Err(vec![ReviewError {
-                    category: "conflict",
-                    code: "candidate_not_obvious_duplicate",
-                    message: "Reject-duplicate requires an exact fingerprint match to a canonical or accepted record."
-                        .to_string(),
-                    path: "candidate.duplicate_status",
-                    recoverable: true,
-                    details: serde_json::json!({
-                        "candidate_id": candidate_id,
-                        "duplicate_status": candidate.duplicate_status.status,
-                        "matched_candidate_ids": candidate.duplicate_status.matched_candidate_ids,
-                        "matched_canonical_transaction_ids": candidate.duplicate_status.matched_canonical_transaction_ids,
-                    }),
-                }]));
+                return Ok(Err(vec![ReviewError { category: "conflict", code: "candidate_not_obvious_duplicate", message: "Reject-duplicate requires an exact fingerprint match to a canonical or accepted record.".to_string(), path: "candidate.duplicate_status", recoverable: true, details: serde_json::json!({"candidate_id": candidate_id, "duplicate_status": candidate.duplicate_status.status, "matched_candidate_ids": candidate.duplicate_status.matched_candidate_ids, "matched_canonical_transaction_ids": candidate.duplicate_status.matched_canonical_transaction_ids}) }]));
             }
             Ok(Ok(PreparedBatchAction {
                 action: action.action(),
-                candidate_ids: action.candidate_ids().to_vec(),
+                candidate_ids: action.candidate_ids(),
                 mutation: BatchActionMutation::RejectDuplicate {
                     candidate_id: candidate_id.clone(),
                 },
             }))
         }
-        BatchActionKind::AcceptTransferPair => {
-            let from_candidate_id = &action.candidate_ids[0];
-            let to_candidate_id = &action.candidate_ids[1];
+        BatchActionRequest::AcceptTransferPair {
+            from_candidate_id,
+            to_candidate_id,
+        } => {
             let Some(from_candidate) = find_review_candidate(connection, from_candidate_id)? else {
                 return Ok(Err(vec![candidate_not_found_error(
                     from_candidate_id,
@@ -2842,7 +2873,7 @@ fn preflight_batch_action(
             match build_transfer_pair(connection, from_candidate, to_candidate) {
                 Ok(pair) => Ok(Ok(PreparedBatchAction {
                     action: action.action(),
-                    candidate_ids: action.candidate_ids().to_vec(),
+                    candidate_ids: action.candidate_ids(),
                     mutation: BatchActionMutation::AcceptTransferPair {
                         pair: Box::new(pair),
                     },
@@ -2854,14 +2885,98 @@ fn preflight_batch_action(
                         .to_string(),
                     path: "candidate_ids",
                     recoverable: true,
-                    details: serde_json::json!({
-                        "from_candidate_id": from_candidate_id,
-                        "to_candidate_id": to_candidate_id,
-                        "reason": error.reason(),
-                    }),
+                    details: serde_json::json!({"from_candidate_id": from_candidate_id, "to_candidate_id": to_candidate_id, "reason": error.reason()}),
                 }])),
             }
         }
+        BatchActionRequest::AcceptIncome {
+            candidate_id,
+            income_source_id,
+            income_kind,
+        } => {
+            let prepared = match prepare_income_acceptance(
+                connection,
+                candidate_id,
+                income_source_id,
+                income_kind,
+            )? {
+                Ok(value) => value,
+                Err(response) => return Ok(Err(response.errors)),
+            };
+            Ok(Ok(PreparedBatchAction {
+                action: action.action(),
+                candidate_ids: action.candidate_ids(),
+                mutation: BatchActionMutation::AcceptIncome { prepared },
+            }))
+        }
+        BatchActionRequest::AcceptExpense {
+            candidate_id,
+            expense_lines,
+        } => {
+            let prepared =
+                match prepare_expense_acceptance(connection, candidate_id, expense_lines)? {
+                    Ok(value) => value,
+                    Err(response) => return Ok(Err(response.errors)),
+                };
+            Ok(Ok(PreparedBatchAction {
+                action: action.action(),
+                candidate_ids: action.candidate_ids(),
+                mutation: BatchActionMutation::AcceptExpense { prepared },
+            }))
+        }
+    }
+}
+
+fn typed_candidate_state_error(candidate: &ReviewCandidate, kind: &str) -> Option<ReviewError> {
+    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
+    {
+        return Some(ReviewError {
+            category: "conflict",
+            code: "candidate_already_accepted",
+            message: "Candidate transaction was already accepted.".to_string(),
+            path: "candidate.status",
+            recoverable: true,
+            details: serde_json::json!({"candidate_id": candidate.id, "canonical_transaction_id": candidate.canonical_transaction_id}),
+        });
+    }
+    if candidate.status == CandidateStatus::Rejected {
+        return Some(ReviewError {
+            category: "conflict",
+            code: "candidate_already_rejected",
+            message: format!("Rejected candidates cannot be accepted as {kind}."),
+            path: "candidate.status",
+            recoverable: true,
+            details: serde_json::json!({"candidate_id": candidate.id}),
+        });
+    }
+    if !is_unreviewed_candidate_status(&candidate.status) {
+        return Some(ReviewError {
+            category: "conflict",
+            code: "candidate_not_acceptable",
+            message: format!(
+                "Only pending_review or possible_duplicate candidates can be accepted as {kind}."
+            ),
+            path: "candidate.status",
+            recoverable: true,
+            details: serde_json::json!({"candidate_id": candidate.id, "status": candidate.status}),
+        });
+    }
+    None
+}
+
+fn candidate_review_response_from_errors(
+    command: &'static str,
+    errors: Vec<ReviewError>,
+) -> CandidateReviewResponse {
+    CandidateReviewResponse {
+        schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
+        command,
+        ok: false,
+        candidate: None,
+        candidates: Vec::new(),
+        canonical_transaction: None,
+        transaction_lines: Vec::new(),
+        errors,
     }
 }
 
@@ -3050,109 +3165,71 @@ pub fn accept_transfer_pair(
     })
 }
 
-pub fn accept_income_candidate(
-    connection: &mut Connection,
+struct PreparedIncomeAcceptance {
+    candidate_id: String,
+    income_source_id: String,
+    income_kind: String,
+}
+
+fn prepare_income_acceptance(
+    connection: &Connection,
     candidate_id: &str,
     income_source_id: &str,
     income_kind: &str,
-) -> Result<CandidateReviewResponse> {
+) -> Result<std::result::Result<PreparedIncomeAcceptance, CandidateReviewResponse>> {
     let normalized_income_kind = normalize_income_kind(income_kind);
     if !INCOME_KINDS.contains(&normalized_income_kind.as_str()) {
-        return Ok(review_error_response(
+        return Ok(Err(review_error_response(
             "candidates accept-income",
             "validation_failure",
             "invalid_income_kind",
             "Income kind is not supported.".to_string(),
             "income_kind",
             true,
-            serde_json::json!({
-                "income_kind": income_kind,
-                "allowed_income_kinds": INCOME_KINDS,
-            }),
-        ));
+            serde_json::json!({"income_kind": income_kind, "allowed_income_kinds": INCOME_KINDS}),
+        )));
     }
-
-    let tx = connection
-        .transaction()
-        .context("starting income candidate accept transaction")?;
-    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
-        return Ok(review_error_response(
+    let Some(candidate) = find_review_candidate(connection, candidate_id)? else {
+        return Ok(Err(review_error_response(
             "candidates accept-income",
             "not_found",
             "candidate_not_found",
             "Candidate transaction was not found.".to_string(),
             "candidate_id",
             true,
-            serde_json::json!({ "candidate_id": candidate_id }),
-        ));
+            serde_json::json!({"candidate_id": candidate_id}),
+        )));
     };
-    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
-    {
-        return Ok(review_error_response(
+    if let Some(error) = typed_candidate_state_error(&candidate, "income") {
+        return Ok(Err(candidate_review_response_from_errors(
             "candidates accept-income",
-            "conflict",
-            "candidate_already_accepted",
-            "Candidate transaction was already accepted.".to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({
-                "candidate_id": candidate_id,
-                "canonical_transaction_id": candidate.canonical_transaction_id,
-            }),
-        ));
+            vec![error],
+        )));
     }
-    if candidate.status == CandidateStatus::Rejected {
-        return Ok(review_error_response(
-            "candidates accept-income",
-            "conflict",
-            "candidate_already_rejected",
-            "Rejected candidates cannot be accepted as income.".to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id }),
-        ));
-    }
-    if !is_unreviewed_candidate_status(&candidate.status) {
-        return Ok(review_error_response(
-            "candidates accept-income",
-            "conflict",
-            "candidate_not_acceptable",
-            "Only pending_review or possible_duplicate candidates can be accepted as income."
-                .to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
-        ));
-    }
-    if income_source_by_id(&tx, income_source_id)?.is_none() {
-        return Ok(review_error_response(
+    if income_source_by_id(connection, income_source_id)?.is_none() {
+        return Ok(Err(review_error_response(
             "candidates accept-income",
             "not_found",
             "income_source_not_found",
             "Income source was not found.".to_string(),
             "income_source_id",
             true,
-            serde_json::json!({ "income_source_id": income_source_id }),
-        ));
+            serde_json::json!({"income_source_id": income_source_id}),
+        )));
     }
     if !is_income_candidate_shape(&candidate) {
-        return Ok(review_error_response(
+        return Ok(Err(review_error_response(
             "candidates accept-income",
             "conflict",
             "candidate_not_income_eligible",
             "Only explicit bank-movement inflow candidates can be accepted as income.".to_string(),
             "candidate",
             true,
-            serde_json::json!({
-                "candidate_id": candidate_id,
-                "direction_hint": candidate.direction_hint,
-                "semantic_hint": candidate.semantic_hint,
-                "amount_minor": candidate.amount_minor,
-            }),
-        ));
+            serde_json::json!({"candidate_id": candidate_id, "direction_hint": candidate.direction_hint, "semantic_hint": candidate.semantic_hint, "amount_minor": candidate.amount_minor}),
+        )));
     }
-    if candidate_has_likely_transfer_pair(&tx, &candidate)? {
-        return Ok(review_error_response(
+    if candidate_has_likely_transfer_pair(connection, &candidate)? {
+        return Ok(Err(review_error_response(
             "candidates accept-income",
             "conflict",
             "candidate_possible_own_account_transfer",
@@ -3160,45 +3237,132 @@ pub fn accept_income_candidate(
                 .to_string(),
             "candidate",
             true,
-            serde_json::json!({ "candidate_id": candidate_id }),
-        ));
+            serde_json::json!({"candidate_id": candidate_id}),
+        )));
     }
+    Ok(Ok(PreparedIncomeAcceptance {
+        candidate_id: candidate_id.to_string(),
+        income_source_id: income_source_id.to_string(),
+        income_kind: normalized_income_kind,
+    }))
+}
 
-    let canonical_id = canonical_transaction_id(candidate_id);
-    tx.execute(
-        "INSERT INTO canonical_transactions (
-            id, account_id, posted_date, description, amount_minor, currency,
-            balance_minor, transaction_kind, income_source_id, income_kind, created_from_candidate_id
-         )
-         SELECT ?1, account_id, posted_date, description, amount_minor, currency,
-                balance_minor, ?2, ?3, ?4, id
-         FROM candidate_transactions
-         WHERE id = ?5",
-        params![
-            canonical_id,
-            INCOME_TRANSACTION_KIND,
-            income_source_id,
-            normalized_income_kind,
-            candidate_id
-        ],
-    )?;
-    mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
+fn apply_income_acceptance(
+    connection: &Connection,
+    prepared: &PreparedIncomeAcceptance,
+) -> Result<String> {
+    let canonical_id = canonical_transaction_id(&prepared.candidate_id);
+    connection.execute("INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, balance_minor, transaction_kind, income_source_id, income_kind, created_from_candidate_id) SELECT ?1, account_id, posted_date, description, amount_minor, currency, balance_minor, ?2, ?3, ?4, id FROM candidate_transactions WHERE id = ?5", params![canonical_id, INCOME_TRANSACTION_KIND, prepared.income_source_id, prepared.income_kind, prepared.candidate_id])?;
+    mark_candidate_accepted_with_canonical(connection, &prepared.candidate_id, &canonical_id)?;
+    Ok(canonical_id)
+}
+
+pub fn accept_income_candidate(
+    connection: &mut Connection,
+    candidate_id: &str,
+    income_source_id: &str,
+    income_kind: &str,
+) -> Result<CandidateReviewResponse> {
+    let tx = connection
+        .transaction()
+        .context("starting income candidate accept transaction")?;
+    let prepared =
+        match prepare_income_acceptance(&tx, candidate_id, income_source_id, income_kind)? {
+            Ok(value) => value,
+            Err(response) => return Ok(response),
+        };
+    let canonical_id = apply_income_acceptance(&tx, &prepared)?;
     tx.commit().context("committing income candidate accept")?;
-
-    let candidate = find_review_candidate(connection, candidate_id)?
-        .expect("accepted income candidate remains queryable");
-    let canonical_transaction = canonical_transaction(connection, &canonical_id)?
-        .expect("accepted income canonical transaction remains queryable");
     Ok(CandidateReviewResponse {
         schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
         command: "candidates accept-income",
         ok: true,
-        candidate: Some(candidate),
+        candidate: find_review_candidate(connection, candidate_id)?,
         candidates: Vec::new(),
-        canonical_transaction: Some(canonical_transaction),
+        canonical_transaction: canonical_transaction(connection, &canonical_id)?,
         transaction_lines: Vec::new(),
         errors: Vec::new(),
     })
+}
+
+struct PreparedExpenseAcceptance {
+    candidate_id: String,
+    amount_minor: i64,
+    lines: Vec<ExpenseLineInput>,
+}
+
+fn prepare_expense_acceptance(
+    connection: &Connection,
+    candidate_id: &str,
+    expense_lines: &[ExpenseLineInput],
+) -> Result<std::result::Result<PreparedExpenseAcceptance, CandidateReviewResponse>> {
+    let Some(candidate) = find_review_candidate(connection, candidate_id)? else {
+        return Ok(Err(review_error_response(
+            "candidates accept-expense",
+            "not_found",
+            "candidate_not_found",
+            "Candidate transaction was not found.".to_string(),
+            "candidate_id",
+            true,
+            serde_json::json!({"candidate_id": candidate_id}),
+        )));
+    };
+    if let Some(error) = typed_candidate_state_error(&candidate, "expense") {
+        return Ok(Err(candidate_review_response_from_errors(
+            "candidates accept-expense",
+            vec![error],
+        )));
+    }
+    if !is_expense_candidate_shape(&candidate) {
+        return Ok(Err(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_not_expense_eligible",
+            "Only explicit purchase/outflow candidates can be accepted as expenses.".to_string(),
+            "candidate",
+            true,
+            serde_json::json!({"candidate_id": candidate_id, "direction_hint": candidate.direction_hint, "semantic_hint": candidate.semantic_hint, "amount_minor": candidate.amount_minor}),
+        )));
+    }
+    if candidate_has_likely_transfer_pair(connection, &candidate)? {
+        return Ok(Err(review_error_response(
+            "candidates accept-expense",
+            "conflict",
+            "candidate_possible_own_account_transfer",
+            "Candidate resembles an own-account transfer and must not be accepted as an expense."
+                .to_string(),
+            "candidate",
+            true,
+            serde_json::json!({"candidate_id": candidate_id}),
+        )));
+    }
+    let amount_minor = expense_amount_minor(&candidate);
+    let lines = normalized_expense_lines(expense_lines, amount_minor, &candidate.currency);
+    if let Some(response) = validate_expense_lines(
+        connection,
+        "candidates accept-expense",
+        amount_minor,
+        &candidate.currency,
+        &lines,
+    )? {
+        return Ok(Err(response));
+    }
+    Ok(Ok(PreparedExpenseAcceptance {
+        candidate_id: candidate_id.to_string(),
+        amount_minor,
+        lines,
+    }))
+}
+
+fn apply_expense_acceptance(
+    connection: &Connection,
+    prepared: &PreparedExpenseAcceptance,
+) -> Result<String> {
+    let canonical_id = canonical_transaction_id(&prepared.candidate_id);
+    connection.execute("INSERT INTO canonical_transactions (id, account_id, posted_date, description, amount_minor, currency, balance_minor, transaction_kind, created_from_candidate_id) SELECT ?1, account_id, posted_date, description, ?2, currency, balance_minor, ?3, id FROM candidate_transactions WHERE id = ?4", params![canonical_id, prepared.amount_minor, EXPENSE_TRANSACTION_KIND, prepared.candidate_id])?;
+    insert_expense_lines(connection, &canonical_id, &prepared.lines)?;
+    mark_candidate_accepted_with_canonical(connection, &prepared.candidate_id, &canonical_id)?;
+    Ok(canonical_id)
 }
 
 pub fn accept_expense_candidate(
@@ -3209,133 +3373,20 @@ pub fn accept_expense_candidate(
     let tx = connection
         .transaction()
         .context("starting expense candidate accept transaction")?;
-    let Some(candidate) = find_review_candidate(&tx, candidate_id)? else {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "not_found",
-            "candidate_not_found",
-            "Candidate transaction was not found.".to_string(),
-            "candidate_id",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id }),
-        ));
+    let prepared = match prepare_expense_acceptance(&tx, candidate_id, expense_lines)? {
+        Ok(value) => value,
+        Err(response) => return Ok(response),
     };
-    if candidate.status == CandidateStatus::Accepted || candidate.canonical_transaction_id.is_some()
-    {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "conflict",
-            "candidate_already_accepted",
-            "Candidate transaction was already accepted.".to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({
-                "candidate_id": candidate_id,
-                "canonical_transaction_id": candidate.canonical_transaction_id,
-            }),
-        ));
-    }
-    if candidate.status == CandidateStatus::Rejected {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "conflict",
-            "candidate_already_rejected",
-            "Rejected candidates cannot be accepted as an expense.".to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id }),
-        ));
-    }
-    if !is_unreviewed_candidate_status(&candidate.status) {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "conflict",
-            "candidate_not_acceptable",
-            "Only pending_review or possible_duplicate candidates can be accepted as expenses."
-                .to_string(),
-            "candidate.status",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id, "status": candidate.status }),
-        ));
-    }
-    if !is_expense_candidate_shape(&candidate) {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "conflict",
-            "candidate_not_expense_eligible",
-            "Only explicit purchase/outflow candidates can be accepted as expenses.".to_string(),
-            "candidate",
-            true,
-            serde_json::json!({
-                "candidate_id": candidate_id,
-                "direction_hint": candidate.direction_hint,
-                "semantic_hint": candidate.semantic_hint,
-                "amount_minor": candidate.amount_minor,
-            }),
-        ));
-    }
-    if candidate_has_likely_transfer_pair(&tx, &candidate)? {
-        return Ok(review_error_response(
-            "candidates accept-expense",
-            "conflict",
-            "candidate_possible_own_account_transfer",
-            "Candidate resembles an own-account transfer and must not be accepted as an expense."
-                .to_string(),
-            "candidate",
-            true,
-            serde_json::json!({ "candidate_id": candidate_id }),
-        ));
-    }
-
-    let canonical_id = canonical_transaction_id(candidate_id);
-    let expense_amount_minor = expense_amount_minor(&candidate);
-    let expense_lines = normalized_expense_lines(
-        expense_lines,
-        expense_amount_minor,
-        candidate.currency.as_str(),
-    );
-    if let Some(response) = validate_expense_lines(
-        &tx,
-        "candidates accept-expense",
-        expense_amount_minor,
-        candidate.currency.as_str(),
-        &expense_lines,
-    )? {
-        return Ok(response);
-    }
-    tx.execute(
-        "INSERT INTO canonical_transactions (
-            id, account_id, posted_date, description, amount_minor, currency,
-            balance_minor, transaction_kind, created_from_candidate_id
-         )
-         SELECT ?1, account_id, posted_date, description, ?2, currency,
-                balance_minor, ?3, id
-         FROM candidate_transactions
-         WHERE id = ?4",
-        params![
-            canonical_id,
-            expense_amount_minor,
-            EXPENSE_TRANSACTION_KIND,
-            candidate_id
-        ],
-    )?;
-    insert_expense_lines(&tx, &canonical_id, &expense_lines)?;
-    mark_candidate_accepted_with_canonical(&tx, candidate_id, &canonical_id)?;
+    let canonical_id = apply_expense_acceptance(&tx, &prepared)?;
     tx.commit().context("committing expense candidate accept")?;
-
-    let candidate = find_review_candidate(connection, candidate_id)?
-        .expect("accepted expense candidate remains queryable");
-    let canonical_transaction = canonical_transaction(connection, &canonical_id)?
-        .expect("accepted expense canonical transaction remains queryable");
-    let transaction_lines = transaction_lines_for_canonical(connection, &canonical_id)?;
     Ok(CandidateReviewResponse {
         schema_version: CANDIDATE_REVIEW_SCHEMA_VERSION,
         command: "candidates accept-expense",
         ok: true,
-        candidate: Some(candidate),
+        candidate: find_review_candidate(connection, candidate_id)?,
         candidates: Vec::new(),
-        canonical_transaction: Some(canonical_transaction),
-        transaction_lines,
+        canonical_transaction: canonical_transaction(connection, &canonical_id)?,
+        transaction_lines: transaction_lines_for_canonical(connection, &canonical_id)?,
         errors: Vec::new(),
     })
 }

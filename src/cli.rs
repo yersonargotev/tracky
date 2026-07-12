@@ -3110,11 +3110,9 @@ fn parse_batch_action(
 ) -> Result<BatchActionRequest, Box<BatchReviewResponse>> {
     let parts = raw_action.split(':').collect::<Vec<_>>();
     match parts.as_slice() {
-        ["reject-duplicate" | "reject_duplicate", candidate_id] if !candidate_id.is_empty() => {
-            Ok(BatchActionRequest::reject_duplicate(
-                (*candidate_id).to_string(),
-            ))
-        }
+        ["reject-duplicate" | "reject_duplicate", candidate_id] if !candidate_id.is_empty() => Ok(
+            BatchActionRequest::reject_duplicate((*candidate_id).to_string()),
+        ),
         ["accept-transfer-pair" | "accept_transfer_pair", from_id, to_id]
             if !from_id.is_empty() && !to_id.is_empty() =>
         {
@@ -3123,9 +3121,40 @@ fn parse_batch_action(
                 (*to_id).to_string(),
             ))
         }
+        ["accept-income" | "accept_income", candidate_id, source_id, income_kind]
+            if !candidate_id.is_empty() && !source_id.is_empty() && !income_kind.is_empty() =>
+        {
+            Ok(BatchActionRequest::accept_income(
+                (*candidate_id).to_string(),
+                (*source_id).to_string(),
+                (*income_kind).to_string(),
+            ))
+        }
+        ["accept-expense" | "accept_expense", candidate_id, line_parts @ ..]
+            if !candidate_id.is_empty() && !line_parts.is_empty() && line_parts.len() % 3 == 0 =>
+        {
+            let mut lines = Vec::new();
+            for line in line_parts.chunks_exact(3) {
+                let amount_minor = line[1]
+                    .parse::<i64>()
+                    .map_err(|_| invalid_batch_action_response(raw_action, dry_run))?;
+                if line[0].is_empty() || line[2].is_empty() {
+                    return Err(invalid_batch_action_response(raw_action, dry_run));
+                }
+                lines.push(ExpenseLineInput {
+                    category_id: line[0].to_string(),
+                    amount_minor,
+                    currency: line[2].to_string(),
+                });
+            }
+            Ok(BatchActionRequest::accept_expense(
+                (*candidate_id).to_string(),
+                lines,
+            ))
+        }
         ["reject-duplicate" | "reject_duplicate", ..]
-        | ["accept-transfer-pair" | "accept_transfer_pair", ..] => Err(Box::new(
-            batch_review_error_response_with_dry_run(
+        | ["accept-transfer-pair" | "accept_transfer_pair", ..] => {
+            Err(Box::new(batch_review_error_response_with_dry_run(
                 "candidates apply-actions",
                 "validation_failure",
                 "candidate_ids_required",
@@ -3133,18 +3162,22 @@ fn parse_batch_action(
                 "actions",
                 serde_json::json!({ "action": raw_action }),
                 dry_run,
-            ),
-        )),
-        _ => Err(Box::new(batch_review_error_response_with_dry_run(
+            )))
+        }
+        _ => Err(invalid_batch_action_response(raw_action, dry_run)),
+    }
+}
+
+fn invalid_batch_action_response(raw_action: &str, dry_run: bool) -> Box<BatchReviewResponse> {
+    Box::new(batch_review_error_response_with_dry_run(
             "candidates apply-actions",
             "validation_failure",
             "invalid_batch_action",
-            "Batch action must be reject-duplicate:CANDIDATE_ID or accept-transfer-pair:FROM_ID:TO_ID.",
+            "Batch action must be reject-duplicate:CANDIDATE_ID, accept-transfer-pair:FROM_ID:TO_ID, accept-income:CANDIDATE_ID:SOURCE_ID:KIND, or accept-expense:CANDIDATE_ID:CATEGORY_ID:AMOUNT_MINOR:CURRENCY[:CATEGORY_ID:AMOUNT_MINOR:CURRENCY...].",
             "actions",
             serde_json::json!({ "action": raw_action }),
             dry_run,
-        ))),
-    }
+        ))
 }
 
 fn candidate_accept_command<W>(args: CandidateActionArgs, stdout: &mut W) -> Result<i32>

@@ -9,9 +9,9 @@ use tracky::pdf::{
     PDF_INSPECT_SCHEMA_VERSION,
 };
 use tracky::storage::{
-    accept_expense_candidate, apply_migrations, create_category, persist_pdf_import,
-    register_owned_account, reject_candidate, AccountRegisterInput, CategoryCreateInput,
-    ExpenseLineInput,
+    accept_expense_candidate, apply_migrations, create_category, create_income_source,
+    persist_pdf_import, register_owned_account, reject_candidate, AccountRegisterInput,
+    CategoryCreateInput, ExpenseLineInput, IncomeSourceCreateInput,
 };
 
 const HASH: &str = "1919191919191919191919191919191919191919191919191919191919191919";
@@ -184,6 +184,26 @@ fn inspect_response() -> PdfInspectResponse {
             semantic_hint: SemanticHint::BankMovement,
             row_index: 7,
         }),
+        candidate(CandidateSpec {
+            id: "cand_batch_income",
+            fingerprint: "fp_batch_income",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            amount_minor: 700,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::BankMovement,
+            row_index: 8,
+        }),
+        candidate(CandidateSpec {
+            id: "cand_batch_expense",
+            fingerprint: "fp_batch_expense",
+            institution: "nequi",
+            account_label: "Nequi wallet",
+            amount_minor: -900,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::CardCharge,
+            row_index: 9,
+        }),
     ];
     PdfInspectResponse {
         schema_version: PDF_INSPECT_SCHEMA_VERSION,
@@ -233,6 +253,9 @@ struct Fixture {
     _dir: tempfile::TempDir,
     db_path: std::path::PathBuf,
     batch_id: String,
+    category_id: String,
+    second_category_id: String,
+    income_source_id: String,
 }
 
 fn fixture() -> Fixture {
@@ -289,12 +312,32 @@ fn fixture() -> Fixture {
     .category
     .expect("fixture category")
     .id;
+    let second_category_id = create_category(
+        &connection,
+        CategoryCreateInput {
+            name: "Synthetic second category".to_string(),
+        },
+    )
+    .unwrap()
+    .category
+    .unwrap()
+    .id;
+    let income_source_id = create_income_source(
+        &connection,
+        IncomeSourceCreateInput {
+            name: "Synthetic source".to_string(),
+        },
+    )
+    .unwrap()
+    .income_source
+    .unwrap()
+    .id;
     assert!(
         accept_expense_candidate(
             &mut connection,
             "cand_accepted",
             &[ExpenseLineInput {
-                category_id: category,
+                category_id: category.clone(),
                 amount_minor: -300,
                 currency: "COP".to_string(),
             }],
@@ -312,6 +355,9 @@ fn fixture() -> Fixture {
         _dir: dir,
         db_path,
         batch_id,
+        category_id: category,
+        second_category_id,
+        income_source_id,
     }
 }
 
@@ -387,29 +433,29 @@ fn batch_summary_compare_and_suggest_are_complete_deterministic_and_read_only() 
     assert!(summary.status.success());
     let summary = json(&summary);
     assert_eq!(summary["schema_version"], "tracky.batch-review.v1");
-    assert_eq!(summary["summary"]["total_candidates"], 7);
+    assert_eq!(summary["summary"]["total_candidates"], 9);
     assert_eq!(group_count(&summary, "by_status", "accepted"), 1);
     assert_eq!(group_count(&summary, "by_status", "possible_duplicate"), 2);
-    assert_eq!(group_count(&summary, "by_status", "pending_review"), 3);
+    assert_eq!(group_count(&summary, "by_status", "pending_review"), 5);
     assert_eq!(group_count(&summary, "by_status", "rejected"), 1);
     assert_eq!(
         group_count(&summary, "by_duplicate_status", "exact_duplicate"),
         2
     );
-    assert_eq!(group_count(&summary, "by_institution", "nequi"), 5);
+    assert_eq!(group_count(&summary, "by_institution", "nequi"), 7);
     assert_eq!(group_count(&summary, "by_institution", "rappi"), 1);
     assert_eq!(
         group_count(&summary, "by_account_resolution", "resolved"),
-        6
+        8
     );
     assert_eq!(
         group_count(&summary, "by_account_resolution", "unresolved"),
         1
     );
-    assert_eq!(group_count(&summary, "by_direction_hint", "outflow"), 5);
+    assert_eq!(group_count(&summary, "by_direction_hint", "outflow"), 6);
     assert_eq!(
         group_count(&summary, "by_semantic_hint", "bank_movement"),
-        4
+        5
     );
     let largest = summary["summary"]["largest_amounts"].as_array().unwrap();
     assert_eq!(largest[0]["candidate_id"], "cand_dup_a");
@@ -618,6 +664,134 @@ fn dry_run_does_not_write_and_explicit_apply_is_atomic_and_auditable() {
             2,
             3,
         )
+    );
+}
+
+#[test]
+fn mixed_typed_actions_dry_run_and_apply_are_deterministic_atomic_and_refuse_replay() {
+    let fixture = fixture();
+    let db = fixture.db_path.to_str().unwrap();
+    let income = format!(
+        "accept-income:cand_batch_income:{}:salary",
+        fixture.income_source_id
+    );
+    let expense = format!(
+        "accept-expense:cand_batch_expense:{}:-400:COP:{}:-500:COP",
+        fixture.category_id, fixture.second_category_id
+    );
+    let transfer = "accept-transfer-pair:cand_transfer_from:cand_transfer_to";
+    let before = fs::read(&fixture.db_path).unwrap();
+
+    let dry_run = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &expense,
+        "--action",
+        transfer,
+        "--action",
+        &income,
+        "--dry-run",
+        "--json",
+    ]);
+    assert!(dry_run.status.success());
+    let body = json(&dry_run);
+    assert_eq!(
+        body["action_results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["action"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["accept_expense", "accept_transfer_pair", "accept_income"]
+    );
+    assert_eq!(fs::read(&fixture.db_path).unwrap(), before);
+
+    let apply = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &expense,
+        "--action",
+        transfer,
+        "--action",
+        &income,
+        "--json",
+    ]);
+    assert!(
+        apply.status.success(),
+        "{}",
+        String::from_utf8_lossy(&apply.stdout)
+    );
+    let connection = Connection::open(&fixture.db_path).unwrap();
+    let state: (i64, i64, i64, i64) = connection.query_row("SELECT (SELECT COUNT(*) FROM canonical_transactions WHERE transaction_kind='income' AND income_source_id=?1 AND income_kind='salary'), (SELECT COUNT(*) FROM canonical_transactions WHERE transaction_kind='expense' AND created_from_candidate_id='cand_batch_expense'), (SELECT COUNT(*) FROM transaction_lines l JOIN canonical_transactions t ON t.id=l.canonical_transaction_id WHERE t.created_from_candidate_id='cand_batch_expense'), (SELECT COUNT(*) FROM canonical_transfer_pairs)", [&fixture.income_source_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(state, (1, 1, 2, 1));
+    drop(connection);
+
+    let replay = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &income,
+        "--json",
+    ]);
+    assert!(!replay.status.success());
+    assert_eq!(
+        json(&replay)["action_results"][0]["errors"][0]["code"],
+        "candidate_already_accepted"
+    );
+}
+
+#[test]
+fn typed_batch_preflight_rejects_invalid_reference_reuse_and_rolls_back_every_action() {
+    let fixture = fixture();
+    let db = fixture.db_path.to_str().unwrap();
+    let income = format!(
+        "accept-income:cand_batch_income:{}:salary",
+        fixture.income_source_id
+    );
+    let invalid_expense = "accept-expense:cand_batch_expense:category_missing:-900:COP";
+    let failed = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &income,
+        "--action",
+        invalid_expense,
+        "--json",
+    ]);
+    assert!(!failed.status.success());
+    assert_eq!(
+        json(&failed)["action_results"][1]["errors"][0]["code"],
+        "category_not_found"
+    );
+    let connection = Connection::open(&fixture.db_path).unwrap();
+    assert_eq!(connection.query_row("SELECT COUNT(*) FROM canonical_transactions WHERE created_from_candidate_id IN ('cand_batch_income','cand_batch_expense')", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    drop(connection);
+
+    let reused = run(&[
+        "candidates",
+        "apply-actions",
+        "--db",
+        db,
+        "--action",
+        &income,
+        "--action",
+        "accept-expense:cand_batch_income:category_missing:700:COP",
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(
+        json(&reused)["action_results"][1]["errors"][0]["code"],
+        "candidate_reused_in_batch"
     );
 }
 

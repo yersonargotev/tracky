@@ -22,17 +22,23 @@ same validations as the individual commands.
 
 ## Acceptance criteria
 
-- [ ] Batch input supports typed income, categorized/split expense, and transfer-pair decisions
+- [x] Batch input supports typed income, categorized/split expense, and transfer-pair decisions
   without inferred sources or categories.
-- [ ] Dry-run executes every individual validation and reports deterministic per-action outcomes
+- [x] Dry-run executes every individual validation and reports deterministic per-action outcomes
   without writes.
-- [ ] Apply preflights the complete set and commits all decisions atomically or none.
-- [ ] Candidate reuse, incompatible actions, stale states, and invalid category/source/account
+- [x] Apply preflights the complete set and commits all decisions atomically or none.
+- [x] Candidate reuse, incompatible actions, stale states, and invalid category/source/account
   references fail before mutation.
-- [ ] Audit, canonical transaction, split-line, provenance, and transfer-pair results match the
+- [x] Audit, canonical transaction, split-line, provenance, and transfer-pair results match the
   equivalent individual commands.
-- [ ] Public tests cover mixed success, rollback, ordering, and replay refusal.
+- [x] Public tests cover mixed success, rollback, ordering, and replay refusal.
 
 ## Blocked by
 
 - `0037-align-transfer-suspicion-and-resolution.md`
+
+## Reconciliation evidence
+
+- `src/storage.rs` prepares typed income and expense decisions through the same validation and row-application helpers used by `accept-income` and `accept-expense`; mixed apply performs that preflight inside one SQLite transaction before any mutation.
+- `src/cli.rs` preserves the existing explicit `--action` contract and adds explicit income metadata plus repeatable expense-line triples without inferring sources or categories.
+- `tests/batch_review_cli.rs` covers read-only mixed dry-run, deterministic input ordering, atomic rollback on invalid references, candidate reuse, split persistence, transfer persistence, and replay refusal with synthetic privacy-safe data.
