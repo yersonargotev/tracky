@@ -524,8 +524,10 @@ fn dashboard_rejects_adversarial_http_without_leaking_data_or_capability() {
     let mut dashboard = RunningDashboard::start(root.path(), &database);
     let path = url_parts(&dashboard.url).1.to_string();
     let wrong_capability = format!("{path}x");
+    let disabled_v1 = format!("{path}api/v1/dashboard");
     let cases = [
         ("GET", wrong_capability.as_str(), vec![]),
+        ("GET", disabled_v1.as_str(), vec![]),
         ("POST", path.as_str(), vec![]),
         ("GET", "/", vec![]),
         ("GET", "/../tracky.sqlite", vec![]),

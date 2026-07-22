@@ -82,25 +82,25 @@ incomplete public dashboard resource.
 
 **Blocked by:** Deliver the secure read-only monthly dashboard tracer.
 
-- [ ] Complete inclusive monthly zero-fill and checked income, consumption
+- [x] Complete inclusive monthly zero-fill and checked income, consumption
   expense, savings, and investment-contribution calculations for every valid
   filter composition.
-- [ ] Preserve exact minor-unit and decimal values as canonical base-10 strings
+- [x] Preserve exact minor-unit and decimal values as canonical base-10 strings
   and keep every value adjacent to its actual currency.
-- [ ] Support exactly one currency, multi-select accounts and categories,
+- [x] Support exactly one currency, multi-select accounts and categories,
   compatible defaults, clearing incompatible selections on currency change,
   expense-only category effects, and explicit filter-empty results.
-- [ ] Add exact category and account breakdowns that agree with their aggregate
+- [x] Add exact category and account breakdowns that agree with their aggregate
   totals and corresponding canonical CLI reports.
-- [ ] Add a currency-aware canonical transaction and expense-line drill-down
+- [x] Add a currency-aware canonical transaction and expense-line drill-down
   with deterministic stable cursors, filtering, ordering, and pagination.
-- [ ] Define and conformance-test the final `tracky.dashboard.v1` envelope while
+- [x] Define and conformance-test the final `tracky.dashboard.v1` envelope while
   keeping the externally reachable aggregate route disabled until all mandatory
   investment and alert sections are complete.
-- [ ] Pass the manual corpus for split expenses, transfers, empty periods,
+- [x] Pass the manual corpus for split expenses, transfers, empty periods,
   unlike currencies, numeric limits, composed filters, and pagination without
   writes or provenance disclosure.
-- [ ] Keep every prior security, lifecycle, dependency, size, and product gate
+- [x] Keep every prior security, lifecycle, dependency, size, and product gate
   enabled and passing.
 
 ## Add dashboard investments and alerts

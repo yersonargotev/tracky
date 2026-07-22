@@ -1,6 +1,8 @@
+use crate::dashboard_finance::{
+    read_finance, DashboardResponse, FinanceFilterRequest, UnavailableCurrencyError,
+};
 use crate::storage::{
-    dashboard_schema_is_compatible, summarize_finances, FinanceReportResponse,
-    TRACKY_APPLICATION_ID, TRACKY_SCHEMA_GENERATION,
+    dashboard_schema_is_compatible, TRACKY_APPLICATION_ID, TRACKY_SCHEMA_GENERATION,
 };
 use anyhow::{bail, Context, Result};
 use axum::extract::{Request, State};
@@ -11,7 +13,6 @@ use axum::routing::get;
 use axum::Router;
 use chrono::{Datelike, Months, NaiveDate, Utc};
 use rusqlite::{Connection, DatabaseName, OpenFlags};
-use std::collections::BTreeSet;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -32,29 +33,8 @@ pub struct DashboardOptions {
 
 #[derive(Clone)]
 struct AppState {
-    snapshot: Arc<Snapshot>,
+    snapshot: Arc<DashboardResponse>,
     host: String,
-}
-
-struct Snapshot {
-    start_date: String,
-    end_date: String,
-    currency: Option<String>,
-    measures: Measures,
-    months: Vec<MonthlyMeasures>,
-}
-
-struct MonthlyMeasures {
-    month: String,
-    measures: Measures,
-}
-
-#[derive(Clone, Copy)]
-struct Measures {
-    income: i64,
-    expenses: i64,
-    savings: i64,
-    investments: i64,
 }
 
 pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> {
@@ -204,89 +184,36 @@ fn validate_markers(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn load_snapshot(path: &Path, start: &str, end: &str, requested: Option<&str>) -> Result<Snapshot> {
+fn load_snapshot(
+    path: &Path,
+    start: &str,
+    end: &str,
+    requested: Option<&str>,
+) -> Result<DashboardResponse> {
     let mut connection = open_dashboard_database(path)?;
     let transaction = connection
         .transaction()
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
-    let aggregate = summarize_finances(&transaction, start, end)
-        .map_err(|_| anyhow::anyhow!("dashboard data could not be read"))?;
-    if !aggregate.ok {
-        bail!("dashboard date range could not be read");
-    }
-    let mut currencies = BTreeSet::new();
-    currencies.extend(aggregate.totals.iter().map(|total| total.currency.clone()));
-    currencies.extend(
-        aggregate
-            .investment_contribution_totals
-            .iter()
-            .map(|total| total.currency.clone()),
-    );
-    let currency = match requested {
-        Some(value) if currencies.contains(value) => Some(value.to_string()),
-        Some(_) => bail!("requested currency is not available in this date range"),
-        None => currencies.into_iter().next(),
-    };
-    let measures = totals_for(&aggregate, currency.as_deref());
-    let mut months = Vec::new();
-    if let Some(currency) = currency.as_deref() {
-        let start_date = parse_date(start, "start date")?;
-        let end_date = parse_date(end, "end date")?;
-        let mut month = NaiveDate::from_ymd_opt(start_date.year(), start_date.month(), 1).unwrap();
-        while month <= end_date {
-            let next = month.checked_add_months(Months::new(1)).unwrap();
-            let month_start = month.max(start_date);
-            let month_end = next.pred_opt().unwrap().min(end_date);
-            let report = summarize_finances(
-                &transaction,
-                &month_start.to_string(),
-                &month_end.to_string(),
-            )
-            .map_err(|_| anyhow::anyhow!("dashboard data could not be read"))?;
-            months.push(MonthlyMeasures {
-                month: month.format("%Y-%m").to_string(),
-                measures: totals_for(&report, Some(currency)),
-            });
-            month = next;
+    let snapshot = read_finance(
+        &transaction,
+        FinanceFilterRequest {
+            start_date: start.to_string(),
+            end_date: end.to_string(),
+            currency: requested.map(str::to_string),
+            ..FinanceFilterRequest::default()
+        },
+    )
+    .map_err(|error| {
+        if error.is::<UnavailableCurrencyError>() {
+            error
+        } else {
+            anyhow::anyhow!("dashboard data could not be read")
         }
-    }
+    })?;
     transaction
         .commit()
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
-    Ok(Snapshot {
-        start_date: start.to_string(),
-        end_date: end.to_string(),
-        currency,
-        measures,
-        months,
-    })
-}
-
-fn totals_for(report: &FinanceReportResponse, currency: Option<&str>) -> Measures {
-    let total =
-        currency.and_then(|currency| report.totals.iter().find(|item| item.currency == currency));
-    let investments = currency
-        .and_then(|currency| {
-            report
-                .investment_contribution_totals
-                .iter()
-                .find(|item| item.currency == currency)
-        })
-        .map_or(0, |item| item.total_contributed_minor);
-    total.map_or(
-        Measures {
-            income: 0,
-            expenses: 0,
-            savings: 0,
-            investments,
-        },
-        |item| Measures {
-            income: item.total_income_minor,
-            expenses: item.total_expenses_minor,
-            savings: item.net_cash_flow_minor,
-            investments,
-        },
-    )
+    Ok(snapshot)
 }
 
 async fn dashboard_page(State(state): State<AppState>) -> Response {
@@ -364,40 +291,41 @@ fn add_security_headers(headers: &mut axum::http::HeaderMap) {
     }
 }
 
-fn render_html(snapshot: &Snapshot) -> String {
+fn render_html(snapshot: &DashboardResponse) -> String {
     let stylesheet = "app.css";
     let script = "app.js";
-    let Some(currency) = snapshot.currency.as_deref() else {
+    let Some(currency) = snapshot.filters.currency.as_deref() else {
         return format!(
             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Tracky Monthly ledger</title><link rel=\"stylesheet\" href=\"{stylesheet}\"></head><body><main><h1>Monthly ledger</h1><p class=\"scope\">{} through {}</p><section class=\"empty\"><h2>No currency activity</h2><p>This is a valid empty ledger. Add canonical activity with the Tracky CLI.</p></section></main><script src=\"{script}\"></script></body></html>",
-            snapshot.start_date, snapshot.end_date
+            snapshot.filters.start_date, snapshot.filters.end_date
         );
     };
-    let amount = |value: i64| format!("<strong data-minor=\"{value}\">{value} {currency}</strong>");
+    let amount =
+        |value: &str| format!("<strong data-minor=\"{value}\">{value} {currency}</strong>");
     let rows = snapshot
-        .months
+        .monthly
         .iter()
         .map(|month| format!(
             "<tr><th scope=\"row\">{}</th><td data-minor=\"{}\">{} {currency}</td><td data-minor=\"{}\">{} {currency}</td><td data-minor=\"{}\">{} {currency}</td><td data-minor=\"{}\">{} {currency}</td></tr>",
             month.month,
-            month.measures.income,
-            month.measures.income,
-            month.measures.expenses,
-            month.measures.expenses,
-            month.measures.savings,
-            month.measures.savings,
-            month.measures.investments,
-            month.measures.investments
+            month.measures.income_minor,
+            month.measures.income_minor,
+            month.measures.consumption_expense_minor,
+            month.measures.consumption_expense_minor,
+            month.measures.net_cash_flow_minor,
+            month.measures.net_cash_flow_minor,
+            month.measures.investment_contribution_minor,
+            month.measures.investment_contribution_minor
         ))
         .collect::<String>();
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Tracky Monthly ledger</title><link rel=\"stylesheet\" href=\"{stylesheet}\"></head><body><main><header><h1>Monthly ledger</h1><p class=\"scope\">{} through {} · {currency}</p></header><ul class=\"summary\"><li>Income{}</li><li>Consumption expense{}</li><li>Savings / net cash flow{}</li><li>Investment contributions{}</li></ul><section aria-labelledby=\"monthly-heading\"><h2 id=\"monthly-heading\">Monthly activity</h2><table><caption>Exact monthly amounts in minor units</caption><thead><tr><th scope=\"col\">Month</th><th scope=\"col\">Income</th><th scope=\"col\">Consumption expense</th><th scope=\"col\">Savings</th><th scope=\"col\">Investment contributions</th></tr></thead><tbody>{rows}</tbody></table></section><p>Use the Tracky CLI to review or correct canonical data.</p></main><script src=\"{script}\"></script></body></html>",
-        snapshot.start_date,
-        snapshot.end_date,
-        amount(snapshot.measures.income),
-        amount(snapshot.measures.expenses),
-        amount(snapshot.measures.savings),
-        amount(snapshot.measures.investments),
+        snapshot.filters.start_date,
+        snapshot.filters.end_date,
+        amount(&snapshot.summary.income_minor),
+        amount(&snapshot.summary.consumption_expense_minor),
+        amount(&snapshot.summary.net_cash_flow_minor),
+        amount(&snapshot.summary.investment_contribution_minor),
     )
 }
 
