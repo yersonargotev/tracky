@@ -113,6 +113,8 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Dashboard(DashboardArgs),
+    #[command(name = "__dashboard-snapshot", hide = true)]
+    DashboardSnapshot(DashboardSnapshotArgs),
     Database(DatabaseCommand),
     Backup(BackupArgs),
     Integrity(IntegrityArgs),
@@ -145,6 +147,14 @@ struct DashboardArgs {
     currency: Option<String>,
     #[arg(long)]
     no_open: bool,
+}
+
+#[derive(Debug, Parser)]
+struct DashboardSnapshotArgs {
+    #[arg(long, value_name = "PATH")]
+    source: PathBuf,
+    #[arg(long, value_name = "PATH")]
+    destination: PathBuf,
 }
 
 #[derive(Debug, Parser)]
@@ -1529,6 +1539,15 @@ where
             },
             &mut stdout,
         ),
+        Commands::DashboardSnapshot(args) => {
+            match dashboard::write_snapshot(&args.source, &args.destination) {
+                Ok(()) => Ok(0),
+                Err(error) if error.is::<dashboard::IncompatibleDashboardSchemaError>() => {
+                    Ok(dashboard::INCOMPATIBLE_SNAPSHOT_EXIT_CODE)
+                }
+                Err(error) => Err(error),
+            }
+        }
         Commands::Database(database) => match database.command {
             DatabaseCommands::Upgrade(args) => {
                 upgrade_tracky_database(&args.db)?;

@@ -54,6 +54,16 @@ The comparison enforces the accepted limits independently: assets at most
 
 ## Release manifest
 
+Before manual browser and accessibility sign-off, dispatch **Build dashboard
+release candidate** with the exact commit SHA. It builds each native Cargo Dist
+archive, exercises the packaged CLI, runs the deterministic 120-month/100,000-
+transaction runtime and 100 refresh cycles, and retains per-target fragments for
+90 days. A target job fails instead of fabricating a passing fragment.
+
+Candidate fragments are inputs to release proof, not approval by themselves.
+Installer, Homebrew, all six real-browser lanes, and manual accessibility
+results still require retained evidence before the release manifest can pass.
+
 Copy `evidence/dashboard/dashboard-verification.template.json`, populate it only
 from retained command output, and validate/render it with:
 

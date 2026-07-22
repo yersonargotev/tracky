@@ -1,7 +1,7 @@
 use crate::investment_reports;
 use anyhow::{bail, Result};
 use chrono::{Datelike, Months, NaiveDate, Utc};
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, params_from_iter, types::Value, Connection, Transaction};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -204,18 +204,6 @@ impl DrillMetric {
         }
     }
 
-    fn includes_canonical(self, kind: &str, amount: i64, category_filtered: bool) -> bool {
-        match self {
-            Self::Activity => !category_filtered || kind != "expense",
-            Self::Income => kind == "income" && amount > 0,
-            Self::ConsumptionExpense => kind == "expense" && !category_filtered,
-            Self::NetCashFlow => {
-                matches!(kind, "income" | "expense") && (!category_filtered || kind != "expense")
-            }
-            Self::InvestmentContribution => kind == "investment_contribution",
-        }
-    }
-
     fn includes_expense_lines(self) -> bool {
         matches!(
             self,
@@ -258,30 +246,6 @@ pub(crate) struct DrillRow {
     pub currency: String,
 }
 
-#[derive(Debug, Clone)]
-struct TransactionRow {
-    id: String,
-    account_id: Option<String>,
-    posted_date: String,
-    description: String,
-    amount_minor: i64,
-    currency: String,
-    kind: String,
-}
-
-#[derive(Debug, Clone)]
-struct ExpenseLineRow {
-    id: String,
-    transaction_id: String,
-    account_id: Option<String>,
-    posted_date: String,
-    description: String,
-    category_id: String,
-    category_name: String,
-    amount_minor: i64,
-    currency: String,
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct NumericMeasures {
     income: i64,
@@ -305,10 +269,10 @@ impl NumericMeasures {
         Ok(())
     }
 
-    fn add_contribution(&mut self, amount: i64) -> Result<()> {
+    fn add_contribution_magnitude(&mut self, amount: i64) -> Result<()> {
         self.contribution = self
             .contribution
-            .checked_add(magnitude(amount)?)
+            .checked_add(amount)
             .ok_or_else(|| anyhow::anyhow!("dashboard amount overflow"))?;
         Ok(())
     }
@@ -340,31 +304,9 @@ pub(crate) fn read_finance(
     connection: &Transaction<'_>,
     request: FinanceFilterRequest,
 ) -> Result<DashboardResponse> {
-    validate_range(&request.start_date, &request.end_date)?;
-    let transactions = load_transactions(connection, &request.start_date, &request.end_date)?;
-    let lines = load_expense_lines(connection, &request.start_date, &request.end_date)?;
-    let dimensions = load_dimensions(connection, &transactions, &lines)?;
-    let filters = resolve_filters(&request, &dimensions)?;
-    let explicit_empty = request.account_ids.as_ref().is_some_and(Vec::is_empty)
-        || request.category_ids.as_ref().is_some_and(Vec::is_empty);
-    let incompatible_empty = request
-        .account_ids
-        .as_ref()
-        .is_some_and(|ids| !ids.is_empty() && filters.account_ids.is_empty())
-        || request
-            .category_ids
-            .as_ref()
-            .is_some_and(|ids| !ids.is_empty() && filters.category_ids.is_empty());
-    let filter_empty = filters.currency.is_some() && (explicit_empty || incompatible_empty);
-    let state = if filters.currency.is_none() {
-        "empty"
-    } else if filter_empty {
-        "filter_empty"
-    } else {
-        "ready"
-    };
+    let (dimensions, filters, state) = resolve_request(connection, &request)?;
     let sections = if state == "ready" {
-        aggregate(&transactions, &lines, &filters, &dimensions)?
+        aggregate(connection, &filters, &dimensions)?
     } else {
         FinanceSections {
             summary: NumericMeasures::default().transport(filters.currency.as_deref())?,
@@ -397,6 +339,34 @@ pub(crate) fn read_finance(
         alerts,
         errors: Vec::new(),
     })
+}
+
+fn resolve_request(
+    connection: &Connection,
+    request: &FinanceFilterRequest,
+) -> Result<(Dimensions, ResolvedFilters, &'static str)> {
+    validate_range(&request.start_date, &request.end_date)?;
+    let dimensions = load_dimensions(connection, &request.start_date, &request.end_date)?;
+    let filters = resolve_filters(request, &dimensions)?;
+    let explicit_empty = request.account_ids.as_ref().is_some_and(Vec::is_empty)
+        || request.category_ids.as_ref().is_some_and(Vec::is_empty);
+    let incompatible_empty = request
+        .account_ids
+        .as_ref()
+        .is_some_and(|ids| !ids.is_empty() && filters.account_ids.is_empty())
+        || request
+            .category_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.is_empty() && filters.category_ids.is_empty());
+    let filter_empty = filters.currency.is_some() && (explicit_empty || incompatible_empty);
+    let state = if filters.currency.is_none() {
+        "empty"
+    } else if filter_empty {
+        "filter_empty"
+    } else {
+        "ready"
+    };
+    Ok((dimensions, filters, state))
 }
 
 fn project_investments(
@@ -673,88 +643,27 @@ pub(crate) fn read_drill_down(
     if !(1..=100).contains(&request.limit) {
         bail!("dashboard drill-down limit must be between 1 and 100");
     }
-    let dashboard = read_finance(connection, request.filters)?;
+    let (dimensions, filters, state) = resolve_request(connection, &request.filters)?;
     let metric_name = request.metric.name();
-    if dashboard.state != "ready" {
+    if state != "ready" {
         return Ok(DrillResponse {
             schema_version: DASHBOARD_SCHEMA_VERSION,
             ok: true,
-            filters: dashboard.filters,
+            filters,
             metric: metric_name,
             rows: Vec::new(),
             next_cursor: None,
             errors: Vec::new(),
         });
     }
-    let filters = dashboard.filters;
-    let mut transactions = load_transactions(connection, &filters.start_date, &filters.end_date)?;
-    transactions.retain(|row| {
-        row.currency == filters.currency.as_deref().unwrap_or_default()
-            && row
-                .account_id
-                .as_ref()
-                .is_some_and(|id| filters.account_ids.contains(id))
-            && request
-                .month
-                .as_ref()
-                .is_none_or(|month| row.posted_date.starts_with(month))
-    });
+    // Drill-down historically validates the same snapshot as finance before
+    // returning rows. Keep those checked arithmetic and investment errors,
+    // but do so with the bounded streaming aggregator.
+    aggregate(connection, &filters, &dimensions)?;
+    project_investments(connection, &filters)?;
     let category_filter_applied = filters.category_scope == "expense_only";
-    let mut rows = Vec::new();
-    for transaction in transactions {
-        let include_canonical = request.metric.includes_canonical(
-            &transaction.kind,
-            transaction.amount_minor,
-            category_filter_applied,
-        );
-        if include_canonical {
-            rows.push(DrillRow {
-                row_type: "canonical_transaction",
-                id: transaction.id.clone(),
-                canonical_transaction_id: transaction.id,
-                posted_date: transaction.posted_date,
-                account_id: transaction.account_id,
-                description: transaction.description,
-                transaction_kind: transaction.kind,
-                category_id: None,
-                amount_minor: transaction.amount_minor.to_string(),
-                currency: transaction.currency,
-            });
-        }
-    }
-    if category_filter_applied && request.metric.includes_expense_lines() {
-        for line in load_expense_lines(connection, &filters.start_date, &filters.end_date)? {
-            if line.currency == filters.currency.as_deref().unwrap_or_default()
-                && line
-                    .account_id
-                    .as_ref()
-                    .is_some_and(|id| filters.account_ids.contains(id))
-                && filters.category_ids.contains(&line.category_id)
-                && request
-                    .month
-                    .as_ref()
-                    .is_none_or(|month| line.posted_date.starts_with(month))
-            {
-                rows.push(DrillRow {
-                    row_type: "expense_line",
-                    id: line.id,
-                    canonical_transaction_id: line.transaction_id,
-                    posted_date: line.posted_date,
-                    account_id: line.account_id,
-                    description: line.description,
-                    transaction_kind: "expense".to_string(),
-                    category_id: Some(line.category_id),
-                    amount_minor: line.amount_minor.to_string(),
-                    currency: line.currency,
-                });
-            }
-        }
-    }
-    rows.sort_by(|left, right| (&left.posted_date, &left.id).cmp(&(&right.posted_date, &right.id)));
-    if let Some(cursor) = request.cursor.as_deref() {
-        let (date, id) = parse_cursor(cursor)?;
-        rows.retain(|row| (row.posted_date.as_str(), row.id.as_str()) > (date, id));
-    }
+    let rows = query_drill_rows(connection, &request, &filters, category_filter_applied)?;
+    let mut rows = rows;
     let has_more = rows.len() > request.limit;
     rows.truncate(request.limit);
     let next_cursor = has_more.then(|| {
@@ -772,87 +681,290 @@ pub(crate) fn read_drill_down(
     })
 }
 
+fn query_drill_rows(
+    connection: &Connection,
+    request: &DrillRequest,
+    filters: &ResolvedFilters,
+    category_filter_applied: bool,
+) -> Result<Vec<DrillRow>> {
+    let cursor = request.cursor.as_deref().map(parse_cursor).transpose()?;
+    let currency = filters.currency.as_deref().expect("ready has currency");
+    let account_placeholders = placeholders(filters.account_ids.len());
+    let mut values = Vec::<Value>::new();
+    let mut canonical_where = vec![
+        "ct.posted_date BETWEEN ? AND ?".to_string(),
+        "UPPER(ct.currency) = ?".to_string(),
+        format!("ct.account_id IN ({account_placeholders})"),
+    ];
+    values.push(filters.start_date.clone().into());
+    values.push(filters.end_date.clone().into());
+    values.push(currency.to_string().into());
+    values.extend(filters.account_ids.iter().cloned().map(Value::from));
+    if let Some(month) = request.month.as_deref() {
+        canonical_where.push("substr(ct.posted_date, 1, length(?)) = ?".to_string());
+        values.push(month.to_string().into());
+        values.push(month.to_string().into());
+    }
+    if let Some((date, id)) = cursor {
+        canonical_where.push("(ct.posted_date, ct.id) > (?, ?)".to_string());
+        values.push(date.to_string().into());
+        values.push(id.to_string().into());
+    }
+    canonical_where.push(canonical_metric_predicate(
+        request.metric,
+        category_filter_applied,
+    ));
+
+    let mut selects = vec![format!(
+        "SELECT 'canonical_transaction' AS row_type, ct.id, ct.id AS canonical_transaction_id,
+                ct.posted_date, ct.account_id, ct.description,
+                COALESCE(ct.transaction_kind, '') AS transaction_kind,
+                NULL AS category_id, ct.amount_minor, UPPER(ct.currency) AS currency, 0 AS sort_order
+         FROM canonical_transactions ct WHERE {}",
+        canonical_where.join(" AND ")
+    )];
+    if category_filter_applied && request.metric.includes_expense_lines() {
+        let category_placeholders = placeholders(filters.category_ids.len());
+        let mut line_where = vec![
+            "ct.transaction_kind = 'expense'".to_string(),
+            "ct.posted_date BETWEEN ? AND ?".to_string(),
+            "UPPER(tl.currency) = ?".to_string(),
+            format!("ct.account_id IN ({account_placeholders})"),
+            format!("tl.category_id IN ({category_placeholders})"),
+        ];
+        values.push(filters.start_date.clone().into());
+        values.push(filters.end_date.clone().into());
+        values.push(currency.to_string().into());
+        values.extend(filters.account_ids.iter().cloned().map(Value::from));
+        values.extend(filters.category_ids.iter().cloned().map(Value::from));
+        if let Some(month) = request.month.as_deref() {
+            line_where.push("substr(ct.posted_date, 1, length(?)) = ?".to_string());
+            values.push(month.to_string().into());
+            values.push(month.to_string().into());
+        }
+        if let Some((date, id)) = cursor {
+            line_where.push("(ct.posted_date, tl.id) > (?, ?)".to_string());
+            values.push(date.to_string().into());
+            values.push(id.to_string().into());
+        }
+        selects.push(format!(
+            "SELECT 'expense_line' AS row_type, tl.id, ct.id AS canonical_transaction_id,
+                    ct.posted_date, ct.account_id, ct.description, 'expense' AS transaction_kind,
+                    tl.category_id, tl.amount_minor, UPPER(tl.currency) AS currency, 1 AS sort_order
+             FROM transaction_lines tl
+             JOIN canonical_transactions ct ON ct.id = tl.canonical_transaction_id
+             JOIN categories c ON c.id = tl.category_id
+             WHERE {}",
+            line_where.join(" AND ")
+        ));
+    }
+    values.push((request.limit as i64 + 1).into());
+    let sql = format!(
+        "{} ORDER BY posted_date, id, sort_order LIMIT ?",
+        selects.join(" UNION ALL ")
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement
+        .query_map(params_from_iter(values), |row| {
+            let row_type: String = row.get(0)?;
+            Ok(DrillRow {
+                row_type: if row_type == "expense_line" {
+                    "expense_line"
+                } else {
+                    "canonical_transaction"
+                },
+                id: row.get(1)?,
+                canonical_transaction_id: row.get(2)?,
+                posted_date: row.get(3)?,
+                account_id: row.get(4)?,
+                description: row.get(5)?,
+                transaction_kind: row.get(6)?,
+                category_id: row.get(7)?,
+                amount_minor: row.get::<_, i64>(8)?.to_string(),
+                currency: row.get(9)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn canonical_metric_predicate(metric: DrillMetric, category_filtered: bool) -> String {
+    match metric {
+        DrillMetric::Activity if category_filtered => {
+            "COALESCE(ct.transaction_kind, '') != 'expense'"
+        }
+        DrillMetric::Activity => "1 = 1",
+        DrillMetric::Income => "ct.transaction_kind = 'income' AND ct.amount_minor > 0",
+        DrillMetric::ConsumptionExpense if category_filtered => "1 = 0",
+        DrillMetric::ConsumptionExpense => "ct.transaction_kind = 'expense'",
+        DrillMetric::NetCashFlow if category_filtered => "ct.transaction_kind = 'income'",
+        DrillMetric::NetCashFlow => "ct.transaction_kind IN ('income', 'expense')",
+        DrillMetric::InvestmentContribution => "ct.transaction_kind = 'investment_contribution'",
+    }
+    .to_string()
+}
+
+fn placeholders(count: usize) -> String {
+    std::iter::repeat_n("?", count)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn aggregate(
-    transactions: &[TransactionRow],
-    lines: &[ExpenseLineRow],
+    connection: &Connection,
     filters: &ResolvedFilters,
     dimensions: &Dimensions,
 ) -> Result<FinanceSections> {
     let currency = filters.currency.as_deref().expect("ready has currency");
     let category_filter_applied = filters.category_scope == "expense_only";
-    let selected_accounts: BTreeSet<&str> =
-        filters.account_ids.iter().map(String::as_str).collect();
-    let selected_categories: BTreeSet<&str> =
-        filters.category_ids.iter().map(String::as_str).collect();
-    let mut expense_by_transaction: BTreeMap<&str, i64> = BTreeMap::new();
-    let mut category_totals: BTreeMap<&str, i64> = BTreeMap::new();
-    for line in lines.iter().filter(|line| {
-        line.currency == currency
-            && line
-                .account_id
-                .as_deref()
-                .is_some_and(|id| selected_accounts.contains(id))
-            && (!category_filter_applied || selected_categories.contains(line.category_id.as_str()))
-    }) {
-        let amount = magnitude(line.amount_minor)?;
-        checked_add_map(
-            &mut expense_by_transaction,
-            line.transaction_id.as_str(),
-            amount,
-        )?;
-        checked_add_map(&mut category_totals, line.category_id.as_str(), amount)?;
-    }
+    let account_placeholders = placeholders(filters.account_ids.len());
+    let mut values = vec![
+        filters.start_date.clone().into(),
+        filters.end_date.clone().into(),
+        currency.to_string().into(),
+    ];
+    values.extend(filters.account_ids.iter().cloned().map(Value::from));
+
+    let line_expense_cte = if category_filter_applied {
+        values.push(currency.to_string().into());
+        values.extend(filters.category_ids.iter().cloned().map(Value::from));
+        format!(
+            ", selected_line_expense AS (
+                 SELECT st.id, SUM(-tl.amount_minor) AS amount
+                 FROM selected_transactions st
+                 JOIN transaction_lines tl ON tl.canonical_transaction_id = st.id
+                 JOIN categories c ON c.id = tl.category_id
+                 WHERE UPPER(tl.currency) = ?
+                   AND tl.category_id IN ({})
+                 GROUP BY st.id
+             )",
+            placeholders(filters.category_ids.len())
+        )
+    } else {
+        String::new()
+    };
+    let line_expense_join = if category_filter_applied {
+        "LEFT JOIN selected_line_expense le ON le.id = st.id"
+    } else {
+        ""
+    };
+    let expense_expression = if category_filter_applied {
+        "COALESCE(le.amount, 0)"
+    } else {
+        "-st.amount_minor"
+    };
+    let sql = format!(
+        "WITH selected_transactions AS (
+             SELECT id, account_id, posted_date, amount_minor,
+                    COALESCE(transaction_kind, '') AS transaction_kind
+             FROM canonical_transactions
+             WHERE posted_date BETWEEN ? AND ?
+               AND UPPER(currency) = ?
+               AND account_id IN ({account_placeholders})
+         ){line_expense_cte}
+         SELECT substr(st.posted_date, 1, 7) AS month, st.account_id,
+                SUM(CASE WHEN st.transaction_kind = 'income' AND st.amount_minor > 0
+                         THEN st.amount_minor ELSE 0 END) AS income,
+                SUM(CASE WHEN st.transaction_kind = 'expense'
+                         THEN {expense_expression} ELSE 0 END) AS expense,
+                SUM(CASE WHEN st.transaction_kind = 'investment_contribution'
+                         THEN -st.amount_minor ELSE 0 END) AS contribution,
+                SUM(CASE
+                    WHEN st.transaction_kind = 'income' AND st.amount_minor > 0 THEN 1
+                    WHEN st.transaction_kind = 'expense' AND {expense_expression} != 0 THEN 1
+                    WHEN st.transaction_kind = 'investment_contribution' THEN 1
+                    ELSE 0 END) AS row_count
+         FROM selected_transactions st
+         {line_expense_join}
+         GROUP BY month, st.account_id
+         ORDER BY month, st.account_id"
+    );
+
     let mut summary = NumericMeasures::default();
-    let mut months: BTreeMap<String, NumericMeasures> =
-        month_buckets(&filters.start_date, &filters.end_date)?;
-    let mut account_measures: BTreeMap<&str, NumericMeasures> = BTreeMap::new();
-    let mut account_rows: BTreeMap<&str, usize> = BTreeMap::new();
-    for transaction in transactions.iter().filter(|row| {
-        row.currency == currency
-            && row
-                .account_id
-                .as_deref()
-                .is_some_and(|id| selected_accounts.contains(id))
-    }) {
-        let account = transaction
-            .account_id
-            .as_deref()
-            .expect("selected account exists");
-        let month = &transaction.posted_date[..7];
-        let monthly = months.get_mut(month).expect("date range created its month");
-        let account_total = account_measures.entry(account).or_default();
-        match transaction.kind.as_str() {
-            "income" if transaction.amount_minor > 0 => {
-                summary.add_income(transaction.amount_minor)?;
-                monthly.add_income(transaction.amount_minor)?;
-                account_total.add_income(transaction.amount_minor)?;
-                *account_rows.entry(account).or_default() += 1;
-            }
-            "expense" => {
-                let amount = if category_filter_applied {
-                    expense_by_transaction
-                        .get(transaction.id.as_str())
-                        .copied()
-                        .unwrap_or(0)
-                } else {
-                    magnitude(transaction.amount_minor)?
-                };
-                summary.add_expense_magnitude(amount)?;
-                monthly.add_expense_magnitude(amount)?;
-                account_total.add_expense_magnitude(amount)?;
-                if amount != 0 {
-                    *account_rows.entry(account).or_default() += 1;
-                }
-            }
-            "investment_contribution" => {
-                summary.add_contribution(transaction.amount_minor)?;
-                monthly.add_contribution(transaction.amount_minor)?;
-                account_total.add_contribution(transaction.amount_minor)?;
-                *account_rows.entry(account).or_default() += 1;
-            }
-            _ => {}
-        }
+    let mut months = month_buckets(&filters.start_date, &filters.end_date)?;
+    let mut account_measures = BTreeMap::<String, NumericMeasures>::new();
+    let mut account_rows = BTreeMap::<String, usize>::new();
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(params_from_iter(values))?;
+    loop {
+        let row = rows
+            .next()
+            .map_err(|_| anyhow::anyhow!("dashboard amount overflow"))?;
+        let Some(row) = row else { break };
+        let month: String = aggregate_value(row, 0)?;
+        let account_id: String = aggregate_value(row, 1)?;
+        let income: i64 = aggregate_value(row, 2)?;
+        let expense: i64 = aggregate_value(row, 3)?;
+        let contribution: i64 = aggregate_value(row, 4)?;
+        let row_count: i64 = aggregate_value(row, 5)?;
+        let row_count =
+            usize::try_from(row_count).map_err(|_| anyhow::anyhow!("dashboard amount overflow"))?;
+
+        let numeric = NumericMeasures {
+            income,
+            expense,
+            contribution,
+        };
+        summary.add_income(income)?;
+        summary.add_expense_magnitude(expense)?;
+        summary.add_contribution_magnitude(contribution)?;
+        let monthly = months
+            .get_mut(&month)
+            .expect("date range created its month");
+        monthly.add_income(income)?;
+        monthly.add_expense_magnitude(expense)?;
+        monthly.add_contribution_magnitude(contribution)?;
+        let account = account_measures.entry(account_id.clone()).or_default();
+        account.add_income(numeric.income)?;
+        account.add_expense_magnitude(numeric.expense)?;
+        account.add_contribution_magnitude(numeric.contribution)?;
+        let rows = account_rows.entry(account_id).or_default();
+        *rows = rows
+            .checked_add(row_count)
+            .ok_or_else(|| anyhow::anyhow!("dashboard amount overflow"))?;
     }
+
+    let mut category_values = vec![
+        filters.start_date.clone().into(),
+        filters.end_date.clone().into(),
+        currency.to_string().into(),
+    ];
+    category_values.extend(filters.account_ids.iter().cloned().map(Value::from));
+    let category_filter = if category_filter_applied {
+        category_values.extend(filters.category_ids.iter().cloned().map(Value::from));
+        format!(
+            "AND tl.category_id IN ({})",
+            placeholders(filters.category_ids.len())
+        )
+    } else {
+        String::new()
+    };
+    let category_sql = format!(
+        "SELECT tl.category_id, SUM(-tl.amount_minor)
+         FROM transaction_lines tl
+         JOIN canonical_transactions ct ON ct.id = tl.canonical_transaction_id
+         JOIN categories c ON c.id = tl.category_id
+         WHERE ct.transaction_kind = 'expense'
+           AND ct.posted_date BETWEEN ? AND ?
+           AND UPPER(tl.currency) = ?
+           AND ct.account_id IN ({account_placeholders})
+           {category_filter}
+         GROUP BY tl.category_id
+         ORDER BY tl.category_id"
+    );
+    let mut category_totals = BTreeMap::<String, i64>::new();
+    let mut statement = connection.prepare(&category_sql)?;
+    let mut rows = statement.query(params_from_iter(category_values))?;
+    loop {
+        let row = rows
+            .next()
+            .map_err(|_| anyhow::anyhow!("dashboard amount overflow"))?;
+        let Some(row) = row else { break };
+        let id: String = aggregate_value(row, 0)?;
+        let amount: i64 = aggregate_value(row, 1)?;
+        checked_add_owned_map(&mut category_totals, id, amount)?;
+    }
+
     let monthly = months
         .into_iter()
         .map(|(month, numeric)| {
@@ -870,8 +982,12 @@ fn aggregate(
     let categories = category_totals
         .into_iter()
         .map(|(id, amount)| CategoryBreakdown {
-            category_id: id.to_string(),
-            category_name: category_names.get(id).copied().unwrap_or(id).to_string(),
+            category_name: category_names
+                .get(id.as_str())
+                .copied()
+                .unwrap_or(&id)
+                .to_string(),
+            category_id: id,
             currency: currency.to_string(),
             amount_minor: amount.to_string(),
         })
@@ -879,7 +995,7 @@ fn aggregate(
     let accounts = dimensions
         .accounts
         .iter()
-        .filter(|account| selected_accounts.contains(account.id.as_str()))
+        .filter(|account| filters.account_ids.binary_search(&account.id).is_ok())
         .map(|account| {
             Ok(AccountBreakdown {
                 account_id: account.id.clone(),
@@ -899,6 +1015,14 @@ fn aggregate(
         categories,
         accounts,
     })
+}
+
+fn aggregate_value<T: rusqlite::types::FromSql>(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+) -> Result<T> {
+    row.get(index)
+        .map_err(|_| anyhow::anyhow!("dashboard amount overflow"))
 }
 
 fn resolve_filters(
@@ -976,17 +1100,14 @@ fn resolve_filters(
     })
 }
 
-fn load_dimensions(
-    connection: &Connection,
-    transactions: &[TransactionRow],
-    lines: &[ExpenseLineRow],
-) -> Result<Dimensions> {
-    let currencies = transactions
-        .iter()
-        .map(|row| row.currency.clone())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+fn load_dimensions(connection: &Connection, start: &str, end: &str) -> Result<Dimensions> {
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT UPPER(currency) FROM canonical_transactions
+         WHERE posted_date BETWEEN ?1 AND ?2 ORDER BY UPPER(currency)",
+    )?;
+    let currencies = statement
+        .query_map(params![start, end], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut statement = connection
         .prepare("SELECT id, label, currency FROM accounts WHERE is_owned = 1 ORDER BY id")?;
     let accounts = statement
@@ -998,22 +1119,30 @@ fn load_dimensions(
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut category_values: BTreeMap<String, (String, BTreeSet<String>)> = BTreeMap::new();
-    for line in lines {
-        let entry = category_values
-            .entry(line.category_id.clone())
-            .or_insert_with(|| (line.category_name.clone(), BTreeSet::new()));
-        entry.1.insert(line.currency.clone());
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT tl.category_id, c.name, UPPER(tl.currency)
+         FROM transaction_lines tl
+         JOIN canonical_transactions ct ON ct.id = tl.canonical_transaction_id
+         JOIN categories c ON c.id = tl.category_id
+         WHERE ct.transaction_kind = 'expense' AND ct.posted_date BETWEEN ?1 AND ?2
+         ORDER BY tl.category_id, UPPER(tl.currency)",
+    )?;
+    let mut rows = statement.query(params![start, end])?;
+    let mut categories = Vec::<CategoryDimension>::new();
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0)?;
+        let name: String = row.get(1)?;
+        let currency: String = row.get(2)?;
+        if let Some(category) = categories.last_mut().filter(|category| category.id == id) {
+            category.currencies.push(currency);
+        } else {
+            categories.push(CategoryDimension {
+                id,
+                name,
+                currencies: vec![currency],
+            });
+        }
     }
-    let mut categories = category_values
-        .into_iter()
-        .map(|(id, (name, currencies))| CategoryDimension {
-            id,
-            name,
-            currencies: currencies.into_iter().collect(),
-        })
-        .collect::<Vec<_>>();
-    categories.sort_by(|left, right| left.id.cmp(&right.id));
     let mut statement = connection.prepare(
         "SELECT id, name, instrument_type, denomination_currency FROM investment_instruments ORDER BY id",
     )?;
@@ -1033,56 +1162,6 @@ fn load_dimensions(
         categories,
         instruments,
     })
-}
-
-fn load_transactions(
-    connection: &Connection,
-    start: &str,
-    end: &str,
-) -> Result<Vec<TransactionRow>> {
-    let mut statement = connection.prepare(
-        "SELECT id, account_id, posted_date, description, amount_minor, currency, COALESCE(transaction_kind, '') FROM canonical_transactions WHERE posted_date BETWEEN ?1 AND ?2 ORDER BY posted_date, id",
-    )?;
-    let rows = statement
-        .query_map(params![start, end], |row| {
-            Ok(TransactionRow {
-                id: row.get(0)?,
-                account_id: row.get(1)?,
-                posted_date: row.get(2)?,
-                description: row.get(3)?,
-                amount_minor: row.get(4)?,
-                currency: row.get::<_, String>(5)?.to_ascii_uppercase(),
-                kind: row.get(6)?,
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
-}
-
-fn load_expense_lines(
-    connection: &Connection,
-    start: &str,
-    end: &str,
-) -> Result<Vec<ExpenseLineRow>> {
-    let mut statement = connection.prepare(
-        "SELECT tl.id, ct.id, ct.account_id, ct.posted_date, ct.description, tl.category_id, c.name, tl.amount_minor, tl.currency FROM transaction_lines tl JOIN canonical_transactions ct ON ct.id = tl.canonical_transaction_id JOIN categories c ON c.id = tl.category_id WHERE ct.transaction_kind = 'expense' AND ct.posted_date BETWEEN ?1 AND ?2 ORDER BY ct.posted_date, tl.id",
-    )?;
-    let rows = statement
-        .query_map(params![start, end], |row| {
-            Ok(ExpenseLineRow {
-                id: row.get(0)?,
-                transaction_id: row.get(1)?,
-                account_id: row.get(2)?,
-                posted_date: row.get(3)?,
-                description: row.get(4)?,
-                category_id: row.get(5)?,
-                category_name: row.get(6)?,
-                amount_minor: row.get(7)?,
-                currency: row.get::<_, String>(8)?.to_ascii_uppercase(),
-            })
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(rows)
 }
 
 fn month_buckets(start: &str, end: &str) -> Result<BTreeMap<String, NumericMeasures>> {
@@ -1123,13 +1202,7 @@ fn validate_range(start: &str, end: &str) -> Result<()> {
     Ok(())
 }
 
-fn magnitude(amount: i64) -> Result<i64> {
-    amount
-        .checked_neg()
-        .ok_or_else(|| anyhow::anyhow!("dashboard amount overflow"))
-}
-
-fn checked_add_map<'a>(map: &mut BTreeMap<&'a str, i64>, key: &'a str, amount: i64) -> Result<()> {
+fn checked_add_owned_map(map: &mut BTreeMap<String, i64>, key: String, amount: i64) -> Result<()> {
     let total = map.entry(key).or_default();
     *total = total
         .checked_add(amount)
@@ -1492,6 +1565,57 @@ mod tests {
             );
             cursor = page.next_cursor;
         }
+    }
+
+    #[test]
+    fn large_finance_fixture_aggregates_and_pages_without_materializing_the_range() {
+        let (_directory, mut connection) = fixture();
+        connection
+            .execute_batch(
+                "WITH RECURSIVE sequence(value) AS (
+                     VALUES(0) UNION ALL SELECT value + 1 FROM sequence WHERE value < 9999
+                 )
+                 INSERT INTO canonical_transactions(
+                     id, account_id, posted_date, description, amount_minor, currency,
+                     transaction_kind, income_source_id, income_kind
+                 )
+                 SELECT printf('bulk-%05d', value), 'cop-checking', '2026-03-01',
+                        'Bulk income', 1, 'COP', 'income', 'salary', 'salary'
+                 FROM sequence;",
+            )
+            .unwrap();
+
+        let response = finance(&mut connection, request()).unwrap();
+        assert_eq!(response.summary.income_minor, "510000");
+        assert_eq!(response.monthly[2].measures.income_minor, "10000");
+        let checking = response
+            .accounts
+            .iter()
+            .find(|account| account.account_id == "cop-checking")
+            .unwrap();
+        assert_eq!(checking.row_count, 10_003);
+
+        let mut cursor = None;
+        let mut row_count = 0;
+        loop {
+            let page = drill(
+                &mut connection,
+                DrillRequest {
+                    filters: request(),
+                    metric: DrillMetric::Activity,
+                    month: Some("2026-03".to_string()),
+                    cursor,
+                    limit: 100,
+                },
+            )
+            .unwrap();
+            row_count += page.rows.len();
+            if page.next_cursor.is_none() {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+        assert_eq!(row_count, 10_000);
     }
 
     #[test]

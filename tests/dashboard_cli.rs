@@ -2,6 +2,7 @@
 
 use rusqlite::Connection;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -13,8 +14,9 @@ use tracky::storage::{apply_migrations, TRACKY_APPLICATION_ID, TRACKY_SCHEMA_GEN
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn tracky() -> &'static str {
-    env!("CARGO_BIN_EXE_tracky")
+fn tracky() -> OsString {
+    std::env::var_os("TRACKY_TEST_BINARY")
+        .unwrap_or_else(|| OsString::from(env!("CARGO_BIN_EXE_tracky")))
 }
 
 fn fixture_database(root: &Path) -> PathBuf {
@@ -322,6 +324,7 @@ fn dashboard_is_public_in_tracky_0_2_help() {
     assert!(top.status.success());
     let top_help = String::from_utf8_lossy(&top.stdout);
     assert!(top_help.contains("dashboard"));
+    assert!(!top_help.contains("__dashboard-snapshot"));
 
     let version = sandboxed_command(root.path())
         .arg("--version")

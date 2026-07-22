@@ -13,20 +13,22 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{Datelike, Months, NaiveDate, Utc};
-use rusqlite::backup::Backup;
 use rusqlite::{Connection, DatabaseName, OpenFlags, Transaction};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tempfile::TempDir;
 
 const CSS: &str = include_str!("dashboard_assets/dashboard.css");
 const JAVASCRIPT: &str = include_str!("dashboard_assets/dashboard.js");
+pub(crate) const INCOMPATIBLE_SNAPSHOT_EXIT_CODE: i32 = 42;
 
 #[derive(Debug)]
-struct IncompatibleDashboardSchemaError;
+pub(crate) struct IncompatibleDashboardSchemaError;
 
 impl std::fmt::Display for IncompatibleDashboardSchemaError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -56,6 +58,7 @@ struct AppState {
 struct DashboardSnapshot {
     connection: Connection,
     startup_response: DashboardResponse,
+    _directory: TempDir,
 }
 
 pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> {
@@ -280,16 +283,39 @@ fn read_transaction<T>(
 }
 
 fn load_snapshot(path: &Path, startup_request: FinanceFilterRequest) -> Result<DashboardSnapshot> {
-    let source = open_dashboard_database(path)?;
-    let mut connection = Connection::open_in_memory()
-        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be created"))?;
-    {
-        let backup = Backup::new(&source, &mut connection)
-            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
-        backup
-            .run_to_completion(64, Duration::from_millis(1), None)
-            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
+    let snapshot_directory =
+        TempDir::new().map_err(|_| anyhow::anyhow!("dashboard snapshot could not be created"))?;
+    let snapshot_file = snapshot_directory.path().join("snapshot.sqlite");
+    let executable = std::env::current_exe()
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot helper is unavailable"))?;
+    let status = Command::new(executable)
+        .arg("__dashboard-snapshot")
+        .arg("--source")
+        .arg(path)
+        .arg("--destination")
+        .arg(&snapshot_file)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
+    if status.code() == Some(INCOMPATIBLE_SNAPSHOT_EXIT_CODE) {
+        return Err(IncompatibleDashboardSchemaError.into());
     }
+    if !status.success() {
+        bail!("dashboard snapshot could not be completed");
+    }
+    let mut connection = Connection::open_with_flags(
+        &snapshot_file,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be reopened"))?;
+    connection
+        .pragma_update(None, "cache_size", -2048)
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be bounded"))?;
+    connection
+        .pragma_update(None, "temp_store", "FILE")
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be bounded"))?;
     connection
         .pragma_update(None, "query_only", true)
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be secured"))?;
@@ -297,7 +323,25 @@ fn load_snapshot(path: &Path, startup_request: FinanceFilterRequest) -> Result<D
     Ok(DashboardSnapshot {
         connection,
         startup_response,
+        _directory: snapshot_directory,
     })
+}
+
+pub(crate) fn write_snapshot(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        bail!("dashboard snapshot destination must not exist");
+    }
+    let source = open_dashboard_database(source)?;
+    source
+        .pragma_update(None, "query_only", false)
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
+    let destination = destination
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("dashboard snapshot destination is invalid"))?;
+    source
+        .execute("VACUUM INTO ?1", [destination])
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
+    Ok(())
 }
 
 async fn dashboard_api(State(state): State<AppState>, request: Request) -> Response {
