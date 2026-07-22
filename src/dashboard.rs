@@ -314,7 +314,7 @@ fn load_snapshot(path: &Path) -> Result<DashboardSnapshot> {
         .pragma_update(None, "cache_size", -2048)
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be bounded"))?;
     connection
-        .pragma_update(None, "temp_store", "FILE")
+        .pragma_update(None, "temp_store", "MEMORY")
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be bounded"))?;
     connection
         .pragma_update(None, "query_only", true)
