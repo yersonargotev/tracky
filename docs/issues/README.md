@@ -55,6 +55,22 @@ These issues retain unchecked criteria and are not represented as completed:
 1. `0020-add-tui-review-mvp.md` — minimal TUI review surface; intentionally not started in this slice.
 2. `0034-add-investment-review-and-reporting-to-tui.md` — investment workflow in the shared TUI model.
 
+## Wayfinder maps
+
+1. `0045-wayfind-local-analytics-dashboard.md` — decide and specify the local,
+   read-only analytics dashboard before implementation.
+
+The map is complete: every child decision is closed and indexed, with no
+remaining frontier or fog. Its final decision specifies seven dependency-ordered
+implementation slices and the Tracky 0.2.0 rollout boundary. Claim and closure
+mechanics are documented in `docs/agents/issue-tracker.md`.
+
+## Implementation specifications
+
+1. `0052-implement-local-analytics-dashboard.md` — complete product, technical,
+   testing, security, distribution, and rollout specification derived from the
+   completed dashboard Wayfinder; labelled `ready-for-agent`.
+
 Implementation should proceed from the dependency frontier: any issue whose listed blockers are complete may start. The investment-tracking expansion is grounded in `docs/research/investment-tracking-model.md`; provider adapters additionally require representative, user-authorized artifacts or privacy-safe fixtures derived from them.
 
 The agent-facing workflow for the implemented PDF inspect/import/review path is documented in `docs/agents/pdf-import-workflow.md`.

@@ -105,3 +105,7 @@ Observación inmutable y fechada de un proveedor sobre efectivo, cantidades o va
 ### Ajuste de conciliación
 
 Evento explícito, revisado y append-only que cubre historia faltante confirmada por un snapshot. Conserva la diferencia original y nunca representa una orden, compra, venta ni recomendación.
+
+### Dashboard analítico
+
+Vista de solo lectura sobre datos financieros canónicos que permite explorar métricas, tendencias, desgloses, valoraciones y alertas de conciliación. No revisa transacciones candidatas ni modifica el registro financiero oficial de Tracky.

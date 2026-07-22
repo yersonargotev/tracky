@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Tracky dashboard IA prototype</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22><rect width=%2232%22 height=%2232%22 rx=%226%22 fill=%22%2318231f%22/><text x=%226%22 y=%2223%22 font-size=%2220%22 fill=%22%2385cfae%22>t</text></svg>">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <!-- Three throwaway variants, switchable via ?variant=, for a new dashboard surface. -->
+    <noscript>This prototype requires JavaScript.</noscript>
+    <div id="app"></div>
+    <div id="drawer-root"></div>
+    <nav class="prototype-switcher" aria-label="Prototype variants">
+      <button id="previous-variant" aria-label="Previous variant">←</button>
+      <div><small>THROWAWAY PROTOTYPE</small><strong id="variant-label"></strong></div>
+      <button id="next-variant" aria-label="Next variant">→</button>
+    </nav>
+    <script src="app.js"></script>
+  </body>
+</html>
