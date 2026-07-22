@@ -643,7 +643,7 @@ pub(crate) fn read_drill_down(
     if !(1..=100).contains(&request.limit) {
         bail!("dashboard drill-down limit must be between 1 and 100");
     }
-    let (dimensions, filters, state) = resolve_request(connection, &request.filters)?;
+    let (_, filters, state) = resolve_request(connection, &request.filters)?;
     let metric_name = request.metric.name();
     if state != "ready" {
         return Ok(DrillResponse {
@@ -656,11 +656,6 @@ pub(crate) fn read_drill_down(
             errors: Vec::new(),
         });
     }
-    // Drill-down historically validates the same snapshot as finance before
-    // returning rows. Keep those checked arithmetic and investment errors,
-    // but do so with the bounded streaming aggregator.
-    aggregate(connection, &filters, &dimensions)?;
-    project_investments(connection, &filters)?;
     let category_filter_applied = filters.category_scope == "expense_only";
     let rows = query_drill_rows(connection, &request, &filters, category_filter_applied)?;
     let mut rows = rows;
@@ -701,9 +696,11 @@ fn query_drill_rows(
     values.push(currency.to_string().into());
     values.extend(filters.account_ids.iter().cloned().map(Value::from));
     if let Some(month) = request.month.as_deref() {
-        canonical_where.push("substr(ct.posted_date, 1, length(?)) = ?".to_string());
-        values.push(month.to_string().into());
-        values.push(month.to_string().into());
+        let month_start = format!("{month}-01");
+        let month_end = format!("{month}-31");
+        canonical_where.push("ct.posted_date BETWEEN ? AND ?".to_string());
+        values.push(month_start.into());
+        values.push(month_end.into());
     }
     if let Some((date, id)) = cursor {
         canonical_where.push("(ct.posted_date, ct.id) > (?, ?)".to_string());
@@ -738,9 +735,11 @@ fn query_drill_rows(
         values.extend(filters.account_ids.iter().cloned().map(Value::from));
         values.extend(filters.category_ids.iter().cloned().map(Value::from));
         if let Some(month) = request.month.as_deref() {
-            line_where.push("substr(ct.posted_date, 1, length(?)) = ?".to_string());
-            values.push(month.to_string().into());
-            values.push(month.to_string().into());
+            let month_start = format!("{month}-01");
+            let month_end = format!("{month}-31");
+            line_where.push("ct.posted_date BETWEEN ? AND ?".to_string());
+            values.push(month_start.into());
+            values.push(month_end.into());
         }
         if let Some((date, id)) = cursor {
             line_where.push("(ct.posted_date, tl.id) > (?, ?)".to_string());

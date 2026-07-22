@@ -13,6 +13,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{Datelike, Months, NaiveDate, Utc};
+use rusqlite::backup::Backup;
 use rusqlite::{Connection, DatabaseName, OpenFlags, Transaction};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -332,15 +333,15 @@ pub(crate) fn write_snapshot(source: &Path, destination: &Path) -> Result<()> {
         bail!("dashboard snapshot destination must not exist");
     }
     let source = open_dashboard_database(source)?;
-    source
-        .pragma_update(None, "query_only", false)
+    let mut destination = Connection::open(destination)
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
-    let destination = destination
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("dashboard snapshot destination is invalid"))?;
-    source
-        .execute("VACUUM INTO ?1", [destination])
-        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
+    {
+        let backup = Backup::new(&source, &mut destination)
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
+        backup
+            .run_to_completion(i32::MAX, Duration::ZERO, None)
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
+    }
     Ok(())
 }
 

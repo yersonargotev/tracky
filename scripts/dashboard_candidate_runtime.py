@@ -175,7 +175,8 @@ def start_dashboard(binary, db, env, timeout=15):
             lines.put(line)
         lines.put(None)
 
-    threading.Thread(target=read_stdout, daemon=True).start()
+    reader = threading.Thread(target=read_stdout, daemon=True)
+    reader.start()
     deadline = time.monotonic() + timeout
     text = ""
     while time.monotonic() < deadline:
@@ -194,6 +195,10 @@ def start_dashboard(binary, db, env, timeout=15):
         if process.poll() is not None:
             raise RuntimeError("dashboard exited before readiness: " + process.stderr.read().strip())
     process.kill()
+    process.wait()
+    reader.join(timeout=1)
+    process.stdout.close()
+    process.stderr.close()
     raise RuntimeError("dashboard readiness timed out")
 
 
