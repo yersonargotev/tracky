@@ -39,6 +39,12 @@ class DashboardEvidenceToolTest(unittest.TestCase):
             0,
         )
 
+    def test_manual_accessibility_checklist_retains_named_release_inputs(self):
+        checklist = tool.MANUAL_ACCESSIBILITY.read_text(encoding="utf-8")
+        tool.validate_manual_accessibility_checklist(checklist)
+        self.assertIn("Status: not run", checklist)
+        self.assertNotIn("Status: pass", checklist)
+
     def test_rejects_each_budget_above_boundary(self):
         cases = []
         for field, value in (("asset_bytes", 250 * 1024 + 1), ("resolved_package_count", self.baseline["resolved_package_count"] + 61)):

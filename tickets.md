@@ -170,25 +170,25 @@ to WCAG 2.2 AA expectations.
 
 **Blocked by:** Complete the Monthly ledger experience.
 
-- [ ] Read one initial snapshot and refresh only on explicit request, with no
+- [x] Read one initial snapshot and refresh only on explicit request, with no
   polling, timer, filesystem watcher, or automatic background reread.
-- [ ] Preserve compatible filters and navigation after success and close any
+- [x] Preserve compatible filters and navigation after success and close any
   canonical drawer whose cursor no longer belongs to the refreshed snapshot.
-- [ ] Retain the last good snapshot after failure and present a sanitized stale
+- [x] Retain the last good snapshot after failure and present a sanitized stale
   or error indication, announcement, and retry path without raw SQLite details.
-- [ ] Distinguish valid empty ledger, filter-empty result, unavailable metric,
+- [x] Distinguish valid empty ledger, filter-empty result, unavailable metric,
   stale observation, incompatible schema, fatal startup/initial-read failure,
   and recoverable refresh failure without presenting absence as zero.
-- [ ] Provide complete keyboard operation, visible and restored focus, live
+- [x] Provide complete keyboard operation, visible and restored focus, live
   announcements, descriptive charts and exact tables, reduced motion, and no
   color-only meaning across every view and state.
-- [ ] Pass zero applicable axe violations plus automated zoom, 320-CSS-pixel
+- [x] Pass zero applicable axe violations plus automated zoom, 320-CSS-pixel
   reflow, contrast, pointer-target, responsive, enhancement-failure, and
   supported-browser flow checks.
-- [ ] Preserve database and filesystem immutability through successful and failed
+- [x] Preserve database and filesystem immutability through successful and failed
   refreshes and retain every prior product, security, lifecycle, dependency,
   size, and performance gate.
-- [ ] Produce the release-candidate checklist inputs for manual keyboard,
+- [x] Produce the release-candidate checklist inputs for manual keyboard,
   VoiceOver/Safari, Orca/Firefox, zoom, reflow, contrast, targets, and motion
   verification without claiming those manual checks before they run.
 

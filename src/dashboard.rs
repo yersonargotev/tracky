@@ -13,16 +13,28 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use chrono::{Datelike, Months, NaiveDate, Utc};
-use rusqlite::{Connection, DatabaseName, OpenFlags};
+use rusqlite::backup::Backup;
+use rusqlite::{Connection, DatabaseName, OpenFlags, Transaction};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const CSS: &str = include_str!("dashboard_assets/dashboard.css");
 const JAVASCRIPT: &str = include_str!("dashboard_assets/dashboard.js");
+
+#[derive(Debug)]
+struct IncompatibleDashboardSchemaError;
+
+impl std::fmt::Display for IncompatibleDashboardSchemaError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("unsupported Tracky schema; run `tracky database upgrade --db <PATH>`")
+    }
+}
+
+impl std::error::Error for IncompatibleDashboardSchemaError {}
 
 #[derive(Debug)]
 pub struct DashboardOptions {
@@ -35,10 +47,15 @@ pub struct DashboardOptions {
 
 #[derive(Clone)]
 struct AppState {
-    snapshot: Arc<DashboardResponse>,
+    snapshot: Arc<Mutex<DashboardSnapshot>>,
     db: PathBuf,
     startup_request: FinanceFilterRequest,
     host: String,
+}
+
+struct DashboardSnapshot {
+    connection: Connection,
+    startup_response: DashboardResponse,
 }
 
 pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> {
@@ -56,7 +73,10 @@ pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> 
         currency,
         ..FinanceFilterRequest::default()
     };
-    let snapshot = Arc::new(load_snapshot(&options.db, startup_request.clone())?);
+    let snapshot = Arc::new(Mutex::new(load_snapshot(
+        &options.db,
+        startup_request.clone(),
+    )?));
 
     let capability_bytes = rand::random::<[u8; 32]>();
     let capability = capability_bytes
@@ -88,6 +108,10 @@ pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> 
             .route(&format!("{prefix}/app.css"), get(stylesheet))
             .route(&format!("{prefix}/app.js"), get(javascript))
             .route(&format!("{prefix}/api/v1/dashboard"), get(dashboard_api))
+            .route(
+                &format!("{prefix}/api/v1/dashboard/refresh"),
+                get(refresh_api),
+            )
             .route(
                 &format!("{prefix}/api/v1/transactions"),
                 get(transactions_api),
@@ -177,10 +201,8 @@ fn open_dashboard_database(path: &Path) -> Result<Connection> {
         bail!("dashboard database is not read-only");
     }
     validate_markers(&connection)?;
-    if !dashboard_schema_is_compatible(&connection)
-        .map_err(|_| anyhow::anyhow!("dashboard schema capabilities could not be verified"))?
-    {
-        bail!("unsupported Tracky schema; run `tracky database upgrade --db <PATH>`");
+    if !dashboard_schema_is_compatible(&connection).map_err(|_| IncompatibleDashboardSchemaError)? {
+        return Err(IncompatibleDashboardSchemaError.into());
     }
     Ok(connection)
 }
@@ -195,54 +217,115 @@ fn validate_markers(connection: &Connection) -> Result<()> {
     let (application_id, generation) = markers(connection)
         .map_err(|_| anyhow::anyhow!("Tracky schema identity could not be verified"))?;
     if application_id != TRACKY_APPLICATION_ID || generation != TRACKY_SCHEMA_GENERATION {
-        bail!("unsupported Tracky schema; run `tracky database upgrade --db <PATH>`");
+        return Err(IncompatibleDashboardSchemaError.into());
     }
     Ok(())
 }
 
-fn load_snapshot(path: &Path, request: FinanceFilterRequest) -> Result<DashboardResponse> {
-    let mut connection = open_dashboard_database(path)?;
+fn read_dashboard(
+    connection: &mut Connection,
+    request: FinanceFilterRequest,
+) -> Result<DashboardResponse> {
+    read_transaction(connection, |transaction| {
+        read_finance(transaction, request).map_err(|error| {
+            if error.is::<UnavailableCurrencyError>() {
+                error
+            } else {
+                anyhow::anyhow!("dashboard data could not be read")
+            }
+        })
+    })
+}
+
+fn read_drill(
+    connection: &mut Connection,
+    request: DrillRequest,
+) -> Result<crate::dashboard_finance::DrillResponse> {
+    read_transaction(connection, |transaction| {
+        read_drill_down(transaction, request)
+            .map_err(|_| anyhow::anyhow!("dashboard data could not be read"))
+    })
+}
+
+fn read_transaction<T>(
+    connection: &mut Connection,
+    read: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
     let transaction = connection
         .transaction()
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
-    let snapshot = read_finance(&transaction, request).map_err(|error| {
-        if error.is::<UnavailableCurrencyError>() {
-            error
-        } else {
-            anyhow::anyhow!("dashboard data could not be read")
-        }
-    })?;
+    let response = read(&transaction)?;
     transaction
         .commit()
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
-    Ok(snapshot)
+    Ok(response)
+}
+
+fn load_snapshot(path: &Path, startup_request: FinanceFilterRequest) -> Result<DashboardSnapshot> {
+    let source = open_dashboard_database(path)?;
+    let mut connection = Connection::open_in_memory()
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be created"))?;
+    {
+        let backup = Backup::new(&source, &mut connection)
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
+        backup
+            .run_to_completion(64, Duration::from_millis(1), None)
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
+    }
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be secured"))?;
+    let startup_response = read_dashboard(&mut connection, startup_request)?;
+    Ok(DashboardSnapshot {
+        connection,
+        startup_response,
+    })
 }
 
 async fn dashboard_api(State(state): State<AppState>, request: Request) -> Response {
-    let query = match query_pairs(request.uri().query()) {
-        Ok(query)
-            if query.keys().all(|key| {
-                matches!(
-                    key.as_str(),
-                    "start" | "end" | "currency" | "account" | "category"
-                )
-            }) =>
-        {
-            query
-        }
-        _ => return api_error(StatusCode::BAD_REQUEST, "invalid_dashboard_request"),
-    };
-    let filters = match filters_from_pairs(&query, &state.startup_request) {
+    let filters = match dashboard_filters(request.uri().query(), &state.startup_request) {
         Ok(filters) => filters,
         Err(()) => return api_error(StatusCode::BAD_REQUEST, "invalid_dashboard_request"),
     };
-    if filters == state.startup_request {
-        return Json((*state.snapshot).clone()).into_response();
-    }
-    let path = state.db.clone();
-    match tokio::task::spawn_blocking(move || load_snapshot(&path, filters)).await {
+    let snapshot = state.snapshot.clone();
+    match tokio::task::spawn_blocking(move || {
+        let mut snapshot = snapshot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot unavailable"))?;
+        read_dashboard(&mut snapshot.connection, filters)
+    })
+    .await
+    {
         Ok(Ok(response)) => Json(response).into_response(),
         _ => api_error(StatusCode::BAD_REQUEST, "dashboard_read_failed"),
+    }
+}
+
+async fn refresh_api(State(state): State<AppState>, request: Request) -> Response {
+    let filters = match dashboard_filters(request.uri().query(), &state.startup_request) {
+        Ok(filters) => filters,
+        Err(()) => return api_error(StatusCode::BAD_REQUEST, "invalid_dashboard_request"),
+    };
+    let path = state.db.clone();
+    let startup_request = state.startup_request.clone();
+    let replacement = tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut snapshot = load_snapshot(&path, startup_request)?;
+        let response = read_dashboard(&mut snapshot.connection, filters)?;
+        Ok((snapshot, response))
+    })
+    .await;
+    match replacement {
+        Ok(Ok((replacement, response))) => match state.snapshot.lock() {
+            Ok(mut snapshot) => {
+                *snapshot = replacement;
+                Json(response).into_response()
+            }
+            Err(_) => refresh_error(),
+        },
+        Ok(Err(error)) if error.is::<IncompatibleDashboardSchemaError>() => {
+            incompatible_schema_error()
+        }
+        _ => refresh_error(),
     }
 }
 
@@ -287,18 +370,12 @@ async fn transactions_api(State(state): State<AppState>, request: Request) -> Re
         cursor: one(&query, "cursor").map(str::to_string),
         limit,
     };
-    let path = state.db.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<_> {
-        let mut connection = open_dashboard_database(&path)?;
-        let transaction = connection
-            .transaction()
-            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
-        let response = read_drill_down(&transaction, drill)
-            .map_err(|_| anyhow::anyhow!("dashboard data could not be read"))?;
-        transaction
-            .commit()
-            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
-        Ok(response)
+    let snapshot = state.snapshot.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let mut snapshot = snapshot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot unavailable"))?;
+        read_drill(&mut snapshot.connection, drill)
     })
     .await;
     match result {
@@ -308,6 +385,22 @@ async fn transactions_api(State(state): State<AppState>, request: Request) -> Re
 }
 
 type QueryPairs = BTreeMap<String, Vec<String>>;
+
+fn dashboard_filters(
+    query: Option<&str>,
+    defaults: &FinanceFilterRequest,
+) -> std::result::Result<FinanceFilterRequest, ()> {
+    let query = query_pairs(query)?;
+    if query.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "start" | "end" | "currency" | "account" | "category"
+        )
+    }) {
+        return Err(());
+    }
+    filters_from_pairs(&query, defaults)
+}
 
 fn filters_from_pairs(
     query: &QueryPairs,
@@ -418,8 +511,37 @@ fn api_error(status: StatusCode, code: &'static str) -> Response {
         .into_response()
 }
 
+fn refresh_error() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "ok": false,
+            "state": "stale",
+            "errors": [{"code": "dashboard_refresh_failed"}]
+        })),
+    )
+        .into_response()
+}
+
+fn incompatible_schema_error() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "ok": false,
+            "state": "incompatible_schema",
+            "errors": [{"code": "dashboard_schema_incompatible"}]
+        })),
+    )
+        .into_response()
+}
+
 async fn dashboard_page(State(state): State<AppState>) -> Response {
-    Html(crate::dashboard_view::render(&state.snapshot)).into_response()
+    match state.snapshot.lock() {
+        Ok(snapshot) => {
+            Html(crate::dashboard_view::render(&snapshot.startup_response)).into_response()
+        }
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Dashboard unavailable").into_response(),
+    }
 }
 
 async fn stylesheet() -> Response {

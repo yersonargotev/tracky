@@ -21,7 +21,7 @@ pub(crate) fn render(snapshot: &DashboardResponse) -> String {
     }
 
     html.push_str("<p class=\"immutable-note\">This view is read-only. Use the Tracky CLI to review or correct canonical data.</p></main>");
-    html.push_str("<div class=\"drawer-scrim\" data-action=\"close-drawer\" hidden></div><aside class=\"drawer\" data-drawer role=\"dialog\" aria-label=\"Read-only canonical drawer\" aria-modal=\"true\" hidden><button class=\"drawer-close\" type=\"button\" data-action=\"close-drawer\" aria-label=\"Close canonical drawer\">Close</button><div data-drawer-content><p class=\"eyebrow\">Canonical detail</p><h2>Read-only rows</h2></div></aside>");
+    html.push_str("<div class=\"drawer-scrim\" data-action=\"close-drawer\" hidden></div><dialog class=\"drawer\" data-drawer aria-label=\"Read-only canonical drawer\"><div class=\"drawer-actions\"><button type=\"button\" data-action=\"refresh\">Refresh</button><button class=\"drawer-close\" type=\"button\" data-action=\"close-drawer\" aria-label=\"Close canonical drawer\">Close</button></div><div data-drawer-content><p class=\"eyebrow\">Canonical detail</p><h2>Read-only rows</h2></div></dialog>");
     html.push_str("<noscript><p class=\"noscript\">JavaScript is optional. Exact tables, periods, currencies, freshness, and alerts remain available above; filters and the canonical drawer require enhancement.</p></noscript><script src=\"app.js\"></script></body></html>");
     html
 }
@@ -47,7 +47,7 @@ fn render_header(html: &mut String, snapshot: &DashboardResponse) {
     );
     write!(
         html,
-        "<header class=\"masthead\"><div data-region=\"scope\"><p class=\"eyebrow\">Local analytical ledger · read-only</p><h1>Monthly ledger</h1><p class=\"scope\"><time>{}</time> through <time>{}</time> · Accounts: {} · Expense categories: {} · read {}</p></div><button type=\"button\" data-action=\"toggle-filters\" aria-expanded=\"false\">Filters</button></header>",
+        "<header class=\"masthead\"><div data-region=\"scope\"><p class=\"eyebrow\">Local analytical ledger · read-only</p><h1>Monthly ledger</h1><p class=\"scope\"><time>{}</time> through <time>{}</time> · Accounts: {} · Expense categories: {} · read {}</p></div><div class=\"masthead-actions\"><div class=\"refresh-status\" data-refresh-status role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Snapshot ready.</div><button type=\"button\" data-action=\"refresh\">Refresh</button><button type=\"button\" data-action=\"toggle-filters\" aria-expanded=\"false\">Filters</button></div></header>",
         escape(&snapshot.filters.start_date),
         escape(&snapshot.filters.end_date),
         escape(&accounts),
@@ -166,11 +166,11 @@ fn summary_item(
 }
 
 fn render_monthly(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
-    html.push_str("<section data-region=\"monthly\" aria-labelledby=\"monthly-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Flow over time</p><h2 id=\"monthly-heading\">Monthly activity</h2></div><div class=\"trend\" role=\"group\" aria-label=\"Monthly income and consumption expense trend\">");
+    html.push_str("<section data-region=\"monthly\" aria-labelledby=\"monthly-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Flow over time</p><h2 id=\"monthly-heading\">Monthly activity</h2><p id=\"trend-description\" class=\"visually-hidden\">Each month shows exact income and consumption expense amounts. The exact table follows the chart.</p></div><div class=\"trend\" role=\"group\" aria-label=\"Monthly income and consumption expense trend\" aria-describedby=\"trend-description\">");
     for month in &snapshot.monthly {
         write!(html, "<button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-month=\"{}\"><span>{}</span><span class=\"trend-income\">Income <b>{} {}</b></span><span class=\"trend-expense\">Expense <b>{} {}</b></span></button>", escape(&month.month), escape(&month.month), escape(&month.measures.income_minor), escape(currency), escape(&month.measures.consumption_expense_minor), escape(currency)).expect("writing to a String cannot fail");
     }
-    html.push_str("</div><div class=\"table-scroll\"><table><caption>Exact monthly amounts in minor units</caption><thead><tr><th scope=\"col\">Month</th><th scope=\"col\">Income</th><th scope=\"col\">Consumption expense</th><th scope=\"col\">Savings</th><th scope=\"col\">Investment contributions</th></tr></thead><tbody>");
+    html.push_str("</div><div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Exact monthly amounts by month and currency; horizontally scrollable when needed\"><table><caption>Exact monthly amounts in minor units</caption><thead><tr><th scope=\"col\">Month</th><th scope=\"col\">Income</th><th scope=\"col\">Consumption expense</th><th scope=\"col\">Savings</th><th scope=\"col\">Investment contributions</th></tr></thead><tbody>");
     for month in &snapshot.monthly {
         write!(
             html,
@@ -281,7 +281,12 @@ fn render_alert(
     let affected_position = position_index
         .map(|position| format!(" data-position-index=\"{position}\""))
         .unwrap_or_default();
-    write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-detail=\"alert\" data-index=\"{index}\" data-metric=\"investment_contribution\"{account}{affected_position}><span class=\"status status-{}\">{}</span><strong>{}</strong><small>{}</small></button></li>", escape(&alert.severity), escape(&alert.kind.replace('_', " ")), escape(subject), escape(&details.join(" · "))).expect("writing to a String cannot fail");
+    let instrument = alert
+        .instrument_id
+        .as_deref()
+        .map(|instrument| format!(" data-instrument=\"{}\"", escape(instrument)))
+        .unwrap_or_default();
+    write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-detail=\"alert\" data-record-id=\"{}\" data-index=\"{index}\" data-metric=\"investment_contribution\"{account}{instrument}{affected_position}><span class=\"status status-{}\">{}</span><strong>{}</strong><small>{}</small></button></li>", escape(&alert.id), escape(&alert.severity), escape(&alert.kind.replace('_', " ")), escape(subject), escape(&details.join(" · "))).expect("writing to a String cannot fail");
 }
 
 fn render_investments(html: &mut String, snapshot: &DashboardResponse) {
@@ -321,7 +326,8 @@ fn render_position(
         position.observed_value_minor.as_deref(),
         position.valuation_currency.as_deref(),
     );
-    write!(html, "<tr><th scope=\"row\"><button type=\"button\" data-action=\"open-drawer\" data-detail=\"position\" data-index=\"{index}\" data-metric=\"investment_contribution\" data-account=\"{}\">{}<small>{}</small></button></th><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"status status-{}\">{}</span></td><td>{}</td></tr>", escape(&position.account_id), escape(instrument), escape(&position.account_id), escape(quantity), escape(&cost), escape(&valuation), position.effective_date.as_deref().map(escape).unwrap_or_else(|| "Unavailable".into()), escape(&position.freshness), escape(&position.freshness), escape(&position.reconciliation_status)).expect("writing to a String cannot fail");
+    let instrument_id = position.instrument_id.as_deref().unwrap_or_default();
+    write!(html, "<tr><th scope=\"row\"><button type=\"button\" data-action=\"open-drawer\" data-detail=\"position\" data-index=\"{index}\" data-metric=\"investment_contribution\" data-account=\"{}\" data-instrument=\"{}\">{}<small>{}</small></button></th><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"status status-{}\">{}</span></td><td>{}</td></tr>", escape(&position.account_id), escape(instrument_id), escape(instrument), escape(&position.account_id), escape(quantity), escape(&cost), escape(&valuation), position.effective_date.as_deref().map(escape).unwrap_or_else(|| "Unavailable".into()), escape(&position.freshness), escape(&position.freshness), escape(&position.reconciliation_status)).expect("writing to a String cannot fail");
 }
 
 fn paired(value: Option<&str>, currency: Option<&str>) -> String {

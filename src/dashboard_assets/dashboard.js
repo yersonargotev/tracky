@@ -7,6 +7,7 @@
   const filterPanel = dashboard.querySelector("[data-filter-panel]");
   const drawer = document.querySelector("[data-drawer]");
   const drawerContent = drawer?.querySelector("[data-drawer-content]");
+  const refreshStatus = dashboard.querySelector("[data-refresh-status]");
   let snapshot = null;
   let returnFocus = null;
   let nextCursor = null;
@@ -29,6 +30,18 @@
   };
 
   const region = (name) => dashboard.querySelector(`[data-region="${name}"]`);
+
+  const announce = (message, state = "ready") => {
+    if (!refreshStatus) return;
+    refreshStatus.dataset.state = state;
+    refreshStatus.replaceChildren(document.createTextNode(message));
+    if (state === "stale") {
+      const retry = element("button", "Retry");
+      retry.type = "button";
+      retry.dataset.action = "refresh";
+      refreshStatus.append(" ", retry);
+    }
+  };
 
   const exact = (value) => {
     if (value === null) return "null";
@@ -93,9 +106,13 @@
     const parent = heading("monthly", "Monthly activity");
     if (!parent) return;
     if (!data.monthly.length) return empty(parent);
+    const description = element("p", "Each month shows exact income and consumption expense amounts. The exact table follows the chart.", "visually-hidden");
+    description.id = "trend-description";
+    parent.append(description);
     const trend = element("div", undefined, "trend");
     trend.setAttribute("role", "group");
     trend.setAttribute("aria-label", "Monthly income and consumption expense trend");
+    trend.setAttribute("aria-describedby", "trend-description");
     data.monthly.forEach((month) => {
       const label = element("span", exact(month.month));
       const income = element("span", `Income ${amount(month.income_minor, month.currency)}`, "trend-income");
@@ -106,8 +123,10 @@
     });
     parent.append(trend);
     const scroll = element("div", undefined, "table-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute("role", "region");
+    scroll.setAttribute("aria-label", "Exact monthly amounts by month and currency; horizontally scrollable when needed");
     const table = element("table");
-    table.setAttribute("aria-label", "Monthly income and consumption expense trend");
     table.append(element("caption", "Exact monthly amounts in minor units"));
     const head = element("thead");
     const headRow = element("tr");
@@ -165,9 +184,11 @@
         alert.account_id === position.account_id && (!alert.instrument_id || alert.instrument_id === position.instrument_id));
       item.append(actionButton(content, {
         detail: "alert",
+        recordId: alert.id,
         index,
         metric: "investment_contribution",
         account: alert.account_id,
+        instrument: alert.instrument_id,
         positionIndex: positionIndex >= 0 ? positionIndex : null,
       }));
       list.append(item);
@@ -205,11 +226,24 @@
         index,
         metric: "investment_contribution",
         account: position.account_id,
+        instrument: position.instrument_id,
       }));
       list.append(item);
     });
     if (list.children.length) parent.append(list);
     else if (!data.investments.flows.length) empty(parent);
+  };
+
+  const renderValidEmpty = () => {
+    const summary = region("summary");
+    summary?.replaceChildren(
+      element("p", "Valid empty ledger", "eyebrow"),
+      element("h2", "No currency activity"),
+      element("p", "Add canonical activity with the Tracky CLI, then refresh the dashboard.", "empty"),
+    );
+    ["monthly", "categories", "accounts", "alerts", "investments"].forEach((name) => {
+      region(name)?.replaceChildren();
+    });
   };
 
   const renderSnapshot = (data) => {
@@ -242,6 +276,11 @@
         choices.append(button);
       });
       currency.append(choices);
+    }
+    if (data.state === "empty") {
+      renderValidEmpty();
+      syncFilterControls(data);
+      return;
     }
     renderSummary(data);
     renderMonthly(data);
@@ -333,11 +372,67 @@
       if (filterPanel) filterPanel.hidden = true;
       const toggle = dashboard.querySelector('[data-action="toggle-filters"]');
       toggle?.setAttribute("aria-expanded", "false");
+      announce("Filters applied. Dashboard updated.");
+    } catch (_) {
+      announce("Dashboard could not apply those filters. The previous results remain available.", "stale");
     } finally {
       requestInFlight = false;
       trigger.disabled = false;
       dashboard.removeAttribute("aria-busy");
     }
+  };
+
+  const refreshSnapshot = async (trigger) => {
+    if (requestInFlight) return;
+    requestInFlight = true;
+    trigger.disabled = true;
+    dashboard.setAttribute("aria-busy", "true");
+    announce("Refreshing dashboard…", "loading");
+    const openDrawerTrigger = drawer && drawer.open ? returnFocus : null;
+    let refreshedTrigger = null;
+    try {
+      const data = await fetchJson("api/v1/dashboard/refresh", filterParams());
+      if (openDrawerTrigger) closeDrawer(false);
+      renderSnapshot(data);
+      if (openDrawerTrigger) refreshedTrigger = matchingDrawerTrigger(openDrawerTrigger);
+      announce("Dashboard refreshed. Updated snapshot is ready.");
+      if (!refreshedTrigger) dashboard.querySelector('.masthead [data-action="refresh"]')?.focus();
+    } catch (_) {
+      announce("Refresh failed. Showing the last good snapshot. Retry when ready.", "stale");
+      if (openDrawerTrigger && drawer?.open && drawerContent) {
+        drawerContent.querySelector("[data-drawer-refresh-error]")?.remove();
+        const error = element("div", undefined, "drawer-refresh-error");
+        error.dataset.drawerRefreshError = "";
+        error.setAttribute("role", "status");
+        error.setAttribute("aria-live", "polite");
+        error.append(element("p", "Refresh failed. Showing the last good detail."));
+        const retry = element("button", "Retry");
+        retry.type = "button";
+        retry.dataset.action = "refresh";
+        error.append(retry);
+        drawerContent.prepend(error);
+        retry.focus();
+      } else {
+        refreshStatus?.querySelector('[data-action="refresh"]')?.focus();
+      }
+    } finally {
+      requestInFlight = false;
+      trigger.disabled = false;
+      dashboard.removeAttribute("aria-busy");
+    }
+    if (refreshedTrigger) {
+      if (refreshedTrigger.dataset.detail) await openRecord(refreshedTrigger);
+      else await openDrill(refreshedTrigger);
+      announce("Dashboard refreshed. Updated snapshot is ready.");
+    }
+  };
+
+  const matchingDrawerTrigger = (previous) => {
+    const keys = previous.dataset.detail
+      ? ["detail", "recordId", "account", "instrument"]
+      : ["metric", "month", "account", "category"];
+    return Array.from(dashboard.querySelectorAll('[data-action="open-drawer"]')).find((candidate) =>
+      keys.every((key) => (previous.dataset[key] || "") === (candidate.dataset[key] || ""))) || null;
   };
 
   const detailList = (record) => {
@@ -356,18 +451,16 @@
       element("h2", title),
       content,
     );
-    drawer.hidden = false;
     document.querySelector(".drawer-scrim")?.removeAttribute("hidden");
     if (typeof drawer.showModal === "function" && !drawer.open) drawer.showModal();
     drawer.querySelector('[data-action="close-drawer"]')?.focus();
   };
 
-  const closeDrawer = () => {
-    if (!drawer || drawer.hidden) return;
+  const closeDrawer = (restoreFocus = true) => {
+    if (!drawer || !drawer.open) return;
     if (typeof drawer.close === "function" && drawer.open) drawer.close();
-    drawer.hidden = true;
     document.querySelector(".drawer-scrim")?.setAttribute("hidden", "");
-    returnFocus?.focus();
+    if (restoreFocus) returnFocus?.focus();
     returnFocus = null;
     nextCursor = null;
     activeDrill = null;
@@ -392,6 +485,9 @@
 
   const rowsTable = (rows) => {
     const scroll = element("div", undefined, "table-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute("role", "region");
+    scroll.setAttribute("aria-label", "Canonical rows; horizontally scrollable when needed");
     const table = element("table");
     const head = element("thead");
     const headRow = element("tr");
@@ -435,6 +531,7 @@
         wrapper.append(more);
       }
       showDrawer(exact(data.metric), wrapper, button);
+      announce("Canonical detail opened.");
     } finally {
       requestInFlight = false;
     }
@@ -476,6 +573,7 @@
         }
       }
       showDrawer(title, wrapper, button);
+      announce("Canonical detail opened.");
     } finally {
       requestInFlight = false;
     }
@@ -491,6 +589,7 @@
       Array.from(page.body.children).forEach((row) => activeDrill.body.append(row));
       nextCursor = data.next_cursor;
       if (!nextCursor) button.remove();
+      announce(nextCursor ? "More canonical rows loaded." : "All canonical rows loaded.");
     } finally {
       requestInFlight = false;
       if (button.isConnected) button.disabled = false;
@@ -520,6 +619,9 @@
     } else if (action === "apply-filters") {
       event.preventDefault();
       applyFilters(button).catch(() => {});
+    } else if (action === "refresh") {
+      event.preventDefault();
+      refreshSnapshot(button).catch(() => {});
     } else if (action === "close-drawer") {
       closeDrawer();
     } else if (action === "load-more") {
@@ -534,7 +636,17 @@
   });
 
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && drawer && !drawer.hidden) {
+    if (event.key === "Tab" && drawer?.open) {
+      const focusable = Array.from(drawer.querySelectorAll("button, input, select, textarea, [tabindex]:not([tabindex='-1'])"))
+        .filter((node) => !node.disabled && node.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (first && last && (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    }
+    if (event.key === "Escape" && drawer?.open) {
       event.preventDefault();
       closeDrawer();
     }

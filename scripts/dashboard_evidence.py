@@ -16,6 +16,7 @@ TEMPLATE = EVIDENCE / "dashboard-verification.template.json"
 SCHEMA = EVIDENCE / "dashboard-verification.schema.json"
 INVENTORY = EVIDENCE / "dependency-inventory.json"
 NOTICES_FILE = ROOT / "THIRD-PARTY-NOTICES"
+MANUAL_ACCESSIBILITY = EVIDENCE / "manual-accessibility-checklist.md"
 ASSETS = ROOT / "src" / "dashboard_assets"
 TARGETS = {
     "aarch64-apple-darwin",
@@ -45,6 +46,19 @@ REQUIRED_RELEASE_GATES = {
 }
 REQUIRED_RELEASE_BROWSERS = {"safari", "firefox-esr", "chromium"}
 REQUIRED_MEASUREMENT_GROUPS = {"latency", "resources", "sizes"}
+REQUIRED_MANUAL_ACCESSIBILITY_CHECKS = {
+    "Keyboard-only operation",
+    "Visible and restored focus",
+    "VoiceOver with Safari",
+    "Orca with Firefox",
+    "200 percent zoom",
+    "320 CSS pixel reflow",
+    "WCAG 2.2 AA contrast",
+    "Pointer target size",
+    "Reduced motion",
+    "Refresh and error announcements",
+    "No color-only meaning",
+}
 
 
 def read_json(path):
@@ -59,6 +73,17 @@ def canonical_json(value):
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def validate_manual_accessibility_checklist(content):
+    require("Status: not run" in content, "manual accessibility checklist must remain not run until signed")
+    require("Status: pass" not in content, "manual accessibility checklist must not pre-claim passage")
+    require(
+        all(("| %s |" % check) in content for check in REQUIRED_MANUAL_ACCESSIBILITY_CHECKS),
+        "manual accessibility checklist is missing required release checks",
+    )
+    for field in ("Commit", "Target", "Operating system", "Browser and version", "Tester", "Date"):
+        require("- %s:" % field in content, "manual accessibility checklist is missing %s" % field)
 
 
 def validate_baseline(value):
@@ -253,6 +278,8 @@ def check_all():
     validate_manifest(read_json(TEMPLATE))
     write_or_check(INVENTORY, dependency_inventory(), True)
     require(NOTICES_FILE.exists() and "THIRD-PARTY NOTICES" in NOTICES_FILE.read_text(encoding="utf-8"), "THIRD-PARTY-NOTICES is missing")
+    require(MANUAL_ACCESSIBILITY.exists(), "manual accessibility checklist is missing")
+    validate_manual_accessibility_checklist(MANUAL_ACCESSIBILITY.read_text(encoding="utf-8"))
     compare_static(ASSETS, baseline)
 
 

@@ -69,3 +69,9 @@ progress. Release validation fails unless every recorded gate passes and an
 identified maintainer approves the evidence. The JSON Schema beside the template
 is the interchange contract; the Python validator is the fail-closed CI entry
 point and the Markdown renderer consumes that same validated input.
+
+The named manual WCAG release-candidate inputs live in
+`evidence/dashboard/manual-accessibility-checklist.md`. They intentionally remain
+`not run` during implementation; browser automation must not pre-claim
+VoiceOver, Orca, keyboard, zoom, contrast, target, motion, announcement, or
+non-color passage.

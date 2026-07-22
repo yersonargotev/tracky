@@ -422,22 +422,107 @@ fn database_upgrade_marks_tracky_legacy_database_and_refuses_unrelated_sqlite() 
 }
 
 #[test]
-fn dashboard_uses_its_single_pre_listener_snapshot_until_explicit_refresh_exists() {
+fn dashboard_rereads_only_on_explicit_refresh_and_retains_last_good_snapshot_on_failure() {
     let root = tempfile::tempdir().expect("sandbox");
     let database = fixture_database(root.path());
     let mut dashboard = RunningDashboard::start(root.path(), &database);
     Connection::open(&database)
         .unwrap()
-        .execute(
-            "INSERT INTO canonical_transactions(id, account_id, posted_date, description, amount_minor, currency, transaction_kind, income_source_id, income_kind) VALUES ('post-start-income', 'cop-checking', '2026-03-01', 'Post-start income', 999999, 'COP', 'income', 'salary', 'salary')",
-            [],
-        )
+        .execute_batch(include_str!(
+            "fixtures/dashboard/mutations/refresh-success.sql"
+        ))
         .unwrap();
+    let after_external_success = database_artifact_bytes(&database);
 
     let path = url_parts(&dashboard.url).1.to_string();
-    let response = request(&dashboard.url, "GET", &path, &[]);
-    assert_eq!(response.status, 200);
-    assert!(!response.body.contains("999999"));
+    let filters = "account=cop-checking&category=food";
+    let unchanged = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard?{filters}"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(unchanged.status, 200, "{unchanged:?}");
+    let unchanged: serde_json::Value = serde_json::from_str(&unchanged.body).unwrap();
+    assert_eq!(
+        unchanged["summary"]["consumption_expense_minor"], "100000",
+        "ordinary filter actions must remain on the initial snapshot"
+    );
+
+    let refreshed = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard/refresh?{filters}"),
+        &[
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Mode", "cors"),
+        ],
+    );
+    assert_eq!(refreshed.status, 200, "{refreshed:?}");
+    assert_defensive_headers(&refreshed);
+    let refreshed: serde_json::Value = serde_json::from_str(&refreshed.body).unwrap();
+    assert_eq!(refreshed["summary"]["consumption_expense_minor"], "110000");
+    assert_eq!(
+        refreshed["filters"]["account_ids"],
+        serde_json::json!(["cop-checking"])
+    );
+    assert_eq!(
+        refreshed["filters"]["category_ids"],
+        serde_json::json!(["food"])
+    );
+    assert_eq!(database_artifact_bytes(&database), after_external_success);
+
+    let unavailable_source = root.path().join("unavailable-source.sqlite");
+    fs::rename(&database, &unavailable_source).unwrap();
+    let unavailable_source_bytes = fs::read(&unavailable_source).unwrap();
+    let after_external_failure = database_artifact_bytes(&database);
+    let failed = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard/refresh?{filters}"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(failed.status, 503, "{failed:?}");
+    assert_defensive_headers(&failed);
+    let failure: serde_json::Value = serde_json::from_str(&failed.body).unwrap();
+    assert_eq!(failure["state"], "stale");
+    assert_eq!(failure["errors"][0]["code"], "dashboard_refresh_failed");
+    assert!(!failed.body.contains(database.to_string_lossy().as_ref()));
+
+    let retained = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard?{filters}"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    let retained: serde_json::Value = serde_json::from_str(&retained.body).unwrap();
+    assert_eq!(
+        retained["summary"]["consumption_expense_minor"], "110000",
+        "failed refresh must leave the last-good snapshot available"
+    );
+    assert_eq!(database_artifact_bytes(&database), after_external_failure);
+    assert_eq!(
+        fs::read(&unavailable_source).unwrap(),
+        unavailable_source_bytes
+    );
+
+    drop(Connection::open(&database).unwrap());
+    let incompatible = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard/refresh?{filters}"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(incompatible.status, 409, "{incompatible:?}");
+    let incompatibility: serde_json::Value = serde_json::from_str(&incompatible.body).unwrap();
+    assert_eq!(incompatibility["state"], "incompatible_schema");
+    assert_eq!(
+        incompatibility["errors"][0]["code"],
+        "dashboard_schema_incompatible"
+    );
+    assert!(!incompatible
+        .body
+        .contains(database.to_string_lossy().as_ref()));
     dashboard.stop();
 }
 
@@ -805,10 +890,12 @@ fn dashboard_rejects_adversarial_http_without_leaking_data_or_capability() {
     let path = url_parts(&dashboard.url).1.to_string();
     let wrong_capability = format!("{path}x");
     let unknown_v1 = format!("{path}api/v1/private");
+    let refresh = format!("{path}api/v1/dashboard/refresh");
     let cases = [
         ("GET", wrong_capability.as_str(), vec![]),
         ("GET", unknown_v1.as_str(), vec![]),
         ("POST", path.as_str(), vec![]),
+        ("POST", refresh.as_str(), vec![]),
         ("GET", "/", vec![]),
         ("GET", "/../tracky.sqlite", vec![]),
         ("GET", path.as_str(), vec![("Sec-Fetch-Site", "cross-site")]),
