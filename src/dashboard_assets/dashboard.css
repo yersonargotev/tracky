@@ -1,0 +1,11 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { max-width: 72rem; margin: 0 auto; padding: 1.5rem; line-height: 1.5; }
+h1, h2 { line-height: 1.2; }
+.scope, .empty { padding: 1rem; border: 1px solid currentColor; border-radius: .5rem; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 1rem; padding: 0; list-style: none; }
+.summary li { border: 1px solid currentColor; border-radius: .5rem; padding: 1rem; }
+.summary strong { display: block; font-size: 1.25rem; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .65rem; border-bottom: 1px solid currentColor; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+@media (max-width: 32rem) { body { padding: 1rem; } table { font-size: .875rem; } }

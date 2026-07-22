@@ -1,3 +1,4 @@
+use crate::storage::TRACKY_SCHEMA_GENERATION;
 use anyhow::{Context, Result};
 use rusqlite::{backup::Backup, types::ValueRef, Connection, OpenFlags};
 use serde::Serialize;
@@ -8,7 +9,6 @@ use std::path::{Path, PathBuf};
 pub const BACKUP_SCHEMA_VERSION: &str = "tracky.backup.v1";
 pub const INTEGRITY_SCHEMA_VERSION: &str = "tracky.integrity.v1";
 pub const EXPORT_SCHEMA_VERSION: &str = "tracky.export.v1";
-const EXPECTED_USER_VERSION: i64 = 1;
 
 #[derive(Debug, Serialize)]
 pub struct OperationError {
@@ -226,7 +226,7 @@ pub fn integrity(path: &Path) -> IntegrityResponse {
         }
     }
     r.user_version = c.query_row("PRAGMA user_version", [], |x| x.get(0)).ok();
-    if r.user_version != Some(EXPECTED_USER_VERSION) {
+    if r.user_version != Some(TRACKY_SCHEMA_GENERATION) {
         r.findings.push(IntegrityFinding {
             category: FindingCategory::SchemaIncompatibility,
             code: "unsupported_schema_version",

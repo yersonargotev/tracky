@@ -1,5 +1,5 @@
 use rusqlite::{params, Connection, Error};
-use tracky::storage::apply_migrations;
+use tracky::storage::{apply_migrations, TRACKY_APPLICATION_ID, TRACKY_SCHEMA_GENERATION};
 
 fn temporary_database() -> (tempfile::TempDir, Connection) {
     let dir = tempfile::tempdir().expect("create temp dir");
@@ -37,9 +37,27 @@ fn migrations_create_review_first_tables() {
     let user_version: i64 = connection
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read user_version");
+    let application_id: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .expect("read application_id");
 
     assert_eq!(table_count, 9);
-    assert_eq!(user_version, 1);
+    assert_eq!(user_version, TRACKY_SCHEMA_GENERATION);
+    assert_eq!(application_id, TRACKY_APPLICATION_ID);
+}
+
+#[test]
+fn migrations_never_downgrade_a_future_schema_generation() {
+    let (_dir, connection) = temporary_database();
+    connection
+        .pragma_update(None, "user_version", TRACKY_SCHEMA_GENERATION + 1)
+        .expect("mark future schema generation");
+
+    assert!(apply_migrations(&connection).is_err());
+    let generation: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read preserved generation");
+    assert_eq!(generation, TRACKY_SCHEMA_GENERATION + 1);
 }
 
 #[test]

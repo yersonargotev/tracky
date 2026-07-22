@@ -5,7 +5,7 @@ use crate::pdf::{
     DuplicateStatusState, PdfInspectResponse, SemanticHint, SourceDocument, TrackyError,
 };
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
@@ -20,6 +20,195 @@ pub const MANUAL_TRANSACTIONS_SCHEMA_VERSION: &str = "tracky.manual-transactions
 pub const TRANSACTION_LEDGER_SCHEMA_VERSION: &str = "tracky.transactions.v1";
 pub const FINANCE_REPORT_SCHEMA_VERSION: &str = "tracky.finance-report.v1";
 pub const BATCH_REVIEW_SCHEMA_VERSION: &str = "tracky.batch-review.v1";
+pub const TRACKY_APPLICATION_ID: i64 = 0x5452_4b59;
+pub const TRACKY_SCHEMA_GENERATION: i64 = 2;
+
+pub fn dashboard_schema_is_compatible(connection: &Connection) -> Result<bool> {
+    let tables = [
+        "accounts",
+        "canonical_transactions",
+        "canonical_transfer_pairs",
+        "transaction_lines",
+        "categories",
+        "income_sources",
+        "brokerage_operation_heads",
+        "brokerage_operation_revisions",
+    ];
+    let columns = [
+        ("accounts", "currency"),
+        ("canonical_transactions", "posted_date"),
+        ("canonical_transactions", "amount_minor"),
+        ("canonical_transactions", "currency"),
+        ("canonical_transactions", "transaction_kind"),
+        ("canonical_transactions", "income_source_id"),
+        ("canonical_transactions", "investment_allocation_status"),
+        ("canonical_transfer_pairs", "transfer_kind"),
+        ("canonical_transfer_pairs", "posted_date"),
+        ("canonical_transfer_pairs", "amount_minor"),
+        ("canonical_transfer_pairs", "currency"),
+        ("transaction_lines", "canonical_transaction_id"),
+        ("transaction_lines", "category_id"),
+        ("transaction_lines", "amount_minor"),
+        ("transaction_lines", "currency"),
+        ("transaction_lines", "line_kind"),
+        ("categories", "id"),
+        ("categories", "name"),
+        ("income_sources", "id"),
+        ("income_sources", "name"),
+        ("brokerage_operation_heads", "current_revision_id"),
+        ("brokerage_operation_revisions", "id"),
+        ("brokerage_operation_revisions", "operation_type"),
+        ("brokerage_operation_revisions", "effective_date"),
+        ("brokerage_operation_revisions", "currency"),
+        ("brokerage_operation_revisions", "gross_amount_minor"),
+    ];
+    let indexes = [
+        "idx_transaction_lines_canonical",
+        "idx_transaction_lines_category",
+        "idx_canonical_transfer_pairs_from_candidate",
+        "idx_canonical_transfer_pairs_to_candidate",
+        "idx_brokerage_account",
+    ];
+    if !required_tables_exist(connection, &tables)? {
+        return Ok(false);
+    }
+    if !required_columns_exist(connection, &columns)? {
+        return Ok(false);
+    }
+    Ok(required_indexes_exist(connection, &indexes)?)
+}
+
+fn required_columns_exist(
+    connection: &Connection,
+    columns: &[(&str, &str)],
+) -> rusqlite::Result<bool> {
+    for (table, column) in columns {
+        let exists: i64 = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+            params![table, column],
+            |row| row.get(0),
+        )?;
+        if exists != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn required_indexes_exist(connection: &Connection, indexes: &[&str]) -> rusqlite::Result<bool> {
+    for index in indexes {
+        let exists: i64 = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
+            [index],
+            |row| row.get(0),
+        )?;
+        if exists != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn required_tables_exist(connection: &Connection, tables: &[&str]) -> rusqlite::Result<bool> {
+    for table in tables {
+        let exists: i64 = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if exists != 1 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+pub fn upgrade_tracky_database(path: &std::path::Path) -> Result<()> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(|_| anyhow::anyhow!("existing database could not be opened for upgrade"))?;
+    let application_id: i64 = connection
+        .query_row("PRAGMA application_id", [], |row| row.get(0))
+        .map_err(|_| anyhow::anyhow!("database identity could not be read"))?;
+    let generation: i64 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|_| anyhow::anyhow!("database identity could not be read"))?;
+    if application_id == TRACKY_APPLICATION_ID && generation == TRACKY_SCHEMA_GENERATION {
+        if dashboard_schema_is_compatible(&connection)? {
+            return Ok(());
+        }
+        anyhow::bail!("Tracky database schema is incomplete");
+    }
+    let legacy_tables = required_tables_exist(
+        &connection,
+        &[
+            "institutions",
+            "accounts",
+            "source_documents",
+            "import_batches",
+            "candidate_transactions",
+            "provenance",
+            "canonical_transactions",
+            "transaction_fingerprints",
+            "transaction_duplicate_markers",
+        ],
+    )
+    .map_err(|_| anyhow::anyhow!("legacy database capabilities could not be read"))?;
+    let legacy_columns = required_columns_exist(
+        &connection,
+        &[
+            ("institutions", "id"),
+            ("institutions", "name"),
+            ("accounts", "id"),
+            ("accounts", "institution_id"),
+            ("accounts", "currency"),
+            ("source_documents", "id"),
+            ("source_documents", "content_sha256"),
+            ("source_documents", "mime_type"),
+            ("import_batches", "id"),
+            ("import_batches", "source_document_id"),
+            ("candidate_transactions", "id"),
+            ("candidate_transactions", "source_document_id"),
+            ("candidate_transactions", "status"),
+            ("candidate_transactions", "fingerprint"),
+            ("provenance", "source_document_id"),
+            ("provenance", "candidate_transaction_id"),
+            ("provenance", "page_number"),
+            ("canonical_transactions", "id"),
+            ("canonical_transactions", "posted_date"),
+            ("canonical_transactions", "amount_minor"),
+            ("canonical_transactions", "currency"),
+            ("transaction_fingerprints", "candidate_transaction_id"),
+            ("transaction_duplicate_markers", "candidate_transaction_id"),
+        ],
+    )
+    .map_err(|_| anyhow::anyhow!("legacy database capabilities could not be read"))?;
+    let legacy_indexes = required_indexes_exist(
+        &connection,
+        &[
+            "idx_source_documents_content_sha256",
+            "idx_import_batches_source_document_id",
+            "idx_candidate_transactions_source_document",
+            "idx_candidate_transactions_status",
+            "idx_candidate_transactions_fingerprint",
+            "idx_provenance_candidate_transaction",
+            "idx_transaction_duplicate_markers_candidate",
+        ],
+    )
+    .map_err(|_| anyhow::anyhow!("legacy database capabilities could not be read"))?;
+    let recognized = legacy_tables && legacy_columns && legacy_indexes;
+    if application_id != 0 || generation != 1 || !recognized {
+        anyhow::bail!("database is not a recognized legacy Tracky database");
+    }
+    apply_migrations(&connection)
+        .map_err(|_| anyhow::anyhow!("Tracky database upgrade failed safely"))?;
+    if !dashboard_schema_is_compatible(&connection)? {
+        anyhow::bail!("Tracky database upgrade did not complete");
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountRegisterInput {
@@ -790,6 +979,16 @@ const INCOME_KINDS: &[&str] = &[
 
 /// Apply Tracky's SQLite migrations needed for the review-first import store.
 pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
+    let application_id: i64 =
+        connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
+    let schema_generation: i64 =
+        connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if application_id != 0 && application_id != TRACKY_APPLICATION_ID {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    if schema_generation > TRACKY_SCHEMA_GENERATION {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     connection.execute_batch(REVIEW_FIRST_SCHEMA)?;
     migrate_cdt_enrichment_vocabulary(connection)?;
     migrate_canonical_transfer_pair_kind_check(connection)?;
@@ -957,7 +1156,9 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_canonical_investment_fee_component
             ON canonical_transactions(investment_fee_component_id)
             WHERE investment_fee_component_id IS NOT NULL;",
-    )
+    )?;
+    connection.pragma_update(None, "application_id", TRACKY_APPLICATION_ID)?;
+    connection.pragma_update(None, "user_version", TRACKY_SCHEMA_GENERATION)
 }
 
 fn migrate_cdt_enrichment_vocabulary(connection: &Connection) -> rusqlite::Result<()> {

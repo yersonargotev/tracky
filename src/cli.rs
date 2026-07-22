@@ -9,6 +9,7 @@ use crate::cdt::{
     CdtOperationReplacementInput, CdtRedemptionInput, CdtRenewalInput, CdtResponse, CdtTermsInput,
 };
 use crate::cdt_provider_enrichment;
+use crate::dashboard;
 use crate::investment_documents;
 use crate::investment_reports::{self, InvestmentReportResponse};
 use crate::investments::{
@@ -42,9 +43,9 @@ use crate::storage::{
     register_owned_account, reject_candidate, replace_expense_transaction_lines,
     review_error_response, suggest_batch_actions_in_range, summarize_finances,
     summarize_import_batch, transfer_error_response, update_canonical_transaction,
-    AccountRegisterInput, AccountRegistryResponse, BatchActionRequest, BatchReviewResponse,
-    CandidateReviewResponse, CategoryCreateInput, CategoryRegistryResponse, ExpenseLineInput,
-    FinanceReportResponse, ImportPdfResponse, IncomeSourceCreateInput,
+    upgrade_tracky_database, AccountRegisterInput, AccountRegistryResponse, BatchActionRequest,
+    BatchReviewResponse, CandidateReviewResponse, CategoryCreateInput, CategoryRegistryResponse,
+    ExpenseLineInput, FinanceReportResponse, ImportPdfResponse, IncomeSourceCreateInput,
     IncomeSourceRegistryResponse, ManualExpenseInput, ManualIncomeInput, ManualInvestmentInput,
     ManualTransactionResponse, ManualTransferInput, TransactionLedgerResponse,
     TransactionListFilter, TransactionUpdateInput, TransferReviewResponse,
@@ -111,6 +112,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    #[command(hide = true)]
+    Dashboard(DashboardArgs),
+    Database(DatabaseCommand),
     Backup(BackupArgs),
     Integrity(IntegrityArgs),
     Export(ExportArgs),
@@ -128,6 +132,37 @@ enum Commands {
     Brokerages(BrokeragesCommand),
     Snapshots(SnapshotsCommand),
     InvestmentDocuments(InvestmentDocumentsCommand),
+}
+
+#[derive(Debug, Parser)]
+struct DashboardArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
+    #[arg(long = "start-date", value_name = "YYYY-MM-DD")]
+    start_date: Option<String>,
+    #[arg(long = "end-date", value_name = "YYYY-MM-DD")]
+    end_date: Option<String>,
+    #[arg(long, value_name = "ISO")]
+    currency: Option<String>,
+    #[arg(long)]
+    no_open: bool,
+}
+
+#[derive(Debug, Parser)]
+struct DatabaseCommand {
+    #[command(subcommand)]
+    command: DatabaseCommands,
+}
+
+#[derive(Debug, Subcommand)]
+enum DatabaseCommands {
+    Upgrade(DatabaseUpgradeArgs),
+}
+
+#[derive(Debug, Parser)]
+struct DatabaseUpgradeArgs {
+    #[arg(long, value_name = "PATH")]
+    db: PathBuf,
 }
 
 #[derive(Debug, Parser)]
@@ -1485,6 +1520,23 @@ where
     W: Write,
 {
     match cli.command {
+        Commands::Dashboard(args) => dashboard::serve(
+            dashboard::DashboardOptions {
+                db: args.db,
+                start_date: args.start_date,
+                end_date: args.end_date,
+                currency: args.currency,
+                no_open: args.no_open,
+            },
+            &mut stdout,
+        ),
+        Commands::Database(database) => match database.command {
+            DatabaseCommands::Upgrade(args) => {
+                upgrade_tracky_database(&args.db)?;
+                writeln!(stdout, "Tracky database upgraded to generation 2.")?;
+                Ok(0)
+            }
+        },
         Commands::Backup(args) => {
             require_json(args.json, "backup")?;
             let destination = args.destination.unwrap_or_else(|| {

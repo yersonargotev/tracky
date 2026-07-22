@@ -42,35 +42,35 @@ the database byte-for-byte and providing an explicit legacy upgrade path.
 
 **Blocked by:** Freeze dashboard release evidence baseline.
 
-- [ ] Identify Tracky databases with SQLite `application_id` and monotonic
+- [x] Identify Tracky databases with SQLite `application_id` and monotonic
   `user_version`, treating generation 2 as the first dashboard-compatible
   generation and committing markers only after successful writable migrations.
-- [ ] Provide an explicit database-upgrade command that recognizes legacy Tracky
+- [x] Provide an explicit database-upgrade command that recognizes legacy Tracky
   capabilities before writing, upgrades safely, and refuses unrelated SQLite
   files with actionable sanitized errors.
-- [ ] Establish one shared immutable/read-only, query-only, capability-validating
+- [x] Establish one shared immutable/read-only, query-only, capability-validating
   database boundary and one caller-owned read transaction per response without
   changing canonical CLI report semantics.
-- [ ] Launch the hidden foreground dashboard with the confirmed default dates,
+- [x] Launch the hidden foreground dashboard with the confirmed default dates,
   date overrides, deterministic currency selection, currency override, and
   `--no-open`; validate every startup argument before listener creation.
-- [ ] Render exact monthly income, consumption expense, savings/net cash flow,
+- [x] Render exact monthly income, consumption expense, savings/net cash flow,
   and investment contributions plus a semantic table in Rust, including the
   valid no-currency empty state and no provisional public `v1` API.
-- [ ] Bind only literal `127.0.0.1:0`, generate an independent capability with at
+- [x] Bind only literal `127.0.0.1:0`, generate an independent capability with at
   least 128 bits of entropy, print its URL only after readiness, and treat
   browser-open failure as non-fatal.
-- [ ] Accept only `GET` on exact capability-bearing routes and enforce Host,
+- [x] Accept only `GET` on exact capability-bearing routes and enforce Host,
   Fetch Metadata, method, path, traversal, CSP, frame, referrer, MIME, cache,
   same-origin, no-CORS, sanitized logging, and zero-external-request policies on
   success and error responses.
-- [ ] Embed all assets in the binary, render useful exact content without
+- [x] Embed all assets in the binary, render useful exact content without
   JavaScript, and use fixed CSS/JavaScript only for progressive enhancement.
-- [ ] Pass the real-process security matrix, secret-decoy non-disclosure,
+- [x] Pass the real-process security matrix, secret-decoy non-disclosure,
   immutable-database checks, fatal pre-listener failures, concurrent-instance
   isolation, and bounded Ctrl-C/SIGTERM cleanup with no descendants, sockets,
   runtime assets, or temporary files left behind.
-- [ ] Add all new evidence to the permanent pull-request gates while keeping the
+- [x] Add all new evidence to the permanent pull-request gates while keeping the
   command hidden from general help.
 
 ## Complete dashboard finance filters and drill-down
