@@ -167,7 +167,8 @@ def start_dashboard(binary, db, env, timeout=15):
     started = time.perf_counter()
     process = subprocess.Popen([str(binary), "dashboard", "--db", str(db), "--start-date", "2016-01-01",
                                 "--end-date", "2025-12-31", "--currency", "COP", "--no-open"],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                               start_new_session=True)
     lines = queue.Queue()
 
     def read_stdout():
@@ -194,7 +195,7 @@ def start_dashboard(binary, db, env, timeout=15):
             raise RuntimeError("dashboard exited before printing its ready URL")
         if process.poll() is not None:
             raise RuntimeError("dashboard exited before readiness: " + process.stderr.read().strip())
-    process.kill()
+    os.killpg(process.pid, signal.SIGKILL)
     process.wait()
     reader.join(timeout=1)
     process.stdout.close()
