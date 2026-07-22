@@ -668,6 +668,31 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
 }
 
 #[test]
+fn dashboard_does_not_create_wal_sidecars_for_a_quiescent_database() {
+    let root = tempfile::tempdir().expect("sandbox");
+    let mut database = fixture_database(root.path());
+    let connection = Connection::open(&database).expect("open fixture database");
+    connection
+        .pragma_update(None, "journal_mode", "WAL")
+        .expect("enable WAL mode");
+    drop(connection);
+    let encoded_path = root.path().join("Tracky ? #% café.sqlite");
+    fs::rename(&database, &encoded_path).expect("move fixture to an encoded URI path");
+    database = encoded_path;
+    let before = database_artifact_bytes(&database);
+    assert_eq!(
+        before.len(),
+        1,
+        "quiescent fixture must have no WAL sidecars"
+    );
+
+    let mut dashboard = RunningDashboard::start(root.path(), &database);
+    dashboard.stop();
+
+    assert_eq!(database_artifact_bytes(&database), before);
+}
+
+#[test]
 fn embedded_monthly_ledger_assets_are_progressive_local_and_within_budget() {
     let root = tempfile::tempdir().expect("sandbox");
     let database = fixture_database(root.path());

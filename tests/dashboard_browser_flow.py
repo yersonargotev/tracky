@@ -33,12 +33,24 @@ def run_script(session, script, sentinel, env, cwd):
 
 
 def open_session(session, url, browser, env, cwd):
-    run(
-        ["playwright-cli", f"-s={session}", "open", url, f"--browser={browser}"],
-        env,
-        cwd=cwd,
-        capture_output=True,
-    )
+    result = None
+    for attempt in range(2):
+        result = subprocess.run(
+            ["playwright-cli", f"-s={session}", "open", url, f"--browser={browser}"],
+            env=env,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return
+        close_session(session, env, cwd)
+        if attempt == 0:
+            time.sleep(1)
+    capability = url.rstrip("/").rsplit("/", 1)[-1]
+    diagnostic = (result.stderr or result.stdout).replace(url, "[dashboard-url]")
+    diagnostic = diagnostic.replace(capability, "[redacted-capability]")
+    raise RuntimeError(f"browser session failed after retry: {diagnostic.strip()}")
 
 
 def close_session(session, env, cwd):

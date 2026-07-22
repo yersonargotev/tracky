@@ -74,9 +74,12 @@ jobs:
           python3 -m unittest tests/dashboard_evidence_tool.py
           python3 scripts/dashboard_evidence.py check
       - name: Verify dependency inventory and notices
+        shell: bash
         run: |
+          set -o pipefail
           python3 scripts/dashboard_evidence.py inventory
-          cargo-about generate --locked evidence/dashboard/third-party-notices.hbs \
-            | python3 -c 'import sys; print("\\n".join(line.rstrip() for line in sys.stdin.read().rstrip().splitlines()))' \
+          cargo-about generate --frozen evidence/dashboard/third-party-notices.hbs \
+            | python3 -c 'import sys; print("\n".join(line.rstrip() for line in sys.stdin.read().rstrip().splitlines()))' \
             > THIRD-PARTY-NOTICES
+          test -s THIRD-PARTY-NOTICES
           git diff --exit-code -- evidence/dashboard/dependency-inventory.json THIRD-PARTY-NOTICES

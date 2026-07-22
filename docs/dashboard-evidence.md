@@ -23,8 +23,8 @@ full-license-text notices only with the pinned tools:
 
 ```sh
 python3 scripts/dashboard_evidence.py inventory
-cargo-about generate --locked evidence/dashboard/third-party-notices.hbs \
-  | python3 -c 'import sys; print("\\n".join(line.rstrip() for line in sys.stdin.read().rstrip().splitlines()))' \
+cargo-about generate --frozen evidence/dashboard/third-party-notices.hbs \
+  | python3 -c 'import sys; print("\n".join(line.rstrip() for line in sys.stdin.read().rstrip().splitlines()))' \
   > THIRD-PARTY-NOTICES
 ```
 
