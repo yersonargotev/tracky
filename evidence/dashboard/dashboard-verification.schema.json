@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/yersonargotev/tracky/evidence/dashboard/dashboard-verification.schema.json",
+  "title": "Tracky dashboard verification evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "commit", "lockfile_sha256", "tools", "targets",
+    "browsers", "artifacts", "commands", "measurements", "results",
+    "responsible_maintainer", "approval"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "lockfile_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "tools": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } },
+    "targets": { "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] } },
+    "browsers": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+    "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "commands": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "measurements": { "type": "object" },
+    "results": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/result" } },
+    "responsible_maintainer": { "type": "string", "minLength": 1 },
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["approved", "approved_by"],
+      "properties": { "approved": { "type": "boolean" }, "approved_by": { "type": ["string", "null"] } }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target", "name", "sha256", "bytes"],
+      "properties": {
+        "target": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] },
+        "name": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "bytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gate", "status", "evidence"],
+      "properties": {
+        "gate": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pass", "fail", "not_run"] },
+        "evidence": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

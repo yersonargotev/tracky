@@ -1,0 +1,124 @@
+{
+  "scenario": "investment-fresh",
+  "provenance": "hand-authored",
+  "transport": {
+    "http_status": 200,
+    "content_type": "application/json",
+    "schema": "tracky.dashboard.v1"
+  },
+  "canonical_cli": {
+    "command": "tracky reports investments --db <fixture> --from 2026-01-01 --to 2026-02-28 --json",
+    "expected_response": {
+      "acquisitions_and_reinvestment": {
+        "by_instrument": [
+          {
+            "account_id": "broker-cop",
+            "amount_minor": 250000,
+            "currency": "COP",
+            "instrument_id": "fund-cop",
+            "instrument_type": "security"
+          }
+        ],
+        "funded_by_existing_cash": [],
+        "funded_by_external_contribution": [
+          {
+            "amount_minor": 250000,
+            "currency": "COP"
+          }
+        ],
+        "funded_by_maturities": [],
+        "funded_by_sales": [],
+        "gross_acquisitions": [
+          {
+            "amount_minor": 250000,
+            "currency": "COP"
+          }
+        ],
+        "reinvestment": []
+      },
+      "capital_external": {
+        "capital_withdrawn": [],
+        "external_capital_contributed": [
+          {
+            "amount_minor": 250000,
+            "currency": "COP"
+          }
+        ],
+        "net_external_contribution": [
+          {
+            "amount_minor": 250000,
+            "currency": "COP"
+          }
+        ]
+      },
+      "cdt_provider_enrichments": [],
+      "closing_positions": [
+        {
+          "account_id": "broker-cop",
+          "cost_currency": "COP",
+          "current_quantity_difference": "0",
+          "current_value_difference_minor": 0,
+          "effective_date": "2026-02-27",
+          "freshness": "fresh",
+          "historical_cost_minor": 250000,
+          "instrument_id": "fund-cop",
+          "instrument_type": "security",
+          "observed_at": "2026-02-27T12:00:00Z",
+          "observed_value_minor": 275000,
+          "original_quantity_difference": "0",
+          "original_status": "matched",
+          "original_value_difference_minor": 0,
+          "quantity": "1.250000000000000001",
+          "reconciliation_status": "matched",
+          "valuation_currency": "COP"
+        }
+      ],
+      "command": "reports investments",
+      "costs_and_withholding": {
+        "by_instrument": [],
+        "fees_and_commissions": [],
+        "other_deductions": [],
+        "withholding": []
+      },
+      "date_range": {
+        "end_date": "2026-02-28",
+        "start_date": "2026-01-01"
+      },
+      "errors": [],
+      "ok": true,
+      "pending_and_reconciliation": {
+        "allocations": [],
+        "missing_snapshot_positions": [],
+        "missing_valuations": [],
+        "provider_events": [],
+        "stale_valuations": [],
+        "unattributed_withdrawals": [],
+        "undated_acquisition_ids": [],
+        "unreconciled_differences": []
+      },
+      "returns_and_income": {
+        "by_instrument": [],
+        "gross_dividends": [],
+        "gross_interest": [],
+        "net_cash": [],
+        "principal_returned": [],
+        "realized_results": []
+      },
+      "schema_version": "tracky.investment-report.v1"
+    }
+  },
+  "expected": {
+    "as_of": "2026-02-28",
+    "position": {
+      "instrument_id": "fund-cop",
+      "quantity": "1.250000000000000001",
+      "historical_cost_minor": "250000",
+      "observed_value_minor": "275000",
+      "valuation_currency": "COP",
+      "valuation_date": "2026-02-27",
+      "freshness": "fresh"
+    },
+    "pending_allocation_minor": "0",
+    "alerts": []
+  }
+}

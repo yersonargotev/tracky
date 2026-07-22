@@ -16,21 +16,21 @@ without changing Tracky's product behavior or packaged output.
 
 **Blocked by:** None — can start immediately.
 
-- [ ] Record and retain the dashboard-free commit, Rust toolchain, lockfile hash,
+- [x] Record and retain the dashboard-free commit, Rust toolchain, lockfile hash,
   Cargo Dist targets, exact executable/archive sizes, archive contents, artifact
   hashes, and reproducible comparison commands for every supported target.
-- [ ] Create a deterministic SQLite conformance corpus covering the accepted
+- [x] Create a deterministic SQLite conformance corpus covering the accepted
   finance, investment, filtering, pagination, empty, stale, unavailable,
   incompatible, overflow, and error scenarios.
-- [ ] Hand-author the expected financial and transport results independently of
+- [x] Hand-author the expected financial and transport results independently of
   production calculations and make fixture provenance reproducible.
-- [ ] Define and validate the machine-readable dashboard evidence manifest and
+- [x] Define and validate the machine-readable dashboard evidence manifest and
   its human-readable rendering inputs.
-- [ ] Pin and enforce dependency license, advisory, source, yanked-package, and
+- [x] Pin and enforce dependency license, advisory, source, yanked-package, and
   prohibited-duplicate policy, including inventory and notice generation.
-- [ ] Add static asset, dependency-count, binary, and archive comparison entry
+- [x] Add static asset, dependency-count, binary, and archive comparison entry
   points without moving the accepted baseline or thresholds.
-- [ ] Keep existing formatting, tests, strict Clippy, and release build green and
+- [x] Keep existing formatting, tests, strict Clippy, and release build green and
   demonstrate that this ticket changes no user-visible behavior.
 
 ## Deliver the secure read-only monthly dashboard tracer

@@ -1,0 +1,6 @@
+{
+  "scenario": "checked-overflow",
+  "provenance": "hand-authored",
+  "transport": {"http_status": 422, "content_type": "application/json", "error_code": "numeric_overflow"},
+  "expected": {"state": "error", "currency": "COP", "operands_minor": ["9223372036854775807", "1"], "wrapped_result": null, "financial_data_disclosed": false}
+}

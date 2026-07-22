@@ -1,0 +1,11 @@
+BEGIN;
+INSERT INTO institutions(id, name) VALUES ('synthetic-broker', 'Synthetic Broker');
+INSERT INTO accounts(id, institution_id, label, currency, kind, is_owned) VALUES ('broker-cop', 'synthetic-broker', 'COP Brokerage', 'COP', 'investment', 1);
+INSERT INTO canonical_transactions(id, account_id, posted_date, description, amount_minor, currency, transaction_kind) VALUES ('capital', 'broker-cop', '2026-01-12', 'Synthetic capital', -250000, 'COP', 'investment_contribution');
+INSERT INTO investment_instruments(id, name, instrument_type, denomination_currency, provider, provider_identifier) VALUES ('fund-cop', 'Synthetic Fund', 'security', 'COP', 'synthetic-broker', 'FUND1');
+INSERT INTO investment_allocation_revisions(id, allocation_id, revision, contribution_transaction_id, instrument_id, cash_amount_minor, cash_currency, acquired_quantity, effective_date, provenance_source) VALUES ('allocation-r1', 'allocation', 1, 'capital', 'fund-cop', 250000, 'COP', '1.250000000000000001', '2026-01-12', 'manual_entry');
+INSERT INTO investment_allocation_heads(allocation_id, current_revision_id) VALUES ('allocation', 'allocation-r1');
+INSERT INTO investment_snapshots(id, observed_at, provider_effective_date, source, external_reference, provenance_source) VALUES ('snapshot-difference', '2026-02-27T12:00:00Z', '2026-02-27', 'synthetic-broker', 'SYNTHETIC-DIFFERENCE', 'synthetic_test');
+INSERT INTO investment_snapshot_positions(snapshot_id, account_id, instrument_id, quantity, currency, observed_value_minor, valuation_currency, observed_price) VALUES ('snapshot-difference', 'broker-cop', 'fund-cop', '1.500000000000000001', 'COP', 300000, 'COP', '200000');
+INSERT INTO investment_snapshot_baselines(snapshot_id, account_id, instrument_id, currency, status, quantity_difference, derived_historical_cost_minor, derived_value_minor, value_difference_minor) VALUES ('snapshot-difference', 'broker-cop', 'fund-cop', 'COP', 'difference', '0.250000000000000000', 250000, 250000, 50000);
+COMMIT;

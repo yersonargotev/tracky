@@ -1,0 +1,19 @@
+{
+  "scenario": "snapshot-flows",
+  "provenance": "hand-authored",
+  "transport": {"process": "tracky dashboard --no-open", "schema": "tracky.dashboard.v1", "requests": 4},
+  "actions": [
+    {"actor": "test", "operation": "load_seed", "input": "seeds/finance.sql"},
+    {"actor": "dashboard", "operation": "initial_snapshot", "expected_snapshot_id": "snapshot-1"},
+    {"actor": "external_writer", "operation": "apply_sql", "input": "mutations/refresh-success.sql"},
+    {"actor": "dashboard", "operation": "explicit_refresh", "expected_snapshot_id": "snapshot-2"},
+    {"actor": "test", "operation": "replace_database_with_directory"},
+    {"actor": "dashboard", "operation": "explicit_refresh", "expected_state": "stale"}
+  ],
+  "expected": {
+    "initial_snapshot_id": "snapshot-1",
+    "refresh_success": {"snapshot_id": "snapshot-2", "preserved_filter_ids": ["cop-checking"], "state": "ready", "consumption_expense_minor": "180000", "savings_minor": "320000"},
+    "refresh_failure": {"retained_snapshot_id": "snapshot-2", "state": "stale", "retry_available": true, "raw_sqlite_error_disclosed": false},
+    "obsolete_drill_down": {"cursor": "2026-02-03|cop-expense-feb-b", "drawer_open": false, "cursor_retained": false}
+  }
+}

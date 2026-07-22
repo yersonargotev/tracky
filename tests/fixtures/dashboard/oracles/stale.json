@@ -1,0 +1,10 @@
+{
+  "scenario": "investment-stale",
+  "provenance": "hand-authored",
+  "transport": {"http_status": 200, "content_type": "application/json", "schema": "tracky.dashboard.v1"},
+  "expected": {
+    "as_of": "2026-04-30",
+    "position": {"instrument_id": "fund-cop", "quantity": "1.250000000000000001", "historical_cost_minor": "250000", "observed_value_minor": "275000", "valuation_currency": "COP", "valuation_date": "2026-02-27", "freshness": "stale"},
+    "alerts": [{"id": "stale-valuation:broker-cop:fund-cop", "kind": "stale_valuation"}]
+  }
+}

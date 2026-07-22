@@ -1,0 +1,80 @@
+name: Capture dashboard-free baseline
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Baseline (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: f95fdaf1957576d6e9b25bb4bad819c719edb295
+          persist-credentials: false
+      - name: Install the frozen Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.93.0
+      - name: Install Cargo Dist 0.32.0
+        shell: bash
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh
+      - name: Build the immutable dashboard-free artifact
+        run: dist build --artifacts=local --target=${{ matrix.target }} --output-format=json > dist-manifest.json
+      - name: Record exact artifact evidence
+        env:
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess, tarfile
+          target = os.environ["TARGET"]
+          archive = pathlib.Path("target/distrib") / f"tracky-{target}.tar.xz"
+          with tarfile.open(archive, "r:xz") as bundle:
+              members = [m for m in bundle.getmembers() if m.isfile()]
+              executable = next(m for m in members if pathlib.Path(m.name).name == "tracky")
+              stream = bundle.extractfile(executable)
+              assert stream is not None
+              executable_bytes = stream.read()
+              contents = sorted(pathlib.Path(m.name).name for m in members)
+          lock_bytes = pathlib.Path("Cargo.lock").read_bytes()
+          package_count = sum(1 for line in lock_bytes.splitlines() if line == b"[[package]]")
+          evidence = {
+              "target": target,
+              "archive": archive.name,
+              "archive_bytes": archive.stat().st_size,
+              "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+              "executable_bytes": len(executable_bytes),
+              "executable_sha256": hashlib.sha256(executable_bytes).hexdigest(),
+              "archive_contents": contents,
+              "commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "lockfile_sha256": hashlib.sha256(lock_bytes).hexdigest(),
+              "resolved_package_count": package_count,
+              "rustc_version": subprocess.check_output(["rustc", "--version"], text=True).strip(),
+              "cargo_version": subprocess.check_output(["cargo", "--version"], text=True).strip(),
+              "cargo_dist_version": subprocess.check_output(["dist", "--version"], text=True).strip(),
+          }
+          pathlib.Path(f"{target}.json").write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
+          PY
+      - name: Retain target evidence for publication
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dashboard-baseline-${{ matrix.target }}
+          path: |
+            target/distrib/tracky-${{ matrix.target }}.tar.xz
+            ${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 1

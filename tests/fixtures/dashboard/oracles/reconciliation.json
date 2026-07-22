@@ -1,0 +1,79 @@
+{
+  "scenario": "reconciliation-difference",
+  "provenance": "hand-authored",
+  "transport": {
+    "http_status": 200,
+    "content_type": "application/json",
+    "schema": "tracky.dashboard.v1"
+  },
+  "canonical_cli": {
+    "command": "tracky snapshots compare --db <fixture> --snapshot-id snapshot-difference --as-of 2026-02-28 --json",
+    "expected_response": {
+      "adjustments": [],
+      "command": "snapshots compare",
+      "errors": [],
+      "freshness_policy": "fresh through 7 calendar days after observed_at; stale afterwards",
+      "ok": true,
+      "reconciliations": [
+        {
+          "account_id": "broker-cop",
+          "age_days": 1,
+          "cash_difference_minor": null,
+          "cost_currency": "COP",
+          "currency": "COP",
+          "derived_cash_minor": null,
+          "derived_historical_cost_minor": 250000,
+          "derived_quantity": "1.250000000000000001",
+          "derived_value_minor": 250000,
+          "freshness": "fresh",
+          "instrument_id": "fund-cop",
+          "observed_cash_minor": null,
+          "observed_quantity": "1.500000000000000001",
+          "observed_value_minor": 300000,
+          "original_cash_difference_minor": null,
+          "original_derived_historical_cost_minor": 250000,
+          "original_derived_value_minor": 250000,
+          "original_quantity_difference": "0.250000000000000000",
+          "original_status": "difference",
+          "original_value_difference_minor": 50000,
+          "quantity_difference": "0.25",
+          "status": "quantity_mismatch",
+          "valuation_currency": "COP",
+          "value_difference_minor": 50000
+        }
+      ],
+      "schema_version": "tracky.investment-reconciliation.v1",
+      "snapshot": {
+        "external_reference": "SYNTHETIC-DIFFERENCE",
+        "id": "snapshot-difference",
+        "observed_at": "2026-02-27T12:00:00Z",
+        "positions": [
+          {
+            "account_id": "broker-cop",
+            "currency": "COP",
+            "instrument_id": "fund-cop",
+            "observed_cash_minor": null,
+            "observed_price": "200000",
+            "observed_value_minor": 300000,
+            "quantity": "1.500000000000000001",
+            "valuation_currency": "COP"
+          }
+        ],
+        "provenance_source": "synthetic_test",
+        "provider_effective_date": "2026-02-27",
+        "source": "synthetic-broker"
+      },
+      "snapshots": []
+    }
+  },
+  "expected": {
+    "alerts": [
+      {
+        "id": "reconciliation-difference:broker-cop:fund-cop:COP",
+        "kind": "reconciliation_difference",
+        "quantity_difference": "0.25",
+        "value_difference_minor": "50000"
+      }
+    ]
+  }
+}

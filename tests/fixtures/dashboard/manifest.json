@@ -1,0 +1,253 @@
+{
+  "corpus_version": 1,
+  "provenance": {
+    "source": "synthetic hand-authored examples",
+    "expected_results": "manual literals independent of Tracky production calculations",
+    "generated_by": "none",
+    "reproduce": "cargo test --test dashboard_evidence"
+  },
+  "scenarios": [
+    {
+      "id": "finance-months",
+      "coverage": [
+        "finance",
+        "zero-fill",
+        "multi-currency",
+        "cli-parity"
+      ],
+      "seed": {
+        "path": "seeds/finance.sql",
+        "sha256": "e16c1f0ecea321a3519b2c9b746ef3e178d2ef541c54847f6609780d47c42f79"
+      },
+      "oracle": {
+        "path": "oracles/finance.json",
+        "sha256": "20aa3133ddc272084ce6286df60d6812cf03f4484be97e9520230c351d3e72c3"
+      },
+      "seed_counts": {
+        "accounts": 4,
+        "canonical_transactions": 6,
+        "transaction_lines": 4
+      }
+    },
+    {
+      "id": "composed-filters",
+      "coverage": [
+        "filtering",
+        "filter-empty"
+      ],
+      "seed": {
+        "path": "seeds/finance.sql",
+        "sha256": "e16c1f0ecea321a3519b2c9b746ef3e178d2ef541c54847f6609780d47c42f79"
+      },
+      "oracle": {
+        "path": "oracles/filtering.json",
+        "sha256": "54a0b13a42195d0bae3b2b74998e5a3d47aeed87f267e279123c3e6f4ae3bf0a"
+      },
+      "seed_counts": {
+        "accounts": 4,
+        "canonical_transactions": 6,
+        "transaction_lines": 4
+      }
+    },
+    {
+      "id": "canonical-pagination",
+      "coverage": [
+        "pagination",
+        "stable-order"
+      ],
+      "seed": {
+        "path": "seeds/finance.sql",
+        "sha256": "e16c1f0ecea321a3519b2c9b746ef3e178d2ef541c54847f6609780d47c42f79"
+      },
+      "oracle": {
+        "path": "oracles/pagination.json",
+        "sha256": "8a26450746872a18a31b0d7f3aaa9bf157fe739d6070f8590c64aba2da6a7f92"
+      },
+      "seed_counts": {
+        "accounts": 4,
+        "canonical_transactions": 6,
+        "transaction_lines": 4
+      }
+    },
+    {
+      "id": "investment-fresh",
+      "coverage": [
+        "investment",
+        "exact-decimal",
+        "as-of",
+        "cli-parity"
+      ],
+      "seed": {
+        "path": "seeds/investment.sql",
+        "sha256": "cae138cca075f8930cd8807a79a8250128d8977cbf20a73e006f31ca9dfa77ff"
+      },
+      "oracle": {
+        "path": "oracles/investment.json",
+        "sha256": "c5da2b3c81c3a81a6b24cc55ac3aa4b0dd08f9fbb2e9cfa89b50716b33205926"
+      },
+      "seed_counts": {
+        "investment_allocation_heads": 1,
+        "investment_snapshot_positions": 1
+      }
+    },
+    {
+      "id": "investment-stale",
+      "coverage": [
+        "investment",
+        "stale",
+        "alerts"
+      ],
+      "seed": {
+        "path": "seeds/investment.sql",
+        "sha256": "cae138cca075f8930cd8807a79a8250128d8977cbf20a73e006f31ca9dfa77ff"
+      },
+      "oracle": {
+        "path": "oracles/stale.json",
+        "sha256": "afc91f97ff38d5b85d06941ea444bc64804d71b1ad9ef1fc85b7d10e6100a53b"
+      },
+      "seed_counts": {
+        "investment_allocation_heads": 1,
+        "investment_snapshot_positions": 1
+      }
+    },
+    {
+      "id": "investment-unavailable",
+      "coverage": [
+        "investment",
+        "unavailable",
+        "pending"
+      ],
+      "seed": {
+        "path": "seeds/unavailable.sql",
+        "sha256": "a2df430fd98a9746784352c77523d22fe0a9c7815c03036f1c74053215c20e6d"
+      },
+      "oracle": {
+        "path": "oracles/unavailable.json",
+        "sha256": "67a3d48f8f8ed2752521f30cd3bcca39ce1f34327f82ff9a486c45d4eb0da603"
+      },
+      "seed_counts": {
+        "canonical_transactions": 1,
+        "investment_snapshots": 0
+      }
+    },
+    {
+      "id": "valid-empty",
+      "coverage": [
+        "empty"
+      ],
+      "seed": {
+        "path": "seeds/empty.sql",
+        "sha256": "3662dbfea475e3bf4ca6f5f75cb6b8e6e77068a2cfa939a8c21f8f0da6d1e79a"
+      },
+      "oracle": {
+        "path": "oracles/empty.json",
+        "sha256": "6564cad4f75965bbc61c7b29abced961e75e78ed7d30b158b6c37ec0fe282d6d"
+      },
+      "seed_counts": {
+        "accounts": 0,
+        "canonical_transactions": 0
+      }
+    },
+    {
+      "id": "incompatible-schema",
+      "coverage": [
+        "incompatible"
+      ],
+      "seed": {
+        "path": "seeds/incompatible.sql",
+        "sha256": "14d1e27973478b5e0977ba254e22fb0a94d61556d1be0a242b0358ee6f8db166"
+      },
+      "oracle": {
+        "path": "oracles/incompatible.json",
+        "sha256": "acdfc93e16bebb61a66374f34d090a861e41642766e11791996d52c2254b197f"
+      },
+      "seed_counts": {
+        "accounts": 0
+      }
+    },
+    {
+      "id": "checked-overflow",
+      "coverage": [
+        "overflow",
+        "error",
+        "checked-arithmetic"
+      ],
+      "seed": {
+        "path": "seeds/overflow.sql",
+        "sha256": "348f85ed4b563746cea4660d6ea0e9268ec85427281b30c82da4e3d278db16f3"
+      },
+      "oracle": {
+        "path": "oracles/overflow.json",
+        "sha256": "1e234509d095a6758345295cd05f4f8ae81657f200b1f28bc13d93263b3b3a4f"
+      },
+      "seed_counts": {
+        "canonical_transactions": 2
+      }
+    },
+    {
+      "id": "storage-error",
+      "coverage": [
+        "error"
+      ],
+      "seed": {
+        "path": "seeds/error.sql",
+        "sha256": "20344d61ba80794b40c19b70c6c63d4bcb24ed298cf84f258eeece9824d93691"
+      },
+      "oracle": {
+        "path": "oracles/error.json",
+        "sha256": "c8de558b47802d66b72e0f63f801c9d92e592a16d21ec34e2d238f4fd5916688"
+      },
+      "seed_counts": {
+        "accounts": 1,
+        "canonical_transactions": 1
+      }
+    },
+    {
+      "id": "reconciliation-difference",
+      "coverage": [
+        "investment",
+        "reconciliation",
+        "alerts",
+        "cli-parity"
+      ],
+      "seed": {
+        "path": "seeds/reconciliation.sql",
+        "sha256": "1e0e4d624bd7eedff323c41f090591698f569bd6f5194b12bf10640f736f5083"
+      },
+      "oracle": {
+        "path": "oracles/reconciliation.json",
+        "sha256": "89cea98bdfe587ca142b0988d2cf09bd5bc4ac8c7b27c653481427a9e8bffe48"
+      },
+      "seed_counts": {
+        "investment_snapshot_baselines": 1,
+        "investment_snapshot_positions": 1
+      }
+    },
+    {
+      "id": "snapshot-flows",
+      "coverage": [
+        "refresh",
+        "refresh-failure",
+        "cursor-invalidation"
+      ],
+      "seed": {
+        "path": "seeds/finance.sql",
+        "sha256": "e16c1f0ecea321a3519b2c9b746ef3e178d2ef541c54847f6609780d47c42f79"
+      },
+      "oracle": {
+        "path": "oracles/flows.json",
+        "sha256": "b299894cdb33bd5f12735a37267600e55bdd3509f2fa914fbe9911d60a13edfc"
+      },
+      "seed_counts": {
+        "accounts": 4,
+        "canonical_transactions": 6
+      },
+      "mutations": [
+        {
+          "path": "mutations/refresh-success.sql",
+          "sha256": "061e9633d6a2043dee0fa5cd69da704ea61d03985bf623ee17e39a99564c6bdb"
+        }
+      ]
+    }
+  ]
+}

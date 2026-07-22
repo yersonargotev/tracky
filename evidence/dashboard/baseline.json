@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "kind": "dashboard-free-cargo-dist-baseline",
+  "commit": "f95fdaf1957576d6e9b25bb4bad819c719edb295",
+  "release": "https://github.com/yersonargotev/tracky/releases/tag/dashboard-baseline-f95fdaf",
+  "release_run": "https://github.com/yersonargotev/tracky/actions/runs/29891312121",
+  "rust": {
+    "rustc_version_line": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "cargo_version_line": "cargo 1.93.0 (083ac5135 2025-12-15)",
+    "cargo_dist_version": "0.32.0"
+  },
+  "lockfile_sha256": "b2245d49bc4b3969c3bd5f2aa42acc150f5da235ce2100ff587913cfa0b5ae8d",
+  "resolved_package_count": 330,
+  "asset_bytes": 0,
+  "targets": [
+    {
+      "archive_sha256": "3c4845c7b9be1724a7110b29f56ef43a215da12ece8fbc3ca9b56ace7f7acea2",
+      "archive_bytes": 3710780,
+      "executable_sha256": "21ca27da8d24b3b5f8e308399c054299a17f249d723d78b3e1f9a16689fab415",
+      "archive_contents": [
+        "LICENSE",
+        "README.md",
+        "tracky"
+      ],
+      "executable_bytes": 13209200,
+      "archive": "tracky-aarch64-apple-darwin.tar.xz",
+      "target": "aarch64-apple-darwin",
+      "runner": "macos-14"
+    },
+    {
+      "archive_sha256": "1dee1a5870b590cdef7676f54426fd23e8168ca4329fc80c6aef3639c64381be",
+      "archive_bytes": 4191772,
+      "executable_sha256": "0bc76934dfc0c5480750282326aed200b5dd907dd2b2229dcb9aec2600edf815",
+      "archive_contents": [
+        "LICENSE",
+        "README.md",
+        "tracky"
+      ],
+      "executable_bytes": 14130040,
+      "archive": "tracky-x86_64-apple-darwin.tar.xz",
+      "target": "x86_64-apple-darwin",
+      "runner": "macos-15-intel"
+    },
+    {
+      "archive_sha256": "be79e625497487e9f8331b4417430aa4ce13374cc15bdd5b14c8bcc25d760f06",
+      "archive_bytes": 4491116,
+      "executable_sha256": "f3bfb35eb5a6b52b30ea03f24e5f7819d33615cf1bf77b82456ac7e3e89ad7f4",
+      "archive_contents": [
+        "LICENSE",
+        "README.md",
+        "tracky"
+      ],
+      "executable_bytes": 16249432,
+      "archive": "tracky-x86_64-unknown-linux-gnu.tar.xz",
+      "target": "x86_64-unknown-linux-gnu",
+      "runner": "ubuntu-22.04"
+    }
+  ],
+  "reproduce": [
+    "git checkout --detach f95fdaf1957576d6e9b25bb4bad819c719edb295",
+    "rustup toolchain install 1.93.0 --profile minimal",
+    "cargo +1.93.0 install cargo-dist --version 0.32.0 --locked",
+    "dist build --artifacts=local --target=<target> --output-format=json",
+    "python3 scripts/dashboard_evidence.py measure --artifacts target/distrib --output current.json",
+    "python3 scripts/dashboard_evidence.py compare --current current.json"
+  ]
+}

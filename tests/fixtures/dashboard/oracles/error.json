@@ -1,0 +1,6 @@
+{
+  "scenario": "storage-error",
+  "provenance": "hand-authored",
+  "transport": {"process_exit": 1, "listener_created": false, "error_code": "invalid_canonical_data"},
+  "expected": {"state": "fatal", "message": "canonical data could not be interpreted", "raw_sqlite_error_disclosed": false, "financial_data_disclosed": false}
+}

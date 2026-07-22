@@ -1,0 +1,6 @@
+{
+  "scenario": "investment-unavailable",
+  "provenance": "hand-authored",
+  "transport": {"http_status": 200, "content_type": "application/json", "schema": "tracky.dashboard.v1"},
+  "expected": {"state": "unavailable", "observed_value_minor": null, "pending_allocation_minor": "50000", "alerts": [{"id": "pending-allocation:pending-capital", "kind": "pending_allocation"}]}
+}

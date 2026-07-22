@@ -1,0 +1,12 @@
+{
+  "scenario": "canonical-pagination",
+  "provenance": "hand-authored",
+  "transport": {"http_status": 200, "content_type": "application/json", "schema": "tracky.dashboard.v1"},
+  "expected": {
+    "order": ["posted_date", "id"],
+    "page_size": 2,
+    "page_1": {"ids": ["cop-income-jan", "cop-expense-jan"], "next_cursor": "2026-01-10|cop-expense-jan"},
+    "page_2": {"ids": ["cop-expense-feb-a", "cop-expense-feb-b"], "next_cursor": "2026-02-03|cop-expense-feb-b"},
+    "page_3": {"ids": ["cop-invest-feb"], "next_cursor": null}
+  }
+}

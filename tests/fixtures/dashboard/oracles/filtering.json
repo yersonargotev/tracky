@@ -1,0 +1,12 @@
+{
+  "scenario": "composed-filters",
+  "provenance": "hand-authored",
+  "transport": {"http_status": 200, "content_type": "application/json", "schema": "tracky.dashboard.v1"},
+  "expected": {
+    "currency": "COP",
+    "account_ids": ["cop-checking"],
+    "category_ids": ["food"],
+    "summary": {"income_minor": "500000", "consumption_expense_minor": "100000", "savings_minor": "400000", "investment_contribution_minor": "0"},
+    "filter_empty": {"account_ids": [], "state": "filter_empty", "rows": []}
+  }
+}

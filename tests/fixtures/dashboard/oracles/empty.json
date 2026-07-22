@@ -1,0 +1,6 @@
+{
+  "scenario": "valid-empty",
+  "provenance": "hand-authored",
+  "transport": {"http_status": 200, "content_type": "application/json", "schema": "tracky.dashboard.v1"},
+  "expected": {"state": "empty", "currencies": [], "months": [], "positions": [], "alerts": []}
+}

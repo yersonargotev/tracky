@@ -1,0 +1,127 @@
+{
+  "scenario": "finance-months",
+  "provenance": "hand-authored",
+  "transport": {
+    "http_status": 200,
+    "content_type": "application/json",
+    "schema": "tracky.dashboard.v1"
+  },
+  "canonical_cli": {
+    "command": "tracky reports summary --db <fixture> --start-date 2026-01-01 --end-date 2026-03-31 --json",
+    "expected_response": {
+      "brokerage_dividend_totals": [],
+      "category_totals": [
+        {
+          "category_id": "food",
+          "category_name": "Food",
+          "currency": "COP",
+          "total_expenses_minor": 120000
+        },
+        {
+          "category_id": "housing",
+          "category_name": "Housing",
+          "currency": "COP",
+          "total_expenses_minor": 50000
+        }
+      ],
+      "command": "reports summary",
+      "date_range": {
+        "end_date": "2026-03-31",
+        "start_date": "2026-01-01"
+      },
+      "errors": [],
+      "excluded_transfer_totals": [],
+      "income_source_totals": [
+        {
+          "currency": "COP",
+          "income_source_id": "salary",
+          "income_source_name": "Synthetic Salary",
+          "total_income_minor": 500000
+        },
+        {
+          "currency": "USD",
+          "income_source_id": "salary",
+          "income_source_name": "Synthetic Salary",
+          "total_income_minor": 10000
+        }
+      ],
+      "investment_contribution_totals": [
+        {
+          "contribution_count": 1,
+          "currency": "COP",
+          "total_contributed_minor": 100000
+        }
+      ],
+      "ok": true,
+      "schema_version": "tracky.finance-report.v1",
+      "totals": [
+        {
+          "currency": "COP",
+          "excluded_transfer_count": 0,
+          "excluded_transfer_total_minor": 0,
+          "net_cash_flow_minor": 330000,
+          "total_expenses_minor": 170000,
+          "total_income_minor": 500000
+        },
+        {
+          "currency": "USD",
+          "excluded_transfer_count": 0,
+          "excluded_transfer_total_minor": 0,
+          "net_cash_flow_minor": 10000,
+          "total_expenses_minor": 0,
+          "total_income_minor": 10000
+        }
+      ]
+    }
+  },
+  "expected": {
+    "currency": "COP",
+    "range": {
+      "from": "2026-01-01",
+      "to": "2026-03-31"
+    },
+    "summary": {
+      "income_minor": "500000",
+      "consumption_expense_minor": "170000",
+      "savings_minor": "330000",
+      "investment_contribution_minor": "100000"
+    },
+    "months": [
+      {
+        "month": "2026-01",
+        "income_minor": "500000",
+        "consumption_expense_minor": "120000",
+        "savings_minor": "380000",
+        "investment_contribution_minor": "0"
+      },
+      {
+        "month": "2026-02",
+        "income_minor": "0",
+        "consumption_expense_minor": "50000",
+        "savings_minor": "-50000",
+        "investment_contribution_minor": "100000"
+      },
+      {
+        "month": "2026-03",
+        "income_minor": "0",
+        "consumption_expense_minor": "0",
+        "savings_minor": "0",
+        "investment_contribution_minor": "0"
+      }
+    ],
+    "category_breakdown": [
+      {
+        "category_id": "food",
+        "amount_minor": "120000"
+      },
+      {
+        "category_id": "housing",
+        "amount_minor": "50000"
+      }
+    ],
+    "excluded_unlike_currency": {
+      "currency": "USD",
+      "income_minor": "10000"
+    }
+  }
+}
