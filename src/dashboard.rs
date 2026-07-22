@@ -58,7 +58,7 @@ struct AppState {
 
 struct DashboardSnapshot {
     connection: Connection,
-    startup_response: DashboardResponse,
+    startup_response: Option<DashboardResponse>,
     _directory: TempDir,
 }
 
@@ -77,10 +77,9 @@ pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> 
         currency,
         ..FinanceFilterRequest::default()
     };
-    let snapshot = Arc::new(Mutex::new(load_snapshot(
-        &options.db,
-        startup_request.clone(),
-    )?));
+    let snapshot = load_snapshot(&options.db)?;
+    validate_startup_request(&snapshot.connection, &startup_request)?;
+    let snapshot = Arc::new(Mutex::new(snapshot));
 
     let capability_bytes = rand::random::<[u8; 32]>();
     let capability = capability_bytes
@@ -283,7 +282,7 @@ fn read_transaction<T>(
     Ok(response)
 }
 
-fn load_snapshot(path: &Path, startup_request: FinanceFilterRequest) -> Result<DashboardSnapshot> {
+fn load_snapshot(path: &Path) -> Result<DashboardSnapshot> {
     let snapshot_directory =
         TempDir::new().map_err(|_| anyhow::anyhow!("dashboard snapshot could not be created"))?;
     let snapshot_file = snapshot_directory.path().join("snapshot.sqlite");
@@ -306,7 +305,7 @@ fn load_snapshot(path: &Path, startup_request: FinanceFilterRequest) -> Result<D
     if !status.success() {
         bail!("dashboard snapshot could not be completed");
     }
-    let mut connection = Connection::open_with_flags(
+    let connection = Connection::open_with_flags(
         &snapshot_file,
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
@@ -320,12 +319,37 @@ fn load_snapshot(path: &Path, startup_request: FinanceFilterRequest) -> Result<D
     connection
         .pragma_update(None, "query_only", true)
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be secured"))?;
-    let startup_response = read_dashboard(&mut connection, startup_request)?;
     Ok(DashboardSnapshot {
         connection,
-        startup_response,
+        startup_response: None,
         _directory: snapshot_directory,
     })
+}
+
+fn validate_startup_request(
+    connection: &Connection,
+    startup_request: &FinanceFilterRequest,
+) -> Result<()> {
+    let Some(currency) = startup_request.currency.as_deref() else {
+        return Ok(());
+    };
+    let available = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM canonical_transactions
+             WHERE posted_date BETWEEN ?1 AND ?2 AND UPPER(currency) = ?3
+             LIMIT 1
+         )",
+        (
+            &startup_request.start_date,
+            &startup_request.end_date,
+            currency,
+        ),
+        |row| row.get::<_, bool>(0),
+    )?;
+    if !available {
+        return Err(UnavailableCurrencyError.into());
+    }
+    Ok(())
 }
 
 pub(crate) fn write_snapshot(source: &Path, destination: &Path) -> Result<()> {
@@ -370,9 +394,8 @@ async fn refresh_api(State(state): State<AppState>, request: Request) -> Respons
         Err(()) => return api_error(StatusCode::BAD_REQUEST, "invalid_dashboard_request"),
     };
     let path = state.db.clone();
-    let startup_request = state.startup_request.clone();
     let replacement = tokio::task::spawn_blocking(move || -> Result<_> {
-        let mut snapshot = load_snapshot(&path, startup_request)?;
+        let mut snapshot = load_snapshot(&path)?;
         let response = read_dashboard(&mut snapshot.connection, filters)?;
         Ok((snapshot, response))
     })
@@ -599,11 +622,27 @@ fn incompatible_schema_error() -> Response {
 }
 
 async fn dashboard_page(State(state): State<AppState>) -> Response {
-    match state.snapshot.lock() {
-        Ok(snapshot) => {
-            Html(crate::dashboard_view::render(&snapshot.startup_response)).into_response()
+    let snapshot = state.snapshot.clone();
+    let startup_request = state.startup_request.clone();
+    match tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut snapshot = snapshot
+            .lock()
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot unavailable"))?;
+        if snapshot.startup_response.is_none() {
+            let response = read_dashboard(&mut snapshot.connection, startup_request)?;
+            snapshot.startup_response = Some(response);
         }
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, "Dashboard unavailable").into_response(),
+        Ok(crate::dashboard_view::render(
+            snapshot
+                .startup_response
+                .as_ref()
+                .expect("startup response was initialized"),
+        ))
+    })
+    .await
+    {
+        Ok(Ok(html)) => Html(html).into_response(),
+        _ => (StatusCode::SERVICE_UNAVAILABLE, "Dashboard unavailable").into_response(),
     }
 }
 
