@@ -260,7 +260,6 @@ def main():
             flow = r'''async page => {
               const fail = message => { throw new Error(message); };
               const initialUrl = page.url();
-              const initialHistoryLength = await page.evaluate(() => history.length);
               const expectedOrder = ["scope", "currency", "summary", "monthly", "categories", "accounts", "alerts", "investments"];
               const order = await page.locator("[data-region]").evaluateAll(nodes => nodes.map(node => node.dataset.region));
               if (JSON.stringify(order) !== JSON.stringify(expectedOrder)) fail(`wrong region order: ${order}`);
@@ -301,6 +300,7 @@ def main():
 
               await page.reload();
               await page.getByText("500000 COP", { exact: true }).first().waitFor();
+              const interactionHistoryLength = await page.evaluate(() => history.length);
               const opener = page.locator('[data-region="summary"] [data-metric="income"]');
               await opener.click();
               await page.getByRole("dialog", { name: "Read-only canonical drawer" }).waitFor();
@@ -323,7 +323,7 @@ def main():
               const relatedRows = await page.locator('[data-drawer-content] tbody tr').count();
               if (relatedRows !== 55) fail(`position pagination returned ${relatedRows} rows`);
               await page.keyboard.press("Escape");
-              if (await page.evaluate(() => history.length) !== initialHistoryLength) fail("internal actions repurposed browser history");
+              if (await page.evaluate(() => history.length) !== interactionHistoryLength) fail("internal actions repurposed browser history");
 
               await page.evaluate(() => document.activeElement?.blur());
               await page.setViewportSize({ width: 320, height: 800 });

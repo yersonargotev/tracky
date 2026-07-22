@@ -1,6 +1,6 @@
 # Tracky
 
-Tracky is a local-first finance tracker. The current implemented path is a CLI/JSON-first, review-first workflow for supported statement PDFs: inspect a document, import reviewable candidate transactions, then explicitly accept or reject candidates.
+Tracky 0.2.0 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
 
 ## Install
 
@@ -11,8 +11,33 @@ brew install yersonargotev/tap/tracky
 ```
 
 Prebuilt archives and checksums for supported platforms are also available from
-[GitHub Releases](https://github.com/yersonargotev/tracky/releases). Tracky is currently CLI-only;
-the TUI is intentionally deferred.
+[GitHub Releases](https://github.com/yersonargotev/tracky/releases). Supported packages target
+Apple Silicon macOS, Intel macOS, and x86-64 glibc Linux. The TUI remains intentionally deferred.
+
+## Local analytics dashboard
+
+Start the dashboard against an existing Tracky database:
+
+```bash
+tracky dashboard --db ~/.local/share/tracky/tracky.sqlite
+```
+
+Tracky prints a capability-bearing `http://127.0.0.1` URL after the listener is
+ready and opens the default browser. Use `--no-open` on a headless machine or
+when browser launch fails, then open the printed URL yourself. Optional
+`--start-date`, `--end-date`, and `--currency` flags choose the initial inclusive
+period and one explicit ISO currency; the dashboard never converts or combines
+currencies.
+
+The dashboard is local and read-only: it binds only to loopback, serves embedded
+assets from the Tracky process, makes no external network request, writes no
+runtime assets, and never creates, migrates, or mutates the selected database.
+If an older Tracky database is rejected, back it up and run `tracky database
+upgrade --db PATH` before trying again. Stop the foreground server with Ctrl-C.
+
+Tracky 0.2.0 supports Safari 26.0+, Firefox 153 ESR+, and Chromium/Chrome 150+
+on the packaged desktop targets above. See the [dashboard guide](docs/dashboard.md)
+for filters, privacy boundaries, database recovery, and troubleshooting.
 
 ## Review-first PDF workflow
 
@@ -96,6 +121,8 @@ The stable JSON report groups totals by currency and includes income, positive e
 
 ## Reference docs
 
+- Dashboard guide and support matrix: [`docs/dashboard.md`](docs/dashboard.md)
+- Dashboard release evidence contract: [`docs/dashboard-evidence.md`](docs/dashboard-evidence.md)
 - Agent/human PDF workflow: [`docs/agents/pdf-import-workflow.md`](docs/agents/pdf-import-workflow.md)
 - JSON contract: [`docs/contracts/review-first-pdf-import-json.md`](docs/contracts/review-first-pdf-import-json.md)
 - Domain glossary: [`CONTEXT.md`](CONTEXT.md)

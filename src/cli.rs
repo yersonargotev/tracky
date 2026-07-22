@@ -104,7 +104,7 @@ impl JsonCommand {
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "tracky", about = "Local-first finance tracker")]
+#[command(name = "tracky", version, about = "Local-first finance tracker")]
 pub struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -112,7 +112,6 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    #[command(hide = true)]
     Dashboard(DashboardArgs),
     Database(DatabaseCommand),
     Backup(BackupArgs),

@@ -16,6 +16,7 @@
 name: Release
 permissions:
   "contents": "write"
+  "actions": "read"
 
 # This task will run whenever you push a git tag that looks like a version
 # like "1.0.0", "v0.1.0-prerelease.1", "my-app/0.1.0", "releases/v1.0.0", etc.
@@ -211,14 +212,68 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             ${{ env.BUILD_MANIFEST_NAME }}
+
+  verify-dashboard-release:
+    name: Verify approved packaged dashboard evidence
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+    if: ${{ needs.plan.outputs.publishing == 'true' }}
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Download built Cargo Dist artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: target/distrib/
+          merge-multiple: true
+      - name: Download approved proof for this exact commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PROOF_NAME: dashboard-release-proof-${{ github.sha }}
+        run: |
+          artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=$PROOF_NAME" \
+            --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id')
+          test -n "$artifact_id"
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > dashboard-release-proof.zip
+          unzip -q dashboard-release-proof.zip -d dashboard-release-proof
+      - name: Validate proof and bind it to the built artifacts
+        run: |
+          lockfile_sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)
+          python3 scripts/dashboard_evidence.py validate --release \
+            --commit "$GITHUB_SHA" --lockfile-sha256 "$lockfile_sha256" \
+            dashboard-release-proof/dashboard-verification.json
+          python3 scripts/dashboard_evidence.py verify-artifacts \
+            dashboard-release-proof/dashboard-verification.json --artifacts target/distrib
+          python3 scripts/dashboard_evidence.py render \
+            dashboard-release-proof/dashboard-verification.json \
+            --output dashboard-verification.rendered.md
+          cmp dashboard-verification.rendered.md dashboard-release-proof/dashboard-verification.md
+      - name: Attach proof to the release artifact set
+        run: |
+          cp dashboard-release-proof/dashboard-verification.json dashboard-verification.json
+          cp dashboard-release-proof/dashboard-verification.md dashboard-verification.md
+      - name: Retain proof with the release artifact set
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-dashboard-release-proof
+          if-no-files-found: error
+          path: |
+            dashboard-verification.json
+            dashboard-verification.md
   # Determines if we should publish/announce
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
+      - verify-dashboard-release
     # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && needs.verify-dashboard-release.result == 'success' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"

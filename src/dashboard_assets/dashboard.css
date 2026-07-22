@@ -337,9 +337,14 @@ tbody th { font-weight: 720; }
   gap: 1rem;
 }
 
+.breakdown-list button > *,
+.alert-list button > * { min-width: 0; }
+
 .breakdown-list small,
 .alert-list small,
 .positions small { display: block; color: var(--muted); font-size: .72rem; font-weight: 520; }
+.breakdown-list small,
+.alert-list small { overflow-wrap: anywhere; }
 .status { display: inline-block; margin-right: .5rem; color: var(--signal); font-size: .72rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
 .positions th button { text-align: left !important; }
 

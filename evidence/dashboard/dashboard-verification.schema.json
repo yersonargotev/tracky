@@ -15,10 +15,27 @@
     "lockfile_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "tools": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } },
     "targets": { "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] } },
-    "browsers": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
+    "browsers": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "safari-minimum": { "type": "string", "pattern": "^26(\\.0)?(?:\\D.*)?$" },
+        "safari-latest": { "type": "string", "minLength": 1 },
+        "firefox-esr-minimum": { "type": "string", "pattern": "^153(?:\\D.*)?$" },
+        "firefox-latest": { "type": "string", "minLength": 1 },
+        "chromium-minimum": { "type": "string", "pattern": "^150(?:\\D.*)?$" },
+        "chromium-latest": { "type": "string", "minLength": 1 }
+      }
+    },
     "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
     "commands": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-    "measurements": { "type": "object" },
+    "measurements": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "latency": { "$ref": "#/$defs/latencyTargets" },
+        "resources": { "$ref": "#/$defs/resourceTargets" },
+        "sizes": { "$ref": "#/$defs/sizes" }
+      }
+    },
     "results": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/result" } },
     "responsible_maintainer": { "type": "string", "minLength": 1 },
     "approval": {
@@ -33,7 +50,7 @@
       "required": ["target", "name", "sha256", "bytes"],
       "properties": {
         "target": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] },
-        "name": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "pattern": "^tracky-(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-unknown-linux-gnu)\\.tar\\.xz$" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "bytes": { "type": "integer", "minimum": 0 }
       }
@@ -45,6 +62,74 @@
         "gate": { "type": "string", "minLength": 1 },
         "status": { "enum": ["pass", "fail", "not_run"] },
         "evidence": { "type": "string", "minLength": 1 }
+      }
+    },
+    "latencyTargets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "properties": {
+        "aarch64-apple-darwin": { "$ref": "#/$defs/latency" },
+        "x86_64-apple-darwin": { "$ref": "#/$defs/latency" },
+        "x86_64-unknown-linux-gnu": { "$ref": "#/$defs/latency" }
+      }
+    },
+    "latency": {
+      "type": "object", "additionalProperties": false,
+      "required": ["warmups", "runs", "readiness_p95_ms", "initial_snapshot_p95_ms", "refresh_p95_ms", "navigation_p95_ms", "drill_down_p95_ms", "filter_interaction_p95_ms"],
+      "properties": {
+        "warmups": { "type": "integer", "minimum": 5 },
+        "runs": { "type": "integer", "minimum": 30 },
+        "readiness_p95_ms": { "type": "number", "minimum": 0, "maximum": 500 },
+        "initial_snapshot_p95_ms": { "type": "number", "minimum": 0, "maximum": 1500 },
+        "refresh_p95_ms": { "type": "number", "minimum": 0, "maximum": 1500 },
+        "navigation_p95_ms": { "type": "number", "minimum": 0, "maximum": 2000 },
+        "drill_down_p95_ms": { "type": "number", "minimum": 0, "maximum": 250 },
+        "filter_interaction_p95_ms": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "resourceTargets": {
+      "type": "object", "additionalProperties": false,
+      "required": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "properties": {
+        "aarch64-apple-darwin": { "$ref": "#/$defs/resources" },
+        "x86_64-apple-darwin": { "$ref": "#/$defs/resources" },
+        "x86_64-unknown-linux-gnu": { "$ref": "#/$defs/resources" }
+      }
+    },
+    "resources": {
+      "type": "object", "additionalProperties": false,
+      "required": ["idle_rss_bytes", "peak_rss_bytes", "idle_cpu_percent", "threads", "descriptors", "cycles", "descriptor_growth", "memory_growth_bytes", "memory_growth_percent"],
+      "properties": {
+        "idle_rss_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "peak_rss_bytes": { "type": "integer", "minimum": 0, "maximum": 134217728 },
+        "idle_cpu_percent": { "type": "number", "minimum": 0, "maximum": 1 },
+        "threads": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "descriptors": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "cycles": { "type": "integer", "minimum": 100 },
+        "descriptor_growth": { "type": "integer", "maximum": 0 },
+        "memory_growth_bytes": { "type": "integer" },
+        "memory_growth_percent": { "type": "number" }
+      }
+    },
+    "sizes": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema_version", "resolved_package_count", "asset_bytes", "targets"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "resolved_package_count": { "type": "integer", "minimum": 1 },
+        "asset_bytes": { "type": "integer", "minimum": 0, "maximum": 256000 },
+        "targets": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/sizeTarget" } }
+      }
+    },
+    "sizeTarget": {
+      "type": "object", "additionalProperties": false,
+      "required": ["target", "archive_bytes", "archive_sha256", "executable_bytes", "executable_sha256"],
+      "properties": {
+        "target": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] },
+        "archive_bytes": { "type": "integer", "minimum": 1 },
+        "archive_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "executable_bytes": { "type": "integer", "minimum": 1 },
+        "executable_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     }
   }

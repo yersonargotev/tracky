@@ -223,10 +223,29 @@ technically blocked on complete approved evidence.
 - [ ] Generate schema-valid machine-readable and human-readable evidence with
   commit, lockfile, tool, target, browser, hash, command, measurement, result,
   and responsible-maintainer identities.
-- [ ] Make release publication depend technically on complete passing approved
+- [x] Make release publication depend technically on complete passing approved
   evidence and permanently attach both evidence formats to the release.
-- [ ] Unhide `tracky dashboard` only in the rollout change and document startup,
+- [x] Unhide `tracky dashboard` only in the rollout change and document startup,
   `--no-open`, date/currency overrides, supported platforms and browsers,
   privacy boundaries, database upgrade, recovery, and troubleshooting.
 - [ ] Publish the first dashboard as supported Tracky 0.2.0 rather than a beta or
   preview, with no threshold waiver or baseline movement hidden in the rollout.
+
+Implementation evidence (2026-07-22): Tracky is versioned as 0.2.0 and the
+dashboard is public in CLI help; README, `docs/dashboard.md`, and CHANGELOG cover
+the supported non-preview contract. Cargo Dist now emits the exact four-file
+archive, and `dashboard_evidence.py` binds release evidence to the accepted
+commit, lockfile, checksums, archive bytes, source-identical notices/docs,
+executable architecture, permissions, and allowlist. `dashboard-release-proof`
+requires protected maintainer approval; the tag workflow cannot reach host,
+Homebrew, or announcement without the matching complete proof and permanently
+adds its JSON/Markdown renderings to the release artifacts.
+
+Local Apple Silicon Cargo Dist verification passes both frozen size limits
+(archive 4,214,744 bytes; executable 15,065,296 bytes), plus the complete Rust,
+Clippy, release-build, Chromium, Firefox, WebKit, and axe gates under sandboxed
+HOME/config. The remaining unchecked criteria deliberately require retained
+real-runner evidence for Intel macOS/Linux, installers/Homebrew, stress/resource
+matrices, minimum/current browsers, and signed manual accessibility. Publication
+remains technically blocked until those external gates populate and approve the
+manifest; no evidence or threshold was fabricated or waived in this change.

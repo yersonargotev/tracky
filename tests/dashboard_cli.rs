@@ -313,19 +313,30 @@ fn database_artifact_bytes(database: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
-fn dashboard_is_hidden_from_general_help_but_has_explicit_help() {
+fn dashboard_is_public_in_tracky_0_2_help() {
     let root = tempfile::tempdir().expect("sandbox");
     let top = sandboxed_command(root.path())
         .arg("--help")
         .output()
         .expect("run top-level help");
     assert!(top.status.success());
-    assert!(!String::from_utf8_lossy(&top.stdout).contains("dashboard"));
+    let top_help = String::from_utf8_lossy(&top.stdout);
+    assert!(top_help.contains("dashboard"));
+
+    let version = sandboxed_command(root.path())
+        .arg("--version")
+        .output()
+        .expect("run version");
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout).trim(),
+        "tracky 0.2.0"
+    );
 
     let dashboard = sandboxed_command(root.path())
         .args(["dashboard", "--help"])
         .output()
-        .expect("run hidden dashboard help");
+        .expect("run dashboard help");
     assert!(dashboard.status.success());
     assert!(String::from_utf8_lossy(&dashboard.stdout).contains("--no-open"));
 }

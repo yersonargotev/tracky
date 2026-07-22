@@ -1,5 +1,8 @@
 import importlib.util
+import hashlib
 import json
+import struct
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,19 +69,162 @@ class DashboardEvidenceToolTest(unittest.TestCase):
         tool.validate_manifest(manifest)
         with self.assertRaises(ValueError):
             tool.validate_manifest(manifest, release=True)
-        manifest["browsers"] = {"safari": "26.0", "firefox-esr": "153", "chromium": "150"}
+        manifest["browsers"] = {
+            "safari-minimum": "26.0",
+            "safari-latest": "26.1",
+            "firefox-esr-minimum": "153 ESR",
+            "firefox-latest": "154",
+            "chromium-minimum": "150",
+            "chromium-latest": "151",
+        }
         manifest["artifacts"] = [
-            {"target": target, "name": "tracky.tar.xz", "sha256": "a" * 64, "bytes": 1}
+            {
+                "target": target,
+                "name": "tracky-%s.tar.xz" % target,
+                "sha256": "a" * 64,
+                "bytes": 1,
+            }
             for target in sorted(tool.TARGETS)
         ]
-        manifest["measurements"] = {"latency": {}, "resources": {}, "sizes": {}}
+        manifest["measurements"] = {
+            "latency": {
+                target: {
+                    "warmups": 5,
+                    "runs": 30,
+                    **{name: limit for name, limit in tool.LATENCY_LIMITS_MS.items()},
+                }
+                for target in tool.TARGETS
+            },
+            "resources": {
+                target: {
+                    **{name: limit for name, limit in tool.RESOURCE_LIMITS.items()},
+                    "cycles": 100,
+                    "descriptor_growth": 0,
+                    "memory_growth_bytes": 8 * 1024 * 1024,
+                    "memory_growth_percent": 6,
+                }
+                for target in tool.TARGETS
+            },
+            "sizes": {
+                "schema_version": 1,
+                "resolved_package_count": self.baseline["resolved_package_count"],
+                "asset_bytes": 0,
+                "targets": [
+                    {
+                        "target": target,
+                        "archive_bytes": 1,
+                        "archive_sha256": "a" * 64,
+                        "executable_bytes": 1,
+                        "executable_sha256": "b" * 64,
+                    }
+                    for target in sorted(tool.TARGETS)
+                ],
+            },
+        }
         manifest["results"] = [
-            {"gate": gate, "status": "pass", "evidence": "retained evidence"}
-            for gate in sorted(tool.REQUIRED_RELEASE_GATES)
+            {
+                "gate": gate,
+                "status": "pass",
+                "evidence": "https://github.com/yersonargotev/tracky/actions/runs/%d#%s"
+                % (index, gate),
+            }
+            for index, gate in enumerate(sorted(tool.REQUIRED_RELEASE_GATES), start=1)
         ]
         manifest["responsible_maintainer"] = "maintainer"
         manifest["approval"] = {"approved": True, "approved_by": "maintainer"}
-        tool.validate_manifest(manifest, release=True)
+        tool.validate_manifest(
+            manifest,
+            release=True,
+            expected_commit=manifest["commit"],
+            expected_lockfile_sha256=manifest["lockfile_sha256"],
+        )
+
+        incomplete = json.loads(json.dumps(manifest))
+        incomplete["measurements"]["latency"][next(iter(tool.TARGETS))] = {}
+        with self.assertRaisesRegex(ValueError, "latency metrics"):
+            tool.validate_manifest(
+                incomplete,
+                release=True,
+                expected_commit=manifest["commit"],
+                expected_lockfile_sha256=manifest["lockfile_sha256"],
+            )
+
+        with self.assertRaisesRegex(ValueError, "accepted commit"):
+            tool.validate_manifest(
+                manifest,
+                release=True,
+                expected_commit="f" * 40,
+                expected_lockfile_sha256=manifest["lockfile_sha256"],
+            )
+        with self.assertRaisesRegex(ValueError, "accepted lockfile"):
+            tool.validate_manifest(
+                manifest,
+                release=True,
+                expected_commit=manifest["commit"],
+                expected_lockfile_sha256="f" * 64,
+            )
+
+        placeholder = json.loads(json.dumps(manifest))
+        placeholder["results"][0]["evidence"] = "https://example.invalid/retained"
+        with self.assertRaisesRegex(ValueError, "Tracky Actions evidence"):
+            tool.validate_manifest(
+                placeholder,
+                release=True,
+                expected_commit=manifest["commit"],
+                expected_lockfile_sha256=manifest["lockfile_sha256"],
+            )
+
+    def test_packaged_archive_requires_exact_files_checksum_and_executable_mode(self):
+        target = "aarch64-apple-darwin"
+        archive_name = "tracky-%s.tar.xz" % target
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "source"
+            source.mkdir()
+            for name, content in {
+                "tracky": b"\xcf\xfa\xed\xfe" + struct.pack("<I", 0x0100000C) + b"binary-header",
+                "README.md": b"readme",
+                "LICENSE": b"license",
+                "THIRD-PARTY-NOTICES": b"notices",
+            }.items():
+                path = source / name
+                path.write_bytes(content)
+                path.chmod(0o755 if name == "tracky" else 0o644)
+            archive = root / archive_name
+            with tarfile.open(archive, "w:xz") as bundle:
+                bundle.add(source, arcname="tracky-%s" % target)
+            digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+            (root / (archive_name + ".sha256")).write_text(
+                "%s  %s\n" % (digest, archive_name), encoding="utf-8"
+            )
+
+            measured = tool.inspect_release_archive(archive, target, expected_root=source)
+            self.assertEqual(measured["archive_contents"], sorted(tool.REQUIRED_ARCHIVE_FILES))
+            tool.verify_dist_checksum(archive)
+            tool.verify_packaged_size_measurement(measured, measured)
+            placeholder = dict(measured)
+            placeholder["executable_bytes"] = 1
+            with self.assertRaisesRegex(ValueError, "executable_bytes"):
+                tool.verify_packaged_size_measurement(placeholder, measured)
+
+            (root / (archive_name + ".sha256")).write_text("0" * 64 + "  " + archive_name + "\n")
+            with self.assertRaisesRegex(ValueError, "checksum"):
+                tool.verify_dist_checksum(archive)
+
+            with tarfile.open(archive, "w:xz") as bundle:
+                for path in sorted(source.iterdir()):
+                    bundle.add(path, arcname="wrong-root/%s" % path.name)
+            with self.assertRaisesRegex(ValueError, "allowlist"):
+                tool.inspect_release_archive(archive, target, expected_root=source)
+
+    def test_release_workflow_blocks_publication_and_attaches_both_evidence_formats(self):
+        workflow = (tool.ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        self.assertIn("verify-dashboard-release:", workflow)
+        self.assertIn("python3 scripts/dashboard_evidence.py validate --release", workflow)
+        self.assertIn("dashboard-verification.json", workflow)
+        self.assertIn("dashboard-verification.md", workflow)
+        host = workflow.split("  host:", 1)[1].split("\n  publish-homebrew-formula:", 1)[0]
+        self.assertIn("verify-dashboard-release", host)
 
     def test_json_schema_and_ci_validator_share_contract_vocabulary(self):
         tool.validate_schema_contract(tool.read_json(tool.SCHEMA))

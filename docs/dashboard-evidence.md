@@ -61,7 +61,10 @@ from retained command output, and validate/render it with:
 python3 scripts/dashboard_evidence.py validate dashboard-verification.json
 python3 scripts/dashboard_evidence.py render dashboard-verification.json \
   --output dashboard-verification.md
-python3 scripts/dashboard_evidence.py validate --release dashboard-verification.json
+python3 scripts/dashboard_evidence.py validate --release \
+  --commit "$(git rev-parse HEAD)" \
+  --lockfile-sha256 "$(python3 -c 'import hashlib; print(hashlib.sha256(open("Cargo.lock", "rb").read()).hexdigest())')" \
+  dashboard-verification.json
 ```
 
 The normal validator permits `not_run` while implementation slices are still in
@@ -70,8 +73,52 @@ identified maintainer approves the evidence. The JSON Schema beside the template
 is the interchange contract; the Python validator is the fail-closed CI entry
 point and the Markdown renderer consumes that same validated input.
 
+Release proof must name all six supported browser lanes (`safari-minimum`,
+`safari-latest`, `firefox-esr-minimum`, `firefox-latest`, `chromium-minimum`,
+and `chromium-latest`) with versions at or above the documented minimums. For
+each Cargo Dist target, `measurements.latency` records the warm-up/run counts and
+all p95 dashboard budgets, `measurements.resources` records the idle/peak and
+100-cycle stability budgets, and `measurements.sizes` records the binary and
+archive hashes and byte counts. Release validation rejects missing targets,
+out-of-budget values, placeholder evidence, or measurements that disagree with
+the artifact records.
+Each passing gate links the retained Tracky GitHub Actions run (or job) that
+produced its raw output; arbitrary HTTPS locations are not accepted. During the
+tag workflow, executable hashes and sizes are re-read from the packaged binaries,
+while asset bytes and resolved-package counts are rebound to the accepted source
+tree and inventory.
+
 The named manual WCAG release-candidate inputs live in
 `evidence/dashboard/manual-accessibility-checklist.md`. They intentionally remain
 `not run` during implementation; browser automation must not pre-claim
 VoiceOver, Orca, keyboard, zoom, contrast, target, motion, announcement, or
 non-color passage.
+
+## Publication gate
+
+Release evidence is produced outside the source tree from retained real-target
+output; it is never hand-marked complete by CI. After every automated and manual
+gate has passed, dispatch **Approve dashboard release proof** on the exact commit
+to be tagged, supplying an HTTPS URL and SHA-256 for
+`dashboard-verification.json`. The protected `dashboard-release` environment is
+the maintainer approval boundary. That workflow validates the accepted commit
+and lockfile, renders the Markdown form, and retains both under an artifact name
+bound to the commit.
+
+On a release tag, Cargo Dist builds fresh artifacts. Before `host`, Homebrew, or
+announcement jobs can run, `verify-dashboard-release` downloads the approved
+proof for that exact SHA, validates it with:
+
+```sh
+python3 scripts/dashboard_evidence.py validate --release \
+  --commit "$GITHUB_SHA" --lockfile-sha256 "$LOCKFILE_SHA256" \
+  dashboard-verification.json
+python3 scripts/dashboard_evidence.py verify-artifacts \
+  dashboard-verification.json --artifacts target/distrib
+```
+
+The second command binds every recorded byte count and hash to the newly built
+archive, its Cargo Dist checksum, exact file allowlist, safe paths, and executable
+mode. Publication fails closed when proof is missing, stale, incomplete,
+unapproved, or differs from the artifacts. Both JSON and Markdown files join the
+release artifact set permanently.

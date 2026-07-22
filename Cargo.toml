@@ -1,6 +1,6 @@
 [package]
 name = "tracky"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 publish = false
 default-run = "tracky"
@@ -35,9 +35,12 @@ tempfile = "3.27.0"
 
 [package.metadata.dist]
 dist = true
+auto-includes = false
+include = ["README.md", "LICENSE", "THIRD-PARTY-NOTICES"]
 
 [workspace.metadata.dist]
 cargo-dist-version = "0.32.0"
+allow-dirty = ["ci"]
 ci = ["github"]
 installers = ["shell", "homebrew"]
 targets = [

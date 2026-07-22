@@ -1,0 +1,51 @@
+name: Approve dashboard release proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_url:
+        description: HTTPS URL for dashboard-verification.json produced from retained target evidence
+        required: true
+        type: string
+      manifest_sha256:
+        description: SHA-256 of dashboard-verification.json
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  approve:
+    name: Validate approved evidence
+    runs-on: ubuntu-22.04
+    environment: dashboard-release
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Fetch the hash-pinned evidence
+        env:
+          MANIFEST_URL: ${{ inputs.manifest_url }}
+          MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+        run: |
+          case "$MANIFEST_URL" in https://*) ;; *) echo "manifest URL must use HTTPS" >&2; exit 1;; esac
+          curl --proto '=https' --tlsv1.2 --fail --location --output dashboard-verification.json "$MANIFEST_URL"
+          echo "$MANIFEST_SHA256  dashboard-verification.json" | sha256sum --check --strict
+      - name: Validate and render the accepted proof
+        run: |
+          lockfile_sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)
+          python3 scripts/dashboard_evidence.py validate --release \
+            --commit "$GITHUB_SHA" --lockfile-sha256 "$lockfile_sha256" \
+            dashboard-verification.json
+          python3 scripts/dashboard_evidence.py render dashboard-verification.json \
+            --output dashboard-verification.md
+      - name: Retain proof for the matching commit
+        uses: actions/upload-artifact@v7
+        with:
+          name: dashboard-release-proof-${{ github.sha }}
+          retention-days: 90
+          if-no-files-found: error
+          path: |
+            dashboard-verification.json
+            dashboard-verification.md
