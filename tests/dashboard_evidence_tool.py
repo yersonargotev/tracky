@@ -32,6 +32,13 @@ class DashboardEvidenceToolTest(unittest.TestCase):
     def test_accepts_exact_budget_boundaries(self):
         tool.compare_measurements(self.current, self.baseline)
 
+    def test_static_budget_targets_the_assets_embedded_by_dashboard_rs(self):
+        self.assertEqual(tool.ASSETS, tool.ROOT / "src" / "dashboard_assets")
+        self.assertGreater(
+            sum(path.stat().st_size for path in tool.ASSETS.iterdir() if path.suffix in {".css", ".js"}),
+            0,
+        )
+
     def test_rejects_each_budget_above_boundary(self):
         cases = []
         for field, value in (("asset_bytes", 250 * 1024 + 1), ("resolved_package_count", self.baseline["resolved_package_count"] + 61)):

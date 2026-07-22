@@ -29,6 +29,12 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run tests
         run: cargo test --locked --all-targets
+      - name: Run real-browser dashboard flow
+        run: |
+          npm install --global @playwright/cli@0.1.14
+          playwright-cli install-browser chromium
+          cargo build --locked --bin tracky
+          python3 tests/dashboard_browser_flow.py --binary target/debug/tracky
       - name: Run Clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
       - name: Build release binary

@@ -18,11 +18,15 @@ fn tracky() -> &'static str {
 }
 
 fn fixture_database(root: &Path) -> PathBuf {
+    fixture_database_from_sql(root, include_str!("fixtures/dashboard/seeds/finance.sql"))
+}
+
+fn fixture_database_from_sql(root: &Path, seed: &str) -> PathBuf {
     let database = root.join("tracky.sqlite");
     let connection = Connection::open(&database).expect("create fixture database");
     apply_migrations(&connection).expect("migrate fixture database");
     connection
-        .execute_batch(include_str!("fixtures/dashboard/seeds/finance.sql"))
+        .execute_batch(seed)
         .expect("seed dashboard fixture");
     drop(connection);
     database
@@ -136,12 +140,11 @@ impl RunningDashboard {
     }
 
     fn stop_with_signal(&mut self, signal: &str) {
-        if self
-            .child
-            .try_wait()
-            .expect("query dashboard status")
-            .is_some()
-        {
+        if let Some(status) = self.child.try_wait().expect("query dashboard status") {
+            assert!(
+                status.success(),
+                "dashboard must exit successfully: {status}"
+            );
             return;
         }
         let status = Command::new("kill")
@@ -152,7 +155,11 @@ impl RunningDashboard {
 
         let deadline = Instant::now() + PROCESS_TIMEOUT;
         while Instant::now() < deadline {
-            if self.child.try_wait().expect("wait for dashboard").is_some() {
+            if let Some(status) = self.child.try_wait().expect("wait for dashboard") {
+                assert!(
+                    status.success(),
+                    "dashboard must exit successfully: {status}"
+                );
                 return;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -497,6 +504,61 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
             "missing exact value {exact_value}"
         );
     }
+    let ordered_landmarks = [
+        "data-region=\"scope\"",
+        "data-region=\"currency\"",
+        "data-region=\"summary\"",
+        "data-region=\"monthly\"",
+        "data-region=\"categories\"",
+        "data-region=\"accounts\"",
+        "data-region=\"alerts\"",
+        "data-region=\"investments\"",
+    ];
+    let mut previous = 0;
+    for landmark in ordered_landmarks {
+        let position = response.body.find(landmark).expect("fixed ledger region");
+        assert!(position >= previous, "{landmark} is out of order");
+        previous = position;
+    }
+    for semantic in [
+        "aria-label=\"Ledger filters\"",
+        "aria-label=\"Monthly income and consumption expense trend\"",
+        "<caption>Exact monthly amounts in minor units</caption>",
+        "aria-label=\"Read-only canonical drawer\"",
+        "JavaScript is optional",
+    ] {
+        assert!(response.body.contains(semantic), "missing {semantic}");
+    }
+    let aggregate = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    let aggregate: serde_json::Value = serde_json::from_str(&aggregate.body).unwrap();
+    for field in [
+        "income_minor",
+        "consumption_expense_minor",
+        "net_cash_flow_minor",
+        "investment_contribution_minor",
+    ] {
+        let value = aggregate["summary"][field].as_str().unwrap();
+        assert!(
+            response.body.contains(&format!("data-minor=\"{value}\"")),
+            "SSR summary disagrees with API field {field}"
+        );
+    }
+    for month in aggregate["monthly"].as_array().unwrap() {
+        assert!(response.body.contains(month["month"].as_str().unwrap()));
+        for field in [
+            "income_minor",
+            "consumption_expense_minor",
+            "net_cash_flow_minor",
+            "investment_contribution_minor",
+        ] {
+            assert!(response.body.contains(month[field].as_str().unwrap()));
+        }
+    }
     assert!(!response.body.contains("http://"));
     assert!(!response.body.contains("https://"));
     let (host, _) = url_parts(&dashboard.url);
@@ -507,6 +569,114 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
         "listener must close when the foreground process exits"
     );
     assert_eq!(database_artifact_bytes(&database), before);
+}
+
+#[test]
+fn embedded_monthly_ledger_assets_are_progressive_local_and_within_budget() {
+    let root = tempfile::tempdir().expect("sandbox");
+    let database = fixture_database(root.path());
+    let mut dashboard = RunningDashboard::start(root.path(), &database);
+    let (_, path) = url_parts(&dashboard.url);
+    let css = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}app.css"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    let javascript = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}app.js"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(css.status, 200);
+    assert_eq!(javascript.status, 200);
+    assert!(css.headers["content-type"].starts_with("text/css"));
+    assert!(javascript.headers["content-type"].starts_with("text/javascript"));
+    assert!(css.body.len() + javascript.body.len() <= 250 * 1024);
+    for external in ["http://", "https://", "@import", "url("] {
+        assert!(
+            !css.body.contains(external),
+            "external CSS reference: {external}"
+        );
+        assert!(
+            !javascript.body.contains(external),
+            "external JavaScript reference: {external}"
+        );
+    }
+    for forbidden in [
+        "localStorage",
+        "sessionStorage",
+        "document.cookie",
+        "pushState",
+        "replaceState",
+    ] {
+        assert!(
+            !javascript.body.contains(forbidden),
+            "browser state must remain ephemeral: {forbidden}"
+        );
+    }
+    for behavior in [
+        "api/v1/dashboard",
+        "api/v1/transactions",
+        "data-action=\"apply-filters\"",
+        "data-action=\"open-drawer\"",
+        "data-action=\"load-more\"",
+        "Escape",
+    ] {
+        assert!(javascript.body.contains(behavior), "missing {behavior}");
+    }
+    dashboard.stop();
+}
+
+#[test]
+fn monthly_ledger_escapes_canonical_labels_before_rendering_html() {
+    let root = tempfile::tempdir().expect("sandbox");
+    let database = fixture_database(root.path());
+    Connection::open(&database)
+        .unwrap()
+        .execute(
+            "UPDATE accounts SET label = '<img src=x onerror=alert(1)>' WHERE id = 'cop-checking'",
+            [],
+        )
+        .unwrap();
+    let mut dashboard = RunningDashboard::start(root.path(), &database);
+    let (_, path) = url_parts(&dashboard.url);
+    let response = request(&dashboard.url, "GET", path, &[]);
+    assert_eq!(response.status, 200);
+    assert!(!response.body.contains("<img src=x"));
+    assert!(response.body.contains("&lt;img src=x onerror=alert(1)&gt;"));
+    dashboard.stop();
+}
+
+#[test]
+fn no_javascript_ledger_retains_exact_investment_and_freshness_detail() {
+    let root = tempfile::tempdir().expect("sandbox");
+    let database = fixture_database_from_sql(
+        root.path(),
+        include_str!("fixtures/dashboard/seeds/investment.sql"),
+    );
+    let mut dashboard = RunningDashboard::start(root.path(), &database);
+    let (_, path) = url_parts(&dashboard.url);
+    let response = request(&dashboard.url, "GET", path, &[]);
+    assert_eq!(response.status, 200);
+    for exact in [
+        "Synthetic Fund",
+        "1.250000000000000001",
+        "250000 COP",
+        "275000 COP",
+        "2026-02-27",
+        "fresh",
+        "reconciliation difference",
+        "Pending allocation: 0 COP",
+    ] {
+        assert!(
+            response.body.contains(exact),
+            "missing {exact}: {}",
+            response.body
+        );
+    }
+    dashboard.stop();
 }
 
 #[test]
@@ -534,6 +704,20 @@ fn capability_v1_resources_return_the_complete_snapshot_and_canonical_drill_down
     assert_eq!(aggregate["summary"]["income_minor"], "500000");
     assert!(aggregate["investments"].is_object());
     assert!(aggregate["alerts"].is_array());
+
+    let browser_fetch = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard"),
+        &[
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Mode", "cors"),
+        ],
+    );
+    assert_eq!(browser_fetch.status, 200, "same-origin browser fetch");
+    assert!(!browser_fetch
+        .headers
+        .contains_key("access-control-allow-origin"));
 
     let usd = request(
         &dashboard.url,

@@ -140,25 +140,25 @@ without JavaScript and persisting no financial interaction state in the browser.
 
 **Blocked by:** Add dashboard investments and alerts.
 
-- [ ] Present the fixed information order: persistent scope/header, explicit
+- [x] Present the fixed information order: persistent scope/header, explicit
   currency selector, four-part summary, monthly trend and exact table, category
   and account activity, contextual alerts, and dense investment positions.
-- [ ] Implement the compact global filter panel with the confirmed date,
+- [x] Implement the compact global filter panel with the confirmed date,
   currency, account, category, default-selection, and empty-selection semantics.
-- [ ] Make chart points, breakdown rows, alerts, and positions open the same
+- [x] Make chart points, breakdown rows, alerts, and positions open the same
   read-only canonical drawer with exact values and stable pagination.
-- [ ] Keep every financial calculation and filter decision in Rust; browser code
+- [x] Keep every financial calculation and filter decision in Rust; browser code
   performs presentation and ephemeral interaction only.
-- [ ] Keep dates, filters, account/category identifiers, drawers, and cursors out
+- [x] Keep dates, filters, account/category identifiers, drawers, and cursors out
   of query strings, fragments, cookies, local storage, and session storage.
-- [ ] Preserve applicable state during internal dashboard actions, reset to
+- [x] Preserve applicable state during internal dashboard actions, reset to
   startup scope on full page reload, and do not repurpose browser Back.
-- [ ] Retain exact server-rendered tables, labels, periods, currencies, freshness,
+- [x] Retain exact server-rendered tables, labels, periods, currencies, freshness,
   and alerts when JavaScript or graphical enhancement fails.
-- [ ] Meet responsive order, keyboard/focus basics, exact API/table agreement,
+- [x] Meet responsive order, keyboard/focus basics, exact API/table agreement,
   zero external requests, local interaction latency, and the 250 KiB embedded
   uncompressed asset budget.
-- [ ] Treat the information-architecture prototype only as decision evidence and
+- [x] Treat the information-architecture prototype only as decision evidence and
   keep all prior gates enabled and passing.
 
 ## Add dashboard refresh, failure states, and accessibility

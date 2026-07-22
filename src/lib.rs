@@ -4,6 +4,7 @@ pub mod cdt_provider_enrichment;
 pub mod cli;
 pub mod dashboard;
 mod dashboard_finance;
+mod dashboard_view;
 mod investment_document_parsers;
 mod investment_document_review;
 pub mod investment_documents;

@@ -16,6 +16,7 @@ TEMPLATE = EVIDENCE / "dashboard-verification.template.json"
 SCHEMA = EVIDENCE / "dashboard-verification.schema.json"
 INVENTORY = EVIDENCE / "dependency-inventory.json"
 NOTICES_FILE = ROOT / "THIRD-PARTY-NOTICES"
+ASSETS = ROOT / "src" / "dashboard_assets"
 TARGETS = {
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",
@@ -252,7 +253,7 @@ def check_all():
     validate_manifest(read_json(TEMPLATE))
     write_or_check(INVENTORY, dependency_inventory(), True)
     require(NOTICES_FILE.exists() and "THIRD-PARTY NOTICES" in NOTICES_FILE.read_text(encoding="utf-8"), "THIRD-PARTY-NOTICES is missing")
-    compare_static(ROOT / "assets" / "dashboard", baseline)
+    compare_static(ASSETS, baseline)
 
 
 def compare_static(assets, baseline):
@@ -280,7 +281,7 @@ def main(argv=None):
     compare.add_argument("--current", type=Path, required=True)
     measurement = sub.add_parser("measure")
     measurement.add_argument("--artifacts", type=Path, required=True)
-    measurement.add_argument("--assets", type=Path)
+    measurement.add_argument("--assets", type=Path, default=ASSETS)
     measurement.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "check":

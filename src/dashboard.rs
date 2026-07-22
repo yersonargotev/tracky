@@ -66,6 +66,7 @@ pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> 
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
+        .enable_time()
         .build()
         .context("starting dashboard runtime")?;
     runtime.block_on(async move {
@@ -418,7 +419,7 @@ fn api_error(status: StatusCode, code: &'static str) -> Response {
 }
 
 async fn dashboard_page(State(state): State<AppState>) -> Response {
-    Html(render_html(&state.snapshot)).into_response()
+    Html(crate::dashboard_view::render(&state.snapshot)).into_response()
 }
 
 async fn stylesheet() -> Response {
@@ -451,7 +452,7 @@ async fn secure_request(State(state): State<AppState>, request: Request, next: N
     let valid_fetch_mode = valid_optional_header(
         request.headers(),
         "sec-fetch-mode",
-        &["navigate", "no-cors", "same-origin"],
+        &["navigate", "no-cors", "same-origin", "cors"],
     );
     let mut response =
         if request.method() == Method::GET && valid_host && valid_fetch_site && valid_fetch_mode {
@@ -490,44 +491,6 @@ fn add_security_headers(headers: &mut axum::http::HeaderMap) {
             HeaderValue::from_static(value),
         );
     }
-}
-
-fn render_html(snapshot: &DashboardResponse) -> String {
-    let stylesheet = "app.css";
-    let script = "app.js";
-    let Some(currency) = snapshot.filters.currency.as_deref() else {
-        return format!(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Tracky Monthly ledger</title><link rel=\"stylesheet\" href=\"{stylesheet}\"></head><body><main><h1>Monthly ledger</h1><p class=\"scope\">{} through {}</p><section class=\"empty\"><h2>No currency activity</h2><p>This is a valid empty ledger. Add canonical activity with the Tracky CLI.</p></section></main><script src=\"{script}\"></script></body></html>",
-            snapshot.filters.start_date, snapshot.filters.end_date
-        );
-    };
-    let amount =
-        |value: &str| format!("<strong data-minor=\"{value}\">{value} {currency}</strong>");
-    let rows = snapshot
-        .monthly
-        .iter()
-        .map(|month| format!(
-            "<tr><th scope=\"row\">{}</th><td data-minor=\"{}\">{} {currency}</td><td data-minor=\"{}\">{} {currency}</td><td data-minor=\"{}\">{} {currency}</td><td data-minor=\"{}\">{} {currency}</td></tr>",
-            month.month,
-            month.measures.income_minor,
-            month.measures.income_minor,
-            month.measures.consumption_expense_minor,
-            month.measures.consumption_expense_minor,
-            month.measures.net_cash_flow_minor,
-            month.measures.net_cash_flow_minor,
-            month.measures.investment_contribution_minor,
-            month.measures.investment_contribution_minor
-        ))
-        .collect::<String>();
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Tracky Monthly ledger</title><link rel=\"stylesheet\" href=\"{stylesheet}\"></head><body><main><header><h1>Monthly ledger</h1><p class=\"scope\">{} through {} · {currency}</p></header><ul class=\"summary\"><li>Income{}</li><li>Consumption expense{}</li><li>Savings / net cash flow{}</li><li>Investment contributions{}</li></ul><section aria-labelledby=\"monthly-heading\"><h2 id=\"monthly-heading\">Monthly activity</h2><table><caption>Exact monthly amounts in minor units</caption><thead><tr><th scope=\"col\">Month</th><th scope=\"col\">Income</th><th scope=\"col\">Consumption expense</th><th scope=\"col\">Savings</th><th scope=\"col\">Investment contributions</th></tr></thead><tbody>{rows}</tbody></table></section><p>Use the Tracky CLI to review or correct canonical data.</p></main><script src=\"{script}\"></script></body></html>",
-        snapshot.filters.start_date,
-        snapshot.filters.end_date,
-        amount(&snapshot.summary.income_minor),
-        amount(&snapshot.summary.consumption_expense_minor),
-        amount(&snapshot.summary.net_cash_flow_minor),
-        amount(&snapshot.summary.investment_contribution_minor),
-    )
 }
 
 #[cfg(unix)]

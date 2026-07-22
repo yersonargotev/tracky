@@ -44,7 +44,7 @@ then measure and compare them:
 
 ```sh
 python3 scripts/dashboard_evidence.py measure \
-  --artifacts target/distrib --assets assets/dashboard --output current.json
+  --artifacts target/distrib --output current.json
 python3 scripts/dashboard_evidence.py compare --current current.json
 ```
 
