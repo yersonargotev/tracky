@@ -510,6 +510,102 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
 }
 
 #[test]
+fn capability_v1_resources_return_the_complete_snapshot_and_canonical_drill_down() {
+    let root = tempfile::tempdir().expect("sandbox");
+    let database = fixture_database(root.path());
+    let before = database_artifact_bytes(&database);
+    let mut dashboard = RunningDashboard::start(root.path(), &database);
+    let (_, path) = url_parts(&dashboard.url);
+
+    let aggregate = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard"),
+        &[
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Mode", "same-origin"),
+        ],
+    );
+    assert_eq!(aggregate.status, 200, "{aggregate:?}");
+    assert!(aggregate.headers["content-type"].starts_with("application/json"));
+    assert_defensive_headers(&aggregate);
+    let aggregate: serde_json::Value = serde_json::from_str(&aggregate.body).unwrap();
+    assert_eq!(aggregate["schema_version"], "tracky.dashboard.v1");
+    assert_eq!(aggregate["summary"]["income_minor"], "500000");
+    assert!(aggregate["investments"].is_object());
+    assert!(aggregate["alerts"].is_array());
+
+    let usd = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard?currency=USD"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(usd.status, 200, "{usd:?}");
+    let usd: serde_json::Value = serde_json::from_str(&usd.body).unwrap();
+    assert_eq!(usd["summary"]["currency"], "USD");
+    assert_eq!(usd["summary"]["income_minor"], "10000");
+    assert!(usd["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|account| account["currency"] == "USD"));
+
+    let filtered = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard?account=cop-checking&category=food"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(filtered.status, 200, "{filtered:?}");
+    let filtered: serde_json::Value = serde_json::from_str(&filtered.body).unwrap();
+    assert_eq!(filtered["summary"]["consumption_expense_minor"], "100000");
+    assert_eq!(filtered["summary"]["investment_contribution_minor"], "0");
+    assert_eq!(
+        filtered["filters"]["account_ids"],
+        serde_json::json!(["cop-checking"])
+    );
+
+    let drill = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/transactions?metric=income&limit=1"),
+        &[
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Mode", "same-origin"),
+        ],
+    );
+    assert_eq!(drill.status, 200, "{drill:?}");
+    assert!(drill.headers["content-type"].starts_with("application/json"));
+    let drill: serde_json::Value = serde_json::from_str(&drill.body).unwrap();
+    assert_eq!(drill["schema_version"], "tracky.dashboard.v1");
+    assert_eq!(drill["metric"], "income");
+    assert_eq!(
+        drill["rows"][0]["canonical_transaction_id"],
+        "cop-income-jan"
+    );
+
+    let invalid = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/transactions?metric=income&metric=activity"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(invalid.status, 400);
+    assert!(!invalid.body.contains(database.to_string_lossy().as_ref()));
+    let invalid_aggregate = request(
+        &dashboard.url,
+        "GET",
+        &format!("{path}api/v1/dashboard?metric=income"),
+        &[("Sec-Fetch-Site", "same-origin")],
+    );
+    assert_eq!(invalid_aggregate.status, 400);
+
+    dashboard.stop();
+    assert_eq!(database_artifact_bytes(&database), before);
+}
+
+#[test]
 fn dashboard_rejects_adversarial_http_without_leaking_data_or_capability() {
     let root = tempfile::tempdir().expect("sandbox");
     let database = fixture_database(root.path());
@@ -524,10 +620,10 @@ fn dashboard_rejects_adversarial_http_without_leaking_data_or_capability() {
     let mut dashboard = RunningDashboard::start(root.path(), &database);
     let path = url_parts(&dashboard.url).1.to_string();
     let wrong_capability = format!("{path}x");
-    let disabled_v1 = format!("{path}api/v1/dashboard");
+    let unknown_v1 = format!("{path}api/v1/private");
     let cases = [
         ("GET", wrong_capability.as_str(), vec![]),
-        ("GET", disabled_v1.as_str(), vec![]),
+        ("GET", unknown_v1.as_str(), vec![]),
         ("POST", path.as_str(), vec![]),
         ("GET", "/", vec![]),
         ("GET", "/../tracky.sqlite", vec![]),

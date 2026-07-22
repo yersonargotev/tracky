@@ -1,3 +1,4 @@
+use crate::investment_reports;
 use anyhow::{bail, Result};
 use chrono::{Datelike, Months, NaiveDate, Utc};
 use rusqlite::{params, Connection, Transaction};
@@ -17,7 +18,7 @@ impl std::fmt::Display for UnavailableCurrencyError {
 
 impl std::error::Error for UnavailableCurrencyError {}
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct FinanceFilterRequest {
     pub start_date: String,
     pub end_date: String,
@@ -116,10 +117,23 @@ pub(crate) struct AccountBreakdown {
     pub measures: Measures,
 }
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct InvestmentSection {
+    pub state: &'static str,
+    pub pending_allocation_minor: String,
     pub flows: Vec<InvestmentFlow>,
     pub closing_positions: Vec<ClosingPosition>,
+}
+
+impl Default for InvestmentSection {
+    fn default() -> Self {
+        Self {
+            state: "empty",
+            pending_allocation_minor: "0".into(),
+            flows: Vec::new(),
+            closing_positions: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -150,14 +164,16 @@ pub(crate) struct ClosingPosition {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct DashboardAlert {
+    pub id: String,
     pub kind: String,
     pub severity: String,
-    pub account_id: String,
+    pub account_id: Option<String>,
     pub instrument_id: Option<String>,
     pub currency: String,
     pub effective_date: Option<String>,
     pub observed_at: Option<String>,
     pub age_days: Option<i64>,
+    pub pending_amount_minor: Option<String>,
     pub quantity_difference: Option<String>,
     pub value_difference_minor: Option<String>,
 }
@@ -169,7 +185,6 @@ pub(crate) struct DashboardError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum DrillMetric {
     Activity,
     Income,
@@ -210,7 +225,6 @@ impl DrillMetric {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct DrillRequest {
     pub filters: FinanceFilterRequest,
     pub metric: DrillMetric,
@@ -220,7 +234,6 @@ pub(crate) struct DrillRequest {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct DrillResponse {
     pub schema_version: &'static str,
     pub ok: bool,
@@ -232,7 +245,6 @@ pub(crate) struct DrillResponse {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct DrillRow {
     pub row_type: &'static str,
     pub id: String,
@@ -365,6 +377,11 @@ pub(crate) fn read_finance(
             accounts: Vec::new(),
         }
     };
+    let (investments, alerts) = if state == "ready" {
+        project_investments(connection, &filters)?
+    } else {
+        (InvestmentSection::default(), Vec::new())
+    };
     Ok(DashboardResponse {
         schema_version: DASHBOARD_SCHEMA_VERSION,
         ok: true,
@@ -376,13 +393,279 @@ pub(crate) fn read_finance(
         monthly: sections.monthly,
         categories: sections.categories,
         accounts: sections.accounts,
-        investments: InvestmentSection::default(),
-        alerts: Vec::new(),
+        investments,
+        alerts,
         errors: Vec::new(),
     })
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
+fn project_investments(
+    connection: &Connection,
+    filters: &ResolvedFilters,
+) -> Result<(InvestmentSection, Vec<DashboardAlert>)> {
+    let report = investment_reports::report_filtered(
+        connection,
+        &filters.start_date,
+        &filters.end_date,
+        filters.currency.as_deref(),
+        &filters.account_ids,
+    )?;
+    if !report.ok {
+        bail!("dashboard investment report could not be read");
+    }
+
+    let mut flows = BTreeMap::<(String, String), i64>::new();
+    for acquisition in report.acquisitions_and_reinvestment.by_instrument {
+        let value = flows
+            .entry((acquisition.account_id, acquisition.currency))
+            .or_default();
+        *value = value
+            .checked_add(acquisition.amount_minor)
+            .ok_or_else(|| anyhow::anyhow!("dashboard amount overflow"))?;
+    }
+    let flows: Vec<InvestmentFlow> = flows
+        .into_iter()
+        .map(|((account_id, currency), amount_minor)| InvestmentFlow {
+            account_id,
+            currency,
+            amount_minor: amount_minor.to_string(),
+        })
+        .collect();
+
+    let end = NaiveDate::parse_from_str(&filters.end_date, "%Y-%m-%d")?;
+    let mut alerts = BTreeMap::<String, DashboardAlert>::new();
+    let mut closing_positions = Vec::new();
+    for position in report.closing_positions {
+        let instrument_key = position.instrument_id.as_deref().unwrap_or("cash");
+        let age_days = position
+            .observed_at
+            .as_deref()
+            .and_then(|observed| observed.get(..10))
+            .and_then(|observed| NaiveDate::parse_from_str(observed, "%Y-%m-%d").ok())
+            .map(|observed| end.signed_duration_since(observed).num_days());
+        let underlying_status = if position.reconciliation_status == "stale" {
+            position
+                .original_status
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string())
+        } else {
+            position.reconciliation_status.clone()
+        };
+        let quantity_difference = position.current_quantity_difference.clone();
+        let value_difference_minor = position.current_value_difference_minor;
+
+        if position.freshness == "stale" {
+            let currency = position_alert_currency(&position);
+            insert_alert(
+                &mut alerts,
+                DashboardAlert {
+                    id: format!("stale-valuation:{}:{instrument_key}", position.account_id),
+                    kind: "stale_valuation".into(),
+                    severity: "warning".into(),
+                    account_id: Some(position.account_id.clone()),
+                    instrument_id: position.instrument_id.clone(),
+                    currency,
+                    effective_date: position.effective_date.clone(),
+                    observed_at: position.observed_at.clone(),
+                    age_days,
+                    pending_amount_minor: None,
+                    quantity_difference: None,
+                    value_difference_minor: None,
+                },
+            );
+        }
+        if matches!(
+            underlying_status.as_str(),
+            "no_snapshot" | "missing_snapshot_position"
+        ) {
+            insert_position_alert(
+                &mut alerts,
+                "missing-snapshot-position",
+                "missing_snapshot_position",
+                &position,
+                age_days,
+                None,
+                None,
+            );
+        }
+        if position.observed_value_minor.is_none() {
+            insert_position_alert(
+                &mut alerts,
+                "missing-valuation",
+                "missing_valuation",
+                &position,
+                age_days,
+                None,
+                None,
+            );
+        }
+        if !matches!(
+            underlying_status.as_str(),
+            "matched" | "no_snapshot" | "missing_snapshot_position" | "valuation_unavailable"
+        ) {
+            let currency = position_alert_currency(&position);
+            let id = format!(
+                "reconciliation-difference:{}:{instrument_key}:{}",
+                position.account_id, currency
+            );
+            insert_alert(
+                &mut alerts,
+                DashboardAlert {
+                    id,
+                    kind: "reconciliation_difference".into(),
+                    severity: "warning".into(),
+                    account_id: Some(position.account_id.clone()),
+                    instrument_id: position.instrument_id.clone(),
+                    currency,
+                    effective_date: position.effective_date.clone(),
+                    observed_at: position.observed_at.clone(),
+                    age_days,
+                    pending_amount_minor: None,
+                    quantity_difference: quantity_difference.clone(),
+                    value_difference_minor: value_difference_minor.map(|value| value.to_string()),
+                },
+            );
+        }
+
+        closing_positions.push(ClosingPosition {
+            account_id: position.account_id,
+            instrument_id: position.instrument_id,
+            instrument_type: position.instrument_type,
+            quantity: position.quantity,
+            historical_cost_minor: position
+                .historical_cost_minor
+                .map(|value| value.to_string()),
+            cost_currency: position.cost_currency,
+            observed_value_minor: position.observed_value_minor.map(|value| value.to_string()),
+            valuation_currency: position.valuation_currency,
+            effective_date: position.effective_date,
+            observed_at: position.observed_at,
+            age_days,
+            freshness: position.freshness,
+            reconciliation_status: underlying_status,
+            quantity_difference,
+            value_difference_minor: value_difference_minor.map(|value| value.to_string()),
+        });
+    }
+
+    let mut pending_allocation_minor = 0_i64;
+    for allocation in report.pending_and_reconciliation.allocations {
+        pending_allocation_minor = pending_allocation_minor
+            .checked_add(allocation.unallocated_minor)
+            .ok_or_else(|| anyhow::anyhow!("dashboard amount overflow"))?;
+        let account_id = connection
+            .query_row(
+                "SELECT account_id FROM canonical_transactions WHERE id=?1",
+                [&allocation.contribution_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None);
+        insert_alert(
+            &mut alerts,
+            DashboardAlert {
+                id: format!("pending-allocation:{}", allocation.contribution_id),
+                kind: "pending_allocation".into(),
+                severity: "warning".into(),
+                account_id,
+                instrument_id: None,
+                currency: allocation.currency,
+                effective_date: None,
+                observed_at: None,
+                age_days: None,
+                pending_amount_minor: Some(allocation.unallocated_minor.to_string()),
+                quantity_difference: None,
+                value_difference_minor: None,
+            },
+        );
+    }
+    for event in report.pending_and_reconciliation.provider_events {
+        insert_alert(
+            &mut alerts,
+            DashboardAlert {
+                id: format!("pending-provider-event:{}", event.event_id),
+                kind: "pending_provider_event".into(),
+                severity: "warning".into(),
+                account_id: None,
+                instrument_id: None,
+                currency: event.currency,
+                effective_date: Some(event.effective_date),
+                observed_at: None,
+                age_days: None,
+                pending_amount_minor: None,
+                quantity_difference: None,
+                value_difference_minor: None,
+            },
+        );
+    }
+
+    let state = if closing_positions
+        .iter()
+        .any(|position| position.freshness == "stale")
+    {
+        "stale"
+    } else if closing_positions
+        .iter()
+        .any(|position| position.observed_value_minor.is_none())
+        || (closing_positions.is_empty() && pending_allocation_minor > 0)
+    {
+        "unavailable"
+    } else if closing_positions.is_empty() && flows.is_empty() {
+        "empty"
+    } else {
+        "ready"
+    };
+    Ok((
+        InvestmentSection {
+            state,
+            pending_allocation_minor: pending_allocation_minor.to_string(),
+            flows,
+            closing_positions,
+        },
+        alerts.into_values().collect(),
+    ))
+}
+
+fn insert_position_alert(
+    alerts: &mut BTreeMap<String, DashboardAlert>,
+    id_kind: &str,
+    kind: &str,
+    position: &investment_reports::ClosingPosition,
+    age_days: Option<i64>,
+    quantity_difference: Option<String>,
+    value_difference_minor: Option<String>,
+) {
+    let instrument_key = position.instrument_id.as_deref().unwrap_or("cash");
+    insert_alert(
+        alerts,
+        DashboardAlert {
+            id: format!("{id_kind}:{}:{instrument_key}", position.account_id),
+            kind: kind.into(),
+            severity: "warning".into(),
+            account_id: Some(position.account_id.clone()),
+            instrument_id: position.instrument_id.clone(),
+            currency: position_alert_currency(position),
+            effective_date: position.effective_date.clone(),
+            observed_at: position.observed_at.clone(),
+            age_days,
+            pending_amount_minor: None,
+            quantity_difference,
+            value_difference_minor,
+        },
+    );
+}
+
+fn position_alert_currency(position: &investment_reports::ClosingPosition) -> String {
+    position
+        .cost_currency
+        .clone()
+        .or_else(|| position.valuation_currency.clone())
+        .unwrap_or_default()
+}
+
+fn insert_alert(alerts: &mut BTreeMap<String, DashboardAlert>, alert: DashboardAlert) {
+    alerts.insert(alert.id.clone(), alert);
+}
+
 pub(crate) fn read_drill_down(
     connection: &Transaction<'_>,
     request: DrillRequest,
@@ -854,7 +1137,6 @@ fn checked_add_map<'a>(map: &mut BTreeMap<&'a str, i64>, key: &'a str, amount: i
     Ok(())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn parse_cursor(cursor: &str) -> Result<(&str, &str)> {
     let Some((date, id)) = cursor.split_once('|') else {
         bail!("invalid dashboard cursor");
@@ -995,7 +1277,7 @@ mod tests {
         assert_eq!(category_expense, account_expense);
         assert!(actual["summary"]["income_minor"].is_string());
         assert!(response.investments.flows.is_empty());
-        assert!(response.alerts.is_empty());
+        assert_eq!(response.alerts.len(), 1);
         actual.as_object_mut().unwrap().remove("read_at");
         assert_eq!(
             actual,
@@ -1044,8 +1326,26 @@ mod tests {
                     {"account_id": "cop-investment", "account_name": "COP Investment", "row_count": 1, "currency": "COP", "income_minor": "0", "consumption_expense_minor": "0", "net_cash_flow_minor": "0", "investment_contribution_minor": "100000"},
                     {"account_id": "cop-savings", "account_name": "COP Savings", "row_count": 1, "currency": "COP", "income_minor": "0", "consumption_expense_minor": "20000", "net_cash_flow_minor": "-20000", "investment_contribution_minor": "0"}
                 ],
-                "investments": {"flows": [], "closing_positions": []},
-                "alerts": [],
+                "investments": {
+                    "state": "unavailable",
+                    "pending_allocation_minor": "100000",
+                    "flows": [],
+                    "closing_positions": []
+                },
+                "alerts": [{
+                    "id": "pending-allocation:cop-invest-feb",
+                    "kind": "pending_allocation",
+                    "severity": "warning",
+                    "account_id": "cop-investment",
+                    "instrument_id": null,
+                    "currency": "COP",
+                    "effective_date": null,
+                    "observed_at": null,
+                    "age_days": null,
+                    "pending_amount_minor": "100000",
+                    "quantity_difference": null,
+                    "value_difference_minor": null
+                }],
                 "errors": []
             })
         );
@@ -1275,5 +1575,323 @@ mod tests {
             .unwrap();
         let overflow = finance(&mut overflow_connection, request()).unwrap_err();
         assert_eq!(overflow.to_string(), "dashboard amount overflow");
+    }
+
+    #[test]
+    fn investment_projection_matches_canonical_report_with_exact_transport() {
+        let (_directory, mut connection) = fixture_with_seed(include_str!(
+            "../tests/fixtures/dashboard/seeds/investment.sql"
+        ));
+        let response = finance(
+            &mut connection,
+            FinanceFilterRequest {
+                start_date: "2026-01-01".into(),
+                end_date: "2026-02-28".into(),
+                currency: Some("COP".into()),
+                ..FinanceFilterRequest::default()
+            },
+        )
+        .unwrap();
+        let oracle: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/dashboard/oracles/investment.json"
+        ))
+        .unwrap();
+        let actual = serde_json::to_value(&response).unwrap();
+        let position = &actual["investments"]["closing_positions"][0];
+        assert_eq!(
+            position["instrument_id"],
+            oracle["expected"]["position"]["instrument_id"]
+        );
+        assert_eq!(
+            position["quantity"],
+            oracle["expected"]["position"]["quantity"]
+        );
+        assert_eq!(
+            position["historical_cost_minor"],
+            oracle["expected"]["position"]["historical_cost_minor"]
+        );
+        assert_eq!(
+            position["observed_value_minor"],
+            oracle["expected"]["position"]["observed_value_minor"]
+        );
+        assert_eq!(
+            position["valuation_currency"],
+            oracle["expected"]["position"]["valuation_currency"]
+        );
+        assert_eq!(
+            position["effective_date"],
+            oracle["expected"]["position"]["valuation_date"]
+        );
+        assert_eq!(
+            position["freshness"],
+            oracle["expected"]["position"]["freshness"]
+        );
+        assert_eq!(
+            actual["investments"],
+            json!({
+                "state": "ready",
+                "pending_allocation_minor": "0",
+                "flows": [{
+                    "account_id": "broker-cop",
+                    "currency": "COP",
+                    "amount_minor": "250000"
+                }],
+                "closing_positions": [{
+                    "account_id": "broker-cop",
+                    "instrument_id": "fund-cop",
+                    "instrument_type": "security",
+                    "quantity": "1.250000000000000001",
+                    "historical_cost_minor": "250000",
+                    "cost_currency": "COP",
+                    "observed_value_minor": "275000",
+                    "valuation_currency": "COP",
+                    "effective_date": "2026-02-27",
+                    "observed_at": "2026-02-27T12:00:00Z",
+                    "age_days": 1,
+                    "freshness": "fresh",
+                    "reconciliation_status": "matched",
+                    "quantity_difference": "0",
+                    "value_difference_minor": "0"
+                }]
+            })
+        );
+        assert!(response.alerts.is_empty());
+    }
+
+    #[test]
+    fn investment_alerts_preserve_stale_unavailable_and_reconciliation_states() {
+        let (_directory, mut connection) = fixture_with_seed(include_str!(
+            "../tests/fixtures/dashboard/seeds/reconciliation.sql"
+        ));
+        let difference = finance(
+            &mut connection,
+            FinanceFilterRequest {
+                start_date: "2026-01-01".into(),
+                end_date: "2026-02-28".into(),
+                currency: Some("COP".into()),
+                ..FinanceFilterRequest::default()
+            },
+        )
+        .unwrap();
+        let difference = serde_json::to_value(difference).unwrap();
+        assert_eq!(
+            difference["alerts"][0]["id"],
+            "reconciliation-difference:broker-cop:fund-cop:COP"
+        );
+        assert_eq!(difference["alerts"][0]["kind"], "reconciliation_difference");
+        assert_eq!(difference["alerts"][0]["quantity_difference"], "0.25");
+        assert_eq!(difference["alerts"][0]["value_difference_minor"], "50000");
+
+        let stale = finance(
+            &mut connection,
+            FinanceFilterRequest {
+                start_date: "2026-01-01".into(),
+                end_date: "2026-04-30".into(),
+                currency: Some("COP".into()),
+                ..FinanceFilterRequest::default()
+            },
+        )
+        .unwrap();
+        let stale = serde_json::to_value(stale).unwrap();
+        assert_eq!(
+            stale["investments"]["closing_positions"][0]["freshness"],
+            "stale"
+        );
+        assert_eq!(
+            stale["investments"]["closing_positions"][0]["reconciliation_status"],
+            "difference"
+        );
+        assert!(stale["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alert| { alert["id"] == "stale-valuation:broker-cop:fund-cop" }));
+        assert!(stale["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alert| alert["kind"] == "reconciliation_difference"));
+
+        let (_directory, mut stale_connection) = fixture_with_seed(include_str!(
+            "../tests/fixtures/dashboard/seeds/investment.sql"
+        ));
+        let stale_oracle: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/dashboard/oracles/stale.json"
+        ))
+        .unwrap();
+        let stale_position = serde_json::to_value(
+            finance(
+                &mut stale_connection,
+                FinanceFilterRequest {
+                    start_date: "2026-01-01".into(),
+                    end_date: "2026-04-30".into(),
+                    currency: Some("COP".into()),
+                    ..FinanceFilterRequest::default()
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stale_position["investments"]["state"], "stale");
+        assert_eq!(
+            stale_position["investments"]["closing_positions"][0]["observed_value_minor"],
+            stale_oracle["expected"]["position"]["observed_value_minor"]
+        );
+        assert!(stale_position["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alert| {
+                alert["id"] == stale_oracle["expected"]["alerts"][0]["id"]
+                    && alert["kind"] == stale_oracle["expected"]["alerts"][0]["kind"]
+            }));
+
+        stale_connection
+            .execute_batch(
+                "DELETE FROM investment_snapshot_positions;
+                 DELETE FROM investment_snapshots;",
+            )
+            .unwrap();
+        let missing = serde_json::to_value(
+            finance(
+                &mut stale_connection,
+                FinanceFilterRequest {
+                    start_date: "2026-01-01".into(),
+                    end_date: "2026-02-28".into(),
+                    currency: Some("COP".into()),
+                    ..FinanceFilterRequest::default()
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(missing["investments"]["state"], "unavailable");
+        assert_eq!(
+            missing["investments"]["closing_positions"][0]["observed_value_minor"],
+            Value::Null
+        );
+        assert!(missing["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alert| { alert["kind"] == "missing_valuation" }));
+
+        let (_directory, mut unavailable) = fixture_with_seed(include_str!(
+            "../tests/fixtures/dashboard/seeds/unavailable.sql"
+        ));
+        unavailable
+            .execute_batch(
+                "INSERT INTO source_documents(id,input_name,content_sha256,mime_type,byte_size,institution_hint) VALUES
+                   ('pending-doc','synthetic.pdf','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','application/pdf',1,'wenia');
+                 INSERT INTO import_batches(id,source_document_id,started_at,status,candidate_count,error_count,duplicate_count,error_details_json) VALUES
+                   ('pending-batch','pending-doc','2026-02-01','completed',1,0,0,'[]');
+                 INSERT INTO investment_document_events(id,source_document_id,import_batch_id,provider,parser_id,parser_version,event_type,provider_effective_date,currency,amount_minor,page_number,row_index,evidence_redaction,fingerprint,status) VALUES
+                   ('pending-event','pending-doc','pending-batch','wenia','synthetic','1','deposit','2026-02-02','COP',50000,1,1,'REDACTED','pending-event-fingerprint','pending_review');",
+            )
+            .unwrap();
+        let unavailable = finance(
+            &mut unavailable,
+            FinanceFilterRequest {
+                start_date: "2026-01-01".into(),
+                end_date: "2026-02-28".into(),
+                currency: Some("COP".into()),
+                ..FinanceFilterRequest::default()
+            },
+        )
+        .unwrap();
+        let unavailable = serde_json::to_value(unavailable).unwrap();
+        let unavailable_oracle: Value = serde_json::from_str(include_str!(
+            "../tests/fixtures/dashboard/oracles/unavailable.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            unavailable["investments"]["state"],
+            unavailable_oracle["expected"]["state"]
+        );
+        assert_eq!(
+            unavailable["investments"]["pending_allocation_minor"],
+            unavailable_oracle["expected"]["pending_allocation_minor"]
+        );
+        assert_eq!(
+            unavailable["alerts"][0]["id"],
+            "pending-allocation:pending-capital"
+        );
+        assert_eq!(unavailable["alerts"][0]["kind"], "pending_allocation");
+        assert_eq!(unavailable["alerts"][0]["pending_amount_minor"], "50000");
+        assert!(unavailable["alerts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alert| {
+                alert["id"] == "pending-provider-event:pending-event"
+                    && alert["kind"] == "pending_provider_event"
+            }));
+    }
+
+    #[test]
+    fn investment_filters_preserve_unlike_currencies_and_checked_decimal_quantities() {
+        let (_directory, mut connection) = fixture_with_seed(include_str!(
+            "../tests/fixtures/dashboard/seeds/investment.sql"
+        ));
+        connection
+            .execute_batch(
+                "INSERT INTO accounts(id, institution_id, label, currency, kind, is_owned) VALUES
+                   ('broker-usd', 'synthetic-broker', 'USD Brokerage', 'USD', 'investment', 1);
+                 INSERT INTO canonical_transactions(id, account_id, posted_date, description, amount_minor, currency, transaction_kind) VALUES
+                   ('capital-usd', 'broker-usd', '2026-01-13', 'Synthetic USD capital', -500, 'USD', 'investment_contribution');
+                 INSERT INTO investment_instruments(id, name, instrument_type, denomination_currency, provider, provider_identifier) VALUES
+                   ('fund-usd', 'Synthetic USD Fund', 'security', 'USD', 'synthetic-broker', 'FUND2');
+                 INSERT INTO investment_allocation_revisions(id, allocation_id, revision, contribution_transaction_id, instrument_id, cash_amount_minor, cash_currency, acquired_quantity, effective_date, provenance_source) VALUES
+                   ('allocation-usd-r1', 'allocation-usd', 1, 'capital-usd', 'fund-usd', 500, 'USD', '99999999999999999999.123456789012345678', '2026-01-13', 'manual_entry');
+                 INSERT INTO investment_allocation_heads(allocation_id, current_revision_id) VALUES
+                   ('allocation-usd', 'allocation-usd-r1');
+                 INSERT INTO investment_snapshot_positions(snapshot_id, account_id, instrument_id, quantity, currency, observed_value_minor, valuation_currency, observed_price) VALUES
+                   ('snapshot-feb', 'broker-usd', 'fund-usd', '99999999999999999999.123456789012345678', 'USD', 700, 'EUR', '0.000000000000000007');",
+            )
+            .unwrap();
+
+        let cop = finance(
+            &mut connection,
+            FinanceFilterRequest {
+                start_date: "2026-01-01".into(),
+                end_date: "2026-02-28".into(),
+                currency: Some("COP".into()),
+                ..FinanceFilterRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cop.investments.closing_positions.len(), 1);
+        assert_eq!(
+            cop.investments.closing_positions[0]
+                .cost_currency
+                .as_deref(),
+            Some("COP")
+        );
+
+        let usd = finance(
+            &mut connection,
+            FinanceFilterRequest {
+                start_date: "2026-01-01".into(),
+                end_date: "2026-02-28".into(),
+                currency: Some("USD".into()),
+                account_ids: Some(vec!["broker-usd".into()]),
+                ..FinanceFilterRequest::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(usd.investments.closing_positions.len(), 1);
+        let position = &usd.investments.closing_positions[0];
+        assert_eq!(
+            position.quantity.as_deref(),
+            Some("99999999999999999999.123456789012345678")
+        );
+        assert_eq!(position.cost_currency.as_deref(), Some("USD"));
+        assert_eq!(position.valuation_currency.as_deref(), Some("EUR"));
+        assert_eq!(position.observed_value_minor.as_deref(), Some("700"));
+        assert!(usd
+            .investments
+            .flows
+            .iter()
+            .all(|flow| flow.currency == "USD" && flow.account_id == "broker-usd"));
     }
 }

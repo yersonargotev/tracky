@@ -1,5 +1,5 @@
 {
-  "lockfile_sha256": "84684ca006005842a5c528e31c491b06fb8dfd336ff817d6e4b44a7173cfeefd",
+  "lockfile_sha256": "51c2b4a5e423bc2326f3fe8cfca7df84142c76583f3c448233c0d5bf84cb04f2",
   "packages": [
     {
       "license": "0BSD OR MIT OR Apache-2.0",
@@ -1603,6 +1603,13 @@
       "repository": "https://github.com/serde-rs/json",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
       "version": "1.0.150"
+    },
+    {
+      "license": "MIT OR Apache-2.0",
+      "name": "serde_path_to_error",
+      "repository": "https://github.com/dtolnay/path-to-error",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "version": "0.1.20"
     },
     {
       "license": "MIT/Apache-2.0",

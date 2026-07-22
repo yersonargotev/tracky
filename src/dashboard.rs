@@ -1,5 +1,6 @@
 use crate::dashboard_finance::{
-    read_finance, DashboardResponse, FinanceFilterRequest, UnavailableCurrencyError,
+    read_drill_down, read_finance, DashboardResponse, DrillMetric, DrillRequest,
+    FinanceFilterRequest, UnavailableCurrencyError,
 };
 use crate::storage::{
     dashboard_schema_is_compatible, TRACKY_APPLICATION_ID, TRACKY_SCHEMA_GENERATION,
@@ -10,9 +11,10 @@ use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
+use axum::{Json, Router};
 use chrono::{Datelike, Months, NaiveDate, Utc};
 use rusqlite::{Connection, DatabaseName, OpenFlags};
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -34,6 +36,8 @@ pub struct DashboardOptions {
 #[derive(Clone)]
 struct AppState {
     snapshot: Arc<DashboardResponse>,
+    db: PathBuf,
+    startup_request: FinanceFilterRequest,
     host: String,
 }
 
@@ -46,12 +50,13 @@ pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> 
         .transpose()?;
 
     // Initial compatibility and snapshot failures are fatal before a listener exists.
-    let snapshot = Arc::new(load_snapshot(
-        &options.db,
-        &start_date,
-        &end_date,
-        currency.as_deref(),
-    )?);
+    let startup_request = FinanceFilterRequest {
+        start_date,
+        end_date,
+        currency,
+        ..FinanceFilterRequest::default()
+    };
+    let snapshot = Arc::new(load_snapshot(&options.db, startup_request.clone())?);
 
     let capability_bytes = rand::random::<[u8; 32]>();
     let capability = capability_bytes
@@ -71,11 +76,21 @@ pub fn serve<W: Write>(options: DashboardOptions, mut stdout: W) -> Result<i32> 
         let host = format!("127.0.0.1:{}", address.port());
         let prefix = format!("/c/{capability}");
         let url = format!("http://{host}{prefix}/");
-        let state = AppState { snapshot, host };
+        let state = AppState {
+            snapshot,
+            db: options.db.clone(),
+            startup_request,
+            host,
+        };
         let app = Router::new()
             .route(&format!("{prefix}/"), get(dashboard_page))
             .route(&format!("{prefix}/app.css"), get(stylesheet))
             .route(&format!("{prefix}/app.js"), get(javascript))
+            .route(&format!("{prefix}/api/v1/dashboard"), get(dashboard_api))
+            .route(
+                &format!("{prefix}/api/v1/transactions"),
+                get(transactions_api),
+            )
             .fallback(not_found)
             .layer(middleware::from_fn_with_state(
                 state.clone(),
@@ -184,26 +199,12 @@ fn validate_markers(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn load_snapshot(
-    path: &Path,
-    start: &str,
-    end: &str,
-    requested: Option<&str>,
-) -> Result<DashboardResponse> {
+fn load_snapshot(path: &Path, request: FinanceFilterRequest) -> Result<DashboardResponse> {
     let mut connection = open_dashboard_database(path)?;
     let transaction = connection
         .transaction()
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
-    let snapshot = read_finance(
-        &transaction,
-        FinanceFilterRequest {
-            start_date: start.to_string(),
-            end_date: end.to_string(),
-            currency: requested.map(str::to_string),
-            ..FinanceFilterRequest::default()
-        },
-    )
-    .map_err(|error| {
+    let snapshot = read_finance(&transaction, request).map_err(|error| {
         if error.is::<UnavailableCurrencyError>() {
             error
         } else {
@@ -214,6 +215,206 @@ fn load_snapshot(
         .commit()
         .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
     Ok(snapshot)
+}
+
+async fn dashboard_api(State(state): State<AppState>, request: Request) -> Response {
+    let query = match query_pairs(request.uri().query()) {
+        Ok(query)
+            if query.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "start" | "end" | "currency" | "account" | "category"
+                )
+            }) =>
+        {
+            query
+        }
+        _ => return api_error(StatusCode::BAD_REQUEST, "invalid_dashboard_request"),
+    };
+    let filters = match filters_from_pairs(&query, &state.startup_request) {
+        Ok(filters) => filters,
+        Err(()) => return api_error(StatusCode::BAD_REQUEST, "invalid_dashboard_request"),
+    };
+    if filters == state.startup_request {
+        return Json((*state.snapshot).clone()).into_response();
+    }
+    let path = state.db.clone();
+    match tokio::task::spawn_blocking(move || load_snapshot(&path, filters)).await {
+        Ok(Ok(response)) => Json(response).into_response(),
+        _ => api_error(StatusCode::BAD_REQUEST, "dashboard_read_failed"),
+    }
+}
+
+async fn transactions_api(State(state): State<AppState>, request: Request) -> Response {
+    let query = match query_pairs(request.uri().query()) {
+        Ok(query) => query,
+        Err(()) => return api_error(StatusCode::BAD_REQUEST, "invalid_drill_request"),
+    };
+    let filters = match filters_from_pairs(&query, &state.startup_request) {
+        Ok(filters) => filters,
+        Err(()) => return api_error(StatusCode::BAD_REQUEST, "invalid_drill_request"),
+    };
+    let metric = match one(&query, "metric").and_then(parse_metric) {
+        Some(metric) => metric,
+        None => return api_error(StatusCode::BAD_REQUEST, "invalid_drill_request"),
+    };
+    let month = match one(&query, "month") {
+        Some(month)
+            if month.len() == 7
+                && month.as_bytes()[4] == b'-'
+                && month[..4].bytes().all(|byte| byte.is_ascii_digit())
+                && month[5..]
+                    .parse::<u8>()
+                    .is_ok_and(|month| (1..=12).contains(&month)) =>
+        {
+            Some(month.to_string())
+        }
+        Some(_) => return api_error(StatusCode::BAD_REQUEST, "invalid_drill_request"),
+        None => None,
+    };
+    let limit = match one(&query, "limit") {
+        Some(limit) => match limit.parse::<usize>() {
+            Ok(limit) if (1..=100).contains(&limit) => limit,
+            _ => return api_error(StatusCode::BAD_REQUEST, "invalid_drill_request"),
+        },
+        None => 50,
+    };
+    let drill = DrillRequest {
+        filters,
+        metric,
+        month,
+        cursor: one(&query, "cursor").map(str::to_string),
+        limit,
+    };
+    let path = state.db.clone();
+    let result = tokio::task::spawn_blocking(move || -> Result<_> {
+        let mut connection = open_dashboard_database(&path)?;
+        let transaction = connection
+            .transaction()
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be started"))?;
+        let response = read_drill_down(&transaction, drill)
+            .map_err(|_| anyhow::anyhow!("dashboard data could not be read"))?;
+        transaction
+            .commit()
+            .map_err(|_| anyhow::anyhow!("dashboard snapshot could not be completed"))?;
+        Ok(response)
+    })
+    .await;
+    match result {
+        Ok(Ok(response)) => Json(response).into_response(),
+        _ => api_error(StatusCode::BAD_REQUEST, "dashboard_read_failed"),
+    }
+}
+
+type QueryPairs = BTreeMap<String, Vec<String>>;
+
+fn filters_from_pairs(
+    query: &QueryPairs,
+    defaults: &FinanceFilterRequest,
+) -> std::result::Result<FinanceFilterRequest, ()> {
+    const ALLOWED: &[&str] = &[
+        "start", "end", "currency", "account", "category", "metric", "month", "cursor", "limit",
+    ];
+    if query.keys().any(|key| !ALLOWED.contains(&key.as_str())) {
+        return Err(());
+    }
+    Ok(FinanceFilterRequest {
+        start_date: one(query, "start")
+            .unwrap_or(&defaults.start_date)
+            .to_string(),
+        end_date: one(query, "end").unwrap_or(&defaults.end_date).to_string(),
+        currency: one(query, "currency")
+            .map(str::to_string)
+            .or_else(|| defaults.currency.clone()),
+        account_ids: query
+            .get("account")
+            .cloned()
+            .or_else(|| defaults.account_ids.clone()),
+        category_ids: query
+            .get("category")
+            .cloned()
+            .or_else(|| defaults.category_ids.clone()),
+    })
+}
+
+fn query_pairs(query: Option<&str>) -> std::result::Result<QueryPairs, ()> {
+    let mut pairs = BTreeMap::new();
+    for pair in query
+        .unwrap_or_default()
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+    {
+        let (key, value) = pair.split_once('=').ok_or(())?;
+        let key = decode_query_component(key)?;
+        let value = decode_query_component(value)?;
+        pairs.entry(key).or_insert_with(Vec::new).push(value);
+    }
+    if pairs
+        .iter()
+        .any(|(key, values)| !matches!(key.as_str(), "account" | "category") && values.len() != 1)
+    {
+        return Err(());
+    }
+    Ok(pairs)
+}
+
+fn decode_query_component(value: &str) -> std::result::Result<String, ()> {
+    let mut bytes = Vec::with_capacity(value.len());
+    let source = value.as_bytes();
+    let mut index = 0;
+    while index < source.len() {
+        match source[index] {
+            b'%' if index + 2 < source.len() => {
+                let high = hex_value(source[index + 1]).ok_or(())?;
+                let low = hex_value(source[index + 2]).ok_or(())?;
+                bytes.push(high * 16 + low);
+                index += 3;
+            }
+            b'%' => return Err(()),
+            b'+' => {
+                bytes.push(b' ');
+                index += 1;
+            }
+            byte if byte.is_ascii() => {
+                bytes.push(byte);
+                index += 1;
+            }
+            _ => return Err(()),
+        }
+    }
+    String::from_utf8(bytes).map_err(|_| ())
+}
+
+fn hex_value(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn one<'a>(query: &'a QueryPairs, key: &str) -> Option<&'a str> {
+    query.get(key)?.first().map(String::as_str)
+}
+
+fn parse_metric(metric: &str) -> Option<DrillMetric> {
+    match metric {
+        "activity" => Some(DrillMetric::Activity),
+        "income" => Some(DrillMetric::Income),
+        "consumption_expense" => Some(DrillMetric::ConsumptionExpense),
+        "net_cash_flow" => Some(DrillMetric::NetCashFlow),
+        "investment_contribution" => Some(DrillMetric::InvestmentContribution),
+        _ => None,
+    }
+}
+
+fn api_error(status: StatusCode, code: &'static str) -> Response {
+    (
+        status,
+        Json(serde_json::json!({"ok": false, "errors": [{"code": code}]})),
+    )
+        .into_response()
 }
 
 async fn dashboard_page(State(state): State<AppState>) -> Response {

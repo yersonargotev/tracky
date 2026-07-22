@@ -112,23 +112,23 @@ only after every mandatory section is implemented.
 
 **Blocked by:** Complete dashboard finance filters and drill-down.
 
-- [ ] Make consolidated investment reporting apply date, currency, and account
+- [x] Make consolidated investment reporting apply date, currency, and account
   filters before aggregation and preserve exact checked quantities and values.
-- [ ] Project historical-cost positions from canonical active operations rather
+- [x] Project historical-cost positions from canonical active operations rather
   than treating allocation-only state as the as-of authority.
-- [ ] Keep historical-cost currency, observed-valuation currency, valuation date,
+- [x] Keep historical-cost currency, observed-valuation currency, valuation date,
   freshness, pending allocation, and underlying reconciliation state distinct.
-- [ ] Select dated investment snapshots deterministically as of the requested
+- [x] Select dated investment snapshots deterministically as of the requested
   range and represent missing, unavailable, and stale observations without
   inventing zero or current market value.
-- [ ] Produce stable structured alert identifiers and connect alerts to the
+- [x] Produce stable structured alert identifiers and connect alerts to the
   affected position without exposing raw provenance or storage errors.
-- [ ] Complete exact parity with canonical investment and reconciliation reports
+- [x] Complete exact parity with canonical investment and reconciliation reports
   across fresh, stale, unavailable, pending, reconciled, incompatible,
   multi-currency, and checked-decimal cases.
-- [ ] Enable the capability-bearing `tracky.dashboard.v1` aggregate and
+- [x] Enable the capability-bearing `tracky.dashboard.v1` aggregate and
   drill-down routes only after their complete schemas and conformance corpus pass.
-- [ ] Keep every prior gate enabled and passing with the real process remaining
+- [x] Keep every prior gate enabled and passing with the real process remaining
   read-only and fail-closed.
 
 ## Complete the Monthly ledger experience

@@ -3,9 +3,37 @@ use crate::storage::{ReportDateRange, ReviewError};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 pub const SCHEMA_VERSION: &str = "tracky.investment-report.v1";
+
+#[derive(Debug, Default)]
+struct ReportFilters {
+    currency: Option<String>,
+    account_ids: BTreeSet<String>,
+}
+
+impl ReportFilters {
+    fn new(selected_currency: Option<&str>, selected_account_ids: &[String]) -> Self {
+        Self {
+            currency: selected_currency.map(|currency| currency.trim().to_ascii_uppercase()),
+            account_ids: selected_account_ids.iter().cloned().collect(),
+        }
+    }
+
+    fn includes(&self, account_id: &str, currency: &str) -> bool {
+        self.currency
+            .as_deref()
+            .is_none_or(|selected| selected == currency.to_ascii_uppercase())
+            && (self.account_ids.is_empty() || self.account_ids.contains(account_id))
+    }
+
+    fn includes_currency(&self, currency: &str) -> bool {
+        self.currency
+            .as_deref()
+            .is_none_or(|selected| selected == currency.to_ascii_uppercase())
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct MoneyTotal {
@@ -337,11 +365,28 @@ pub fn report_error(
     error(from, to, code, path)
 }
 
-fn external_contributions(c: &Connection, from: &str, to: &str) -> Result<BTreeMap<String, i64>> {
+fn external_contributions(
+    c: &Connection,
+    from: &str,
+    to: &str,
+    filters: &ReportFilters,
+) -> Result<BTreeMap<String, i64>> {
     let mut contributed = BTreeMap::new();
-    let mut statement = c.prepare("SELECT currency,SUM(-amount_minor) FROM canonical_transactions WHERE transaction_kind='investment_contribution' AND posted_date BETWEEN ?1 AND ?2 GROUP BY currency ORDER BY currency")?;
-    for row in statement.query_map(params![from, to], |r| Ok((r.get(0)?, r.get(1)?)))? {
-        let (currency, amount) = row?;
+    let mut statement = c.prepare("SELECT account_id,currency,amount_minor FROM canonical_transactions WHERE transaction_kind='investment_contribution' AND posted_date BETWEEN ?1 AND ?2 ORDER BY posted_date,id")?;
+    for row in statement.query_map(params![from, to], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, i64>(2)?,
+        ))
+    })? {
+        let (account_id, currency, signed_amount) = row?;
+        if !filters.includes(&account_id, &currency) {
+            continue;
+        }
+        let amount = signed_amount
+            .checked_neg()
+            .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
         add(&mut contributed, currency, amount)?;
     }
     Ok(contributed)
@@ -355,7 +400,12 @@ struct DirectAcquisition {
     amount_minor: i64,
 }
 
-fn direct_acquisitions(c: &Connection, from: &str, to: &str) -> Result<Vec<DirectAcquisition>> {
+fn direct_acquisitions(
+    c: &Connection,
+    from: &str,
+    to: &str,
+    filters: &ReportFilters,
+) -> Result<Vec<DirectAcquisition>> {
     let mut statement=c.prepare("SELECT t.account_id,r.instrument_id,i.instrument_type,r.cash_currency,r.cash_amount_minor FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions t ON t.id=r.contribution_transaction_id JOIN investment_instruments i ON i.id=r.instrument_id LEFT JOIN investment_allocation_consumptions c ON c.allocation_id=h.allocation_id WHERE r.effective_date BETWEEN ?1 AND ?2 AND c.allocation_id IS NULL ORDER BY r.effective_date,h.allocation_id")?;
     let rows = statement
         .query_map(params![from, to], |r| {
@@ -367,6 +417,13 @@ fn direct_acquisitions(c: &Connection, from: &str, to: &str) -> Result<Vec<Direc
                 amount_minor: r.get(4)?,
             })
         })?
+        .filter_map(|row| match row {
+            Ok(acquisition) if filters.includes(&acquisition.account_id, &acquisition.currency) => {
+                Some(Ok(acquisition))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -375,36 +432,80 @@ fn closing_state(
     c: &Connection,
     to: &str,
     unattributed_withdrawals: BTreeMap<String, i64>,
+    filters: &ReportFilters,
 ) -> Result<(PendingSection, Vec<ClosingPosition>)> {
     let mut pending = PendingSection {
         unattributed_withdrawals: totals(unattributed_withdrawals),
         ..PendingSection::default()
     };
-    let mut undated = c.prepare("SELECT h.allocation_id FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions t ON t.id=r.contribution_transaction_id WHERE r.effective_date IS NULL AND t.posted_date<=?1 ORDER BY h.allocation_id")?;
+    let mut undated = c.prepare("SELECT h.allocation_id,t.account_id,r.cash_currency FROM investment_allocation_heads h JOIN investment_allocation_revisions r ON r.id=h.current_revision_id JOIN canonical_transactions t ON t.id=r.contribution_transaction_id WHERE r.effective_date IS NULL AND t.posted_date<=?1 ORDER BY h.allocation_id")?;
     pending.undated_acquisition_ids = undated
-        .query_map([to], |r| r.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    let mut stmt=c.prepare("SELECT t.id,t.currency,-t.amount_minor,COALESCE(SUM(r.cash_amount_minor),0) FROM canonical_transactions t LEFT JOIN investment_allocation_revisions r ON r.contribution_transaction_id=t.id AND r.effective_date<=?1 AND EXISTS(SELECT 1 FROM investment_allocation_heads h WHERE h.current_revision_id=r.id) WHERE t.transaction_kind='investment_contribution' AND t.posted_date<=?1 GROUP BY t.id,t.currency,t.amount_minor HAVING COALESCE(SUM(r.cash_amount_minor),0)<-t.amount_minor ORDER BY t.posted_date,t.id")?;
-    pending.allocations = stmt
         .query_map([to], |r| {
-            let total: i64 = r.get(2)?;
-            let allocated: i64 = r.get(3)?;
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .filter_map(|row| match row {
+            Ok((id, account_id, currency)) if filters.includes(&account_id, &currency) => {
+                Some(Ok(id))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt=c.prepare("SELECT t.posted_date,t.id,t.account_id,t.currency,t.amount_minor,r.cash_amount_minor FROM canonical_transactions t LEFT JOIN investment_allocation_revisions r ON r.contribution_transaction_id=t.id AND r.effective_date<=?1 AND EXISTS(SELECT 1 FROM investment_allocation_heads h WHERE h.current_revision_id=r.id) WHERE t.transaction_kind='investment_contribution' AND t.posted_date<=?1 ORDER BY t.posted_date,t.id,r.allocation_id")?;
+    let mut allocation_totals = BTreeMap::new();
+    for row in stmt.query_map([to], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            r.get::<_, Option<i64>>(5)?,
+        ))
+    })? {
+        let (posted_date, id, account_id, currency, signed_total, allocation) = row?;
+        if !filters.includes(&account_id, &currency) {
+            continue;
+        }
+        let total = signed_total
+            .checked_neg()
+            .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+        let entry = allocation_totals
+            .entry((posted_date, id))
+            .or_insert((currency, total, 0_i64));
+        entry.2 = entry
+            .2
+            .checked_add(allocation.unwrap_or(0))
+            .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?;
+    }
+    pending.allocations = allocation_totals
+        .into_iter()
+        .filter_map(
+            |((_posted_date, contribution_id), (currency, total, allocated))| {
+                (allocated < total).then_some((contribution_id, currency, total, allocated))
+            },
+        )
+        .map(|(contribution_id, currency, total, allocated)| {
             Ok(PendingAllocation {
-                contribution_id: r.get(0)?,
-                currency: r.get(1)?,
+                contribution_id,
+                currency,
                 contributed_minor: total,
                 allocated_minor: allocated,
                 unallocated_minor: total
                     .checked_sub(allocated)
-                    .ok_or(rusqlite::Error::IntegralValueOutOfRange(3, allocated))?,
+                    .ok_or_else(|| anyhow::anyhow!("report amount overflow"))?,
                 status: if allocated == 0 {
                     "pending".into()
                 } else {
                     "partial".into()
                 },
             })
-        })?
-        .collect::<rusqlite::Result<_>>()?;
+        })
+        .collect::<Result<_>>()?;
     let mut stmt=c.prepare("SELECT id,provider,provider_effective_date,currency,event_type FROM investment_document_events WHERE status='pending_review' AND provider_effective_date<=?1 ORDER BY provider_effective_date,id")?;
     pending.provider_events = stmt
         .query_map([to], |r| {
@@ -416,6 +517,11 @@ fn closing_state(
                 event_type: r.get(4)?,
             })
         })?
+        .filter_map(|row| match row {
+            Ok(event) if filters.includes_currency(&event.currency) => Some(Ok(event)),
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
+        })
         .collect::<rusqlite::Result<_>>()?;
     let mut positions = Vec::new();
     let mut instrument_types = BTreeMap::new();
@@ -446,6 +552,9 @@ fn closing_state(
             })
             .collect::<std::collections::BTreeSet<_>>();
         for x in comparison.reconciliations {
+            if !filters.includes(&x.account_id, &x.currency) {
+                continue;
+            }
             let tuple = (
                 x.account_id.clone(),
                 x.instrument_id.clone(),
@@ -502,6 +611,9 @@ fn closing_state(
         }
     }
     for x in reconciliation::derived_closing_positions(c, to)? {
+        if !filters.includes(&x.account_id, &x.currency) {
+            continue;
+        }
         let tuple = (
             x.account_id.clone(),
             x.instrument_id.clone(),
@@ -618,6 +730,7 @@ fn replay_brokerage(
     from: &str,
     to: &str,
     aggregation: &mut ReportAggregation,
+    filters: &ReportFilters,
 ) -> Result<()> {
     let mut source_cash: HashMap<(String, String), FundingPools> = HashMap::new();
     let mut origins: HashMap<(String, String, String), PositionOrigins> = HashMap::new();
@@ -644,6 +757,9 @@ fn replay_brokerage(
             origin_income,
             origin_unattributed,
         } = row?;
+        if !filters.includes(&account, &cur) {
+            continue;
+        }
         let in_range = date.as_str() >= from;
         let detail_instrument = instrument.clone();
         let pools = source_cash
@@ -873,7 +989,13 @@ fn replay_brokerage(
 }
 
 pub(crate) fn validate_brokerage_attribution(c: &Connection, through: &str) -> Result<()> {
-    replay_brokerage(c, "0001-01-01", through, &mut ReportAggregation::default())
+    replay_brokerage(
+        c,
+        "0001-01-01",
+        through,
+        &mut ReportAggregation::default(),
+        &ReportFilters::default(),
+    )
 }
 
 struct CdtReplayRow {
@@ -915,6 +1037,7 @@ fn replay_cdt(
     from: &str,
     to: &str,
     aggregation: &mut ReportAggregation,
+    filters: &ReportFilters,
 ) -> Result<()> {
     let mut stmt=c.prepare("SELECT r.operation_type,r.currency,r.principal_returned_minor,r.external_capital_minor,r.capitalized_interest_minor,r.gross_interest_minor,r.withholding_minor,r.other_deductions_minor,r.net_cash_received_minor,r.principal_before_minor,r.principal_after_minor,p.account_id,p.instrument_id FROM cdt_operation_heads h JOIN cdt_operation_revisions r ON r.id=h.current_revision_id JOIN cdt_positions p ON p.id=r.cdt_position_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,r.operation_id")?;
     for row in stmt.query_map(params![from, to], cdt_replay_row)? {
@@ -933,6 +1056,9 @@ fn replay_cdt(
             account,
             instrument,
         } = row?;
+        if !filters.includes(&account, &cur) {
+            continue;
+        }
         add_components(
             &mut aggregation.return_details,
             (account.clone(), Some(instrument.clone()), cur.clone()),
@@ -976,6 +1102,16 @@ fn replay_cdt(
 }
 
 pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportResponse> {
+    report_filtered(c, from, to, None, &[])
+}
+
+pub(crate) fn report_filtered(
+    c: &Connection,
+    from: &str,
+    to: &str,
+    selected_currency: Option<&str>,
+    selected_account_ids: &[String],
+) -> Result<InvestmentReportResponse> {
     if !valid_date(from) {
         return Ok(error(from, to, "invalid_from_date", "from"));
     }
@@ -985,9 +1121,10 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
     if from > to {
         return Ok(error(from, to, "invalid_date_range", "date_range"));
     }
-    let contributed = external_contributions(c, from, to)?;
+    let filters = ReportFilters::new(selected_currency, selected_account_ids);
+    let contributed = external_contributions(c, from, to, &filters)?;
     let mut aggregation = ReportAggregation::default();
-    for acquisition in direct_acquisitions(c, from, to)? {
+    for acquisition in direct_acquisitions(c, from, to, &filters)? {
         add(
             &mut aggregation.gross,
             acquisition.currency.clone(),
@@ -1009,8 +1146,8 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
             acquisition.amount_minor,
         )?;
     }
-    replay_brokerage(c, from, to, &mut aggregation)?;
-    replay_cdt(c, from, to, &mut aggregation)?;
+    replay_brokerage(c, from, to, &mut aggregation, &filters)?;
+    replay_cdt(c, from, to, &mut aggregation, &filters)?;
     let net_external = contributed
         .iter()
         .chain(aggregation.withdrawn.iter())
@@ -1027,8 +1164,9 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
                 .ok_or_else(|| anyhow::anyhow!("report amount overflow"))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let (pending, positions) = closing_state(c, to, aggregation.unattributed_withdrawals)?;
-    let mut enrichment_statement=c.prepare("SELECT x.event_id,x.operation_revision_id,r.effective_date,x.provider_evidence_json,x.reviewer_terms_json FROM cdt_provider_enrichments x JOIN cdt_operation_revisions r ON r.id=x.operation_revision_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,x.event_id")?;
+    let (pending, positions) =
+        closing_state(c, to, aggregation.unattributed_withdrawals, &filters)?;
+    let mut enrichment_statement=c.prepare("SELECT x.event_id,x.operation_revision_id,r.effective_date,x.provider_evidence_json,x.reviewer_terms_json,p.account_id,r.currency FROM cdt_provider_enrichments x JOIN cdt_operation_revisions r ON r.id=x.operation_revision_id JOIN cdt_positions p ON p.id=r.cdt_position_id WHERE r.effective_date BETWEEN ?1 AND ?2 ORDER BY r.effective_date,x.event_id")?;
     let cdt_provider_enrichments = enrichment_statement
         .query_map(params![from, to], |r| {
             Ok((
@@ -1037,17 +1175,38 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
                 r.get::<_, String>(2)?,
                 r.get::<_, String>(3)?,
                 r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?
         .map(|row| {
-            let (event_id, operation_revision_id, effective_date, evidence, terms) = row?;
-            Ok(CdtProviderEnrichmentReport {
+            let (
                 event_id,
                 operation_revision_id,
                 effective_date,
-                provider_evidence: serde_json::from_str(&evidence)?,
-                reviewer_terms: serde_json::from_str(&terms)?,
-            })
+                evidence,
+                terms,
+                account,
+                currency,
+            ) = row?;
+            Ok((
+                account,
+                currency,
+                CdtProviderEnrichmentReport {
+                    event_id,
+                    operation_revision_id,
+                    effective_date,
+                    provider_evidence: serde_json::from_str(&evidence)?,
+                    reviewer_terms: serde_json::from_str(&terms)?,
+                },
+            ))
+        })
+        .filter_map(|row| match row {
+            Ok((account, currency, enrichment)) if filters.includes(&account, &currency) => {
+                Some(Ok(enrichment))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(InvestmentReportResponse {
@@ -1133,4 +1292,92 @@ pub fn report(c: &Connection, from: &str, to: &str) -> Result<InvestmentReportRe
         cdt_provider_enrichments,
         errors: vec![],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::apply_migrations;
+
+    fn filtered_report_fixture() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        apply_migrations(&connection).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO institutions(id,name) VALUES('institution','Institution');
+                 INSERT INTO accounts(id,institution_id,label,kind,currency,is_owned) VALUES
+                   ('bank','institution','Bank','checking','COP',1),
+                   ('broker','institution','Broker','brokerage','COP',1),
+                   ('excluded','institution','Excluded','checking','COP',1);
+                 INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency,transaction_kind) VALUES
+                   ('bank-contribution','bank','2026-06-01','Capital',-100,'COP','investment_contribution'),
+                   ('bank-usd','bank','2026-06-01','USD capital',-200,'USD','investment_contribution');
+                 INSERT INTO brokerage_accounts(account_id,opened_date,provenance_source) VALUES
+                   ('broker','2026-01-01','manual_entry');
+                 INSERT INTO brokerage_operation_revisions(id,operation_id,revision,account_id,operation_type,effective_date,currency,gross_amount_minor,net_cash_minor,provenance_source) VALUES
+                   ('dividend-revision','dividend',1,'broker','dividend','2026-06-10','COP',30,30,'manual_entry');
+                 INSERT INTO brokerage_operation_heads(operation_id,current_revision_id) VALUES
+                   ('dividend','dividend-revision');",
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO canonical_transactions(id,account_id,posted_date,description,amount_minor,currency,transaction_kind) VALUES('excluded-overflow','excluded','2026-06-01','Excluded',?1,'COP','investment_contribution')",
+                [i64::MIN],
+            )
+            .unwrap();
+        connection
+    }
+
+    #[test]
+    fn filters_source_contributions_and_investment_operations_before_aggregation() {
+        let connection = filtered_report_fixture();
+
+        let bank = report_filtered(
+            &connection,
+            "2026-06-01",
+            "2026-06-30",
+            Some("cop"),
+            &["bank".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            bank.capital_external.external_capital_contributed,
+            vec![MoneyTotal {
+                currency: "COP".into(),
+                amount_minor: 100,
+            }]
+        );
+        assert!(bank.returns_and_income.gross_dividends.is_empty());
+        assert_eq!(bank.pending_and_reconciliation.allocations.len(), 1);
+        assert_eq!(
+            bank.pending_and_reconciliation.allocations[0].contribution_id,
+            "bank-contribution"
+        );
+
+        let broker = report_filtered(
+            &connection,
+            "2026-06-01",
+            "2026-06-30",
+            Some("COP"),
+            &["broker".into()],
+        )
+        .unwrap();
+        assert!(broker
+            .capital_external
+            .external_capital_contributed
+            .is_empty());
+        assert_eq!(
+            broker.returns_and_income.gross_dividends,
+            vec![MoneyTotal {
+                currency: "COP".into(),
+                amount_minor: 30,
+            }]
+        );
+        assert_eq!(
+            broker.returns_and_income.by_instrument[0].account_id,
+            "broker"
+        );
+        assert!(broker.pending_and_reconciliation.allocations.is_empty());
+    }
 }
