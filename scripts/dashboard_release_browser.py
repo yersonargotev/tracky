@@ -214,6 +214,19 @@ def rejected_response(url, method="GET", headers=None):
         return error.code, error.headers, error.read().decode(errors="replace")
 
 
+def open_canonical_drawer(driver):
+    return bool(driver.async_script("""
+      const done=arguments[arguments.length-1];
+      const monthly=document.querySelector('[data-region="monthly"] [data-month]');
+      if(!monthly) return done(false); monthly.click();
+      const deadline=Date.now()+5000;
+      const timer=setInterval(()=>{
+        const open=Boolean(document.querySelector('[data-drawer]')?.open);
+        if(open||Date.now()>deadline){clearInterval(timer);done(open);}
+      },50);
+    """))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
@@ -266,8 +279,7 @@ def main():
             expected = ["scope", "currency", "summary", "monthly", "categories", "accounts", "alerts", "investments"]
             if flow["regions"] != expected or "500000 COP" not in flow["text"] or flow["storage"]:
                 raise RuntimeError("browser-flow: dashboard content, region order, or ephemeral state failed")
-            interaction = driver.script("""const monthly=document.querySelector('[data-region="monthly"] [data-month]'); if(!monthly) return false; monthly.click(); return Boolean(document.querySelector('[role="dialog"]'));""")
-            if not interaction:
+            if not open_canonical_drawer(driver):
                 raise RuntimeError("browser-flow: canonical drawer interaction failed")
             driver.navigate(url)
             filtered = driver.async_script("""

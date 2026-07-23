@@ -161,13 +161,13 @@ jobs:
       - name: Install Firefox for this lane
         if: ${{ matrix.browser == 'firefox' }}
         id: firefox
-        uses: browser-actions/setup-firefox@49cdbfc200e72729ff368b519201904af267e90c
+        uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1.7.2
         with:
           firefox-version: ${{ matrix.version }}
       - name: Install Chromium and its driver for this lane
         if: ${{ matrix.browser == 'chromium' }}
         id: chrome
-        uses: browser-actions/setup-chrome@0eb8bbcc1e243e1d5290b6dcfe362aa5936e74e2
+        uses: browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd # v2.1.2
         with:
           chrome-version: ${{ matrix.version }}
           install-chromedriver: true
