@@ -132,6 +132,21 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
         self.assertIn("setInterval", driver.script)
         self.assertIn("done(false)", driver.script)
 
+    def test_responsive_probe_ignores_hidden_buttons(self):
+        class Driver:
+            def script(self, script):
+                self.script_source = script
+                return {"width": 320, "scroll": 320, "undersized_visible_buttons": 0, "storage": 0, "history": 2}
+
+        driver = Driver()
+        self.assertEqual(harness.responsive_state(driver)["undersized_visible_buttons"], 0)
+        self.assertIn("getClientRects().length", driver.script_source)
+
+    def test_progressive_content_tracks_the_refreshed_snapshot(self):
+        content = '700000 COP 2026-01-01 2026-07-31 COP <table data-region="alerts"'
+        self.assertTrue(harness.has_progressive_content(content))
+        self.assertFalse(harness.has_progressive_content(content.replace("700000 COP", "500000 COP")))
+
     def test_harness_writes_failed_raw_gate_and_returns_nonzero(self):
         binary = self.root / "tracky"
         driver = self.root / "driver"

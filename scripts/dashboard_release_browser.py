@@ -227,6 +227,17 @@ def open_canonical_drawer(driver):
     """))
 
 
+def responsive_state(driver):
+    return driver.script("""return {width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,undersized_visible_buttons:[...document.querySelectorAll('button')].filter(n=>{const b=n.getBoundingClientRect();return n.getClientRects().length&&(b.width<24||b.height<24)}).length,storage:localStorage.length+sessionStorage.length+document.cookie.length,history:history.length};""")
+
+
+def has_progressive_content(content, require_markup=True):
+    required = ["700000 COP", "2026-01-01", "2026-07-31", "COP"]
+    if require_markup:
+        required.extend(("<table", 'data-region="alerts"'))
+    return all(token in content for token in required)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
@@ -318,22 +329,21 @@ def main():
             if not failed_refresh:
                 raise RuntimeError("browser-flow: failed refresh did not retain the last good snapshot")
             driver.set_window_size(320, 800)
-            responsive = driver.script("""return {width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,small:[...document.querySelectorAll('button')].filter(n=>{const b=n.getBoundingClientRect();return b.width<24||b.height<24}).length,storage:localStorage.length+sessionStorage.length+document.cookie.length,history:history.length};""")
-            if responsive["scroll"] > responsive["width"] or responsive["small"] or responsive["storage"] or responsive["history"] != flow["history"]:
+            responsive = responsive_state(driver)
+            if responsive["scroll"] > responsive["width"] or responsive["undersized_visible_buttons"] or responsive["storage"] or responsive["history"] != flow["history"]:
                 raise RuntimeError("browser-flow: responsive, pointer-target, history, or ephemeral-state invariant failed")
             gate(result, "browser-flow")["status"] = "pass"
 
             with urllib.request.urlopen(url, timeout=10) as response:
                 html, headers = response.read().decode(), response.headers
-            required_ssr = ("500000 COP", "2026-01-01", "2026-07-31", "COP", "<table", "data-region=\"alerts\"")
-            if not all(token in html for token in required_ssr):
+            if not has_progressive_content(html):
                 raise RuntimeError("progressive-no-javascript: SSR content is incomplete")
             if args.browser in ("firefox", "chromium"):
                 no_javascript = Driver(args.browser, executable, args.browser_binary, env, javascript_enabled=False)
                 try:
                     no_javascript.navigate(url)
                     no_javascript_text = no_javascript.body_text()
-                    if not all(token in no_javascript_text for token in ("500000 COP", "2026-01-01", "COP")):
+                    if not has_progressive_content(no_javascript_text, require_markup=False):
                         raise RuntimeError("progressive-no-javascript: disabled browser omitted semantic content")
                 finally:
                     no_javascript.close()
