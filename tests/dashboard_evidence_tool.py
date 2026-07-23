@@ -227,6 +227,15 @@ class DashboardEvidenceToolTest(unittest.TestCase):
         host = workflow.split("  host:", 1)[1].split("\n  publish-homebrew-formula:", 1)[0]
         self.assertIn("verify-dashboard-release", host)
 
+    def test_homebrew_publish_uses_protected_environment(self):
+        workflow = (tool.ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        homebrew = workflow.split("  publish-homebrew-formula:", 1)[1].split(
+            "\n  announce:", 1
+        )[0]
+        self.assertRegex(homebrew, r"(?m)^    environment: homebrew$")
+
     def test_json_schema_and_ci_validator_share_contract_vocabulary(self):
         tool.validate_schema_contract(tool.read_json(tool.SCHEMA))
 
