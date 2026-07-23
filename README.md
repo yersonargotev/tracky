@@ -12,7 +12,7 @@ brew install yersonargotev/tap/tracky
 
 Prebuilt archives and checksums for supported platforms are also available from
 [GitHub Releases](https://github.com/yersonargotev/tracky/releases). Supported packages target
-Apple Silicon macOS, Intel macOS, and x86-64 glibc Linux. The TUI remains intentionally deferred.
+Apple Silicon macOS and x86-64 glibc Linux. The TUI remains intentionally deferred.
 
 ## Local analytics dashboard
 

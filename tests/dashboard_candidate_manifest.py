@@ -77,7 +77,7 @@ class DashboardCandidateManifestTest(unittest.TestCase):
     def test_rejects_missing_duplicate_and_unknown_targets(self):
         first = next(self.targets.glob("*.json"))
         first.unlink()
-        with self.assertRaisesRegex(ValueError, "exactly three"):
+        with self.assertRaisesRegex(ValueError, "exactly 2"):
             self.assemble()
 
     def test_rejects_inconsistent_commit_lockfile_and_tools(self):

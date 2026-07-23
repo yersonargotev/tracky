@@ -45,7 +45,6 @@ ci = ["github"]
 installers = ["shell", "homebrew"]
 targets = [
     "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
 ]
 tap = "yersonargotev/homebrew-tap"

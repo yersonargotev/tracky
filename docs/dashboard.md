@@ -26,7 +26,6 @@ filters, drill-downs, and refreshes remain within the same canonical read model.
 | Package target | Operating system | Supported browsers |
 | --- | --- | --- |
 | `aarch64-apple-darwin` | Apple Silicon macOS | Safari 26.0+, Firefox 153 ESR+, Chromium/Chrome 150+ |
-| `x86_64-apple-darwin` | Intel macOS | Safari 26.0+, Firefox 153 ESR+, Chromium/Chrome 150+ |
 | `x86_64-unknown-linux-gnu` | x86-64 glibc Linux | Firefox 153 ESR+, Chromium/Chrome 150+ |
 
 Each release also verifies the latest stable versions available at release cut.

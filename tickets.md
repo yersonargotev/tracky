@@ -245,7 +245,7 @@ Local Apple Silicon Cargo Dist verification passes both frozen size limits
 (archive 4,214,744 bytes; executable 15,065,296 bytes), plus the complete Rust,
 Clippy, release-build, Chromium, Firefox, WebKit, and axe gates under sandboxed
 HOME/config. The remaining unchecked criteria deliberately require retained
-real-runner evidence for Intel macOS/Linux, installers/Homebrew, stress/resource
+real-runner evidence for Linux, installers/Homebrew, stress/resource
 matrices, minimum/current browsers, and signed manual accessibility. Publication
 remains technically blocked until those external gates populate and approve the
 manifest; no evidence or threshold was fabricated or waived in this change.

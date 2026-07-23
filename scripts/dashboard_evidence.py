@@ -22,9 +22,10 @@ MANUAL_ACCESSIBILITY = EVIDENCE / "manual-accessibility-checklist.md"
 ASSETS = ROOT / "src" / "dashboard_assets"
 TARGETS = {
     "aarch64-apple-darwin",
-    "x86_64-apple-darwin",
     "x86_64-unknown-linux-gnu",
 }
+# The immutable dashboard-free baseline predates the Intel support removal.
+FROZEN_BASELINE_TARGETS = TARGETS | {"x86_64-apple-darwin"}
 HASH_LENGTH = 64
 MAX_ASSET_BYTES = 250 * 1024
 MAX_DEPENDENCY_DELTA = 60
@@ -183,7 +184,10 @@ def validate_baseline(value):
     require(len(value.get("lockfile_sha256", "")) == HASH_LENGTH, "invalid lockfile hash")
     require(value.get("resolved_package_count", 0) > 0, "missing package count")
     targets = value.get("targets", [])
-    require({item.get("target") for item in targets} == TARGETS, "baseline targets differ from Cargo Dist targets")
+    require(
+        {item.get("target") for item in targets} == FROZEN_BASELINE_TARGETS,
+        "frozen baseline targets changed",
+    )
     for item in targets:
         for field in ("archive_bytes", "executable_bytes"):
             require(item.get(field, 0) > 0, "%s missing for %s" % (field, item.get("target")))

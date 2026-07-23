@@ -37,6 +37,10 @@ but may skip neither. A failed, missing, or waived gate blocks publication;
 changing a threshold or accepting a deviation requires an explicit contract
 change before release.
 
+Superseded on 2026-07-22: release candidates now cover Apple Silicon macOS and
+x86-64 glibc Linux only. The three-target matrix above remains as historical
+decision evidence.
+
 ### Correctness and read-only behavior
 
 Maintain a deterministic conformance corpus whose expected results are written

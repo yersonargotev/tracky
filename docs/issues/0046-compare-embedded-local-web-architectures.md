@@ -55,6 +55,7 @@ shows that framework-free code is no longer the simplest maintainable option.
 
 The disposable size probe establishes only direction: the Axum/Tokio probe was
 larger than the synchronous alternative. Actual incremental size, dependency
-licenses, packaged assets, and startup behavior must be measured on all three
-Cargo Dist targets before release; no probe number is an accepted product
-budget.
+licenses, packaged assets, and startup behavior had to be measured on all three
+then-current Cargo Dist targets before release; no probe number was an accepted
+product budget. The active matrix no longer includes macOS Intel as of
+2026-07-22.

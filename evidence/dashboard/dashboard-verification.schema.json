@@ -14,7 +14,7 @@
     "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "lockfile_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "tools": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } },
-    "targets": { "type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] } },
+    "targets": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "enum": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"] } },
     "browsers": {
       "type": "object", "additionalProperties": false,
       "properties": {
@@ -49,8 +49,8 @@
       "type": "object", "additionalProperties": false,
       "required": ["target", "name", "sha256", "bytes"],
       "properties": {
-        "target": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] },
-        "name": { "type": "string", "pattern": "^tracky-(aarch64-apple-darwin|x86_64-apple-darwin|x86_64-unknown-linux-gnu)\\.tar\\.xz$" },
+        "target": { "enum": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"] },
+        "name": { "type": "string", "pattern": "^tracky-(aarch64-apple-darwin|x86_64-unknown-linux-gnu)\\.tar\\.xz$" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "bytes": { "type": "integer", "minimum": 0 }
       }
@@ -66,10 +66,9 @@
     },
     "latencyTargets": {
       "type": "object", "additionalProperties": false,
-      "required": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "required": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "properties": {
         "aarch64-apple-darwin": { "$ref": "#/$defs/latency" },
-        "x86_64-apple-darwin": { "$ref": "#/$defs/latency" },
         "x86_64-unknown-linux-gnu": { "$ref": "#/$defs/latency" }
       }
     },
@@ -89,10 +88,9 @@
     },
     "resourceTargets": {
       "type": "object", "additionalProperties": false,
-      "required": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"],
+      "required": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"],
       "properties": {
         "aarch64-apple-darwin": { "$ref": "#/$defs/resources" },
-        "x86_64-apple-darwin": { "$ref": "#/$defs/resources" },
         "x86_64-unknown-linux-gnu": { "$ref": "#/$defs/resources" }
       }
     },
@@ -118,14 +116,14 @@
         "schema_version": { "const": 1 },
         "resolved_package_count": { "type": "integer", "minimum": 1 },
         "asset_bytes": { "type": "integer", "minimum": 0, "maximum": 256000 },
-        "targets": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/sizeTarget" } }
+        "targets": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/sizeTarget" } }
       }
     },
     "sizeTarget": {
       "type": "object", "additionalProperties": false,
       "required": ["target", "archive_bytes", "archive_sha256", "executable_bytes", "executable_sha256"],
       "properties": {
-        "target": { "enum": ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"] },
+        "target": { "enum": ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu"] },
         "archive_bytes": { "type": "integer", "minimum": 1 },
         "archive_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "executable_bytes": { "type": "integer", "minimum": 1 },

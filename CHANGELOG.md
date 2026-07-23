@@ -11,6 +11,8 @@
   by aggregating in SQLite and creating read-only snapshots out of process.
 - Bind release publication to complete approved packaged-dashboard evidence for
   every supported Cargo Dist target and attach its JSON and Markdown renderings.
+- Ship prebuilt packages for Apple Silicon macOS and x86-64 glibc Linux; macOS
+  Intel is no longer a supported build target.
 
 The dashboard is a supported Tracky feature, not a beta or preview. It remains
 local-only and never mutates or migrates the selected database.

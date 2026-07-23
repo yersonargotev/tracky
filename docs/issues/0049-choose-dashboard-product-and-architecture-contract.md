@@ -83,6 +83,10 @@ Safari, Firefox, and Chromium versions and retain useful semantic/table content
 when graphical enhancement fails. Windows and mobile browsers are not supported
 MVP platforms even if the responsive page happens to work there.
 
+Superseded on 2026-07-22: the active Cargo Dist and dashboard support matrix no
+longer includes macOS Intel. The paragraph above records the decision as adopted
+at the time.
+
 Explicitly reject Ratatui as the analytics surface, `file://` snapshots as the
 dashboard or launch fallback, daemons, `tiny_http`, a bespoke HTTP/security
 layer, frontend frameworks, Vite/TypeScript, Rust/Wasm, external runtime assets,
