@@ -16,6 +16,7 @@ not an active build, measurement, or support target.
 python3 scripts/dashboard_evidence.py check
 python3 -m unittest tests/dashboard_evidence_tool.py
 python3 -m unittest tests/dashboard_browser_evidence.py
+python3 -m unittest tests/dashboard_accessibility_evidence.py
 cargo deny check advisories bans licenses sources
 ```
 
@@ -127,11 +128,63 @@ tag workflow, executable hashes and sizes are re-read from the packaged binaries
 while asset bytes and resolved-package counts are rebound to the accepted source
 tree and inventory.
 
+## Retained manual accessibility evidence
+
 The named manual WCAG release-candidate inputs live in
-`evidence/dashboard/manual-accessibility-checklist.md`. They intentionally remain
-`not run` during implementation; browser automation must not pre-claim
-VoiceOver, Orca, keyboard, zoom, contrast, target, motion, announcement, or
-non-color passage.
+`evidence/dashboard/manual-accessibility-checklist.md`; the machine-readable
+form is `manual-accessibility.template.json`, governed by the adjacent JSON
+Schema. Both templates intentionally remain `not run` and unassigned in the
+source tree. Browser automation must not pre-claim VoiceOver, Orca, keyboard,
+zoom, contrast, target, motion, announcement, or non-color passage.
+
+Use the exact successful **Build dashboard release candidate** run for the
+commit under review. Download its two retained artifacts, record the run ID and
+URL, and copy each archive SHA-256 from its validated target fragment. Execute
+the Apple Silicon archive on macOS with Safari and VoiceOver, and the Linux
+archive with Firefox and Orca. Each platform records its target, operating
+system, browser and assistive-technology versions, tester, date, findings, and
+evidence for every applicable row. Every row and each tester sign-off must be
+`pass`; `not_run`, `fail`, missing, unsigned, or placeholder content is rejected.
+
+The named `responsible_maintainer` also supplies a top-level signed pass and is
+bound to the authenticated workflow dispatcher; platform testers sign their own
+rows separately. The workflow evaluates `manual-accessibility.schema.json`
+before applying the stricter semantic and candidate-provenance checks.
+
+Validate a completed copy locally before submission:
+
+```sh
+python3 scripts/dashboard_accessibility_evidence.py validate \
+  manual-accessibility.submission.json \
+  --commit "$(git rev-parse HEAD)" \
+  --lockfile-sha256 "$(python3 -c 'import hashlib; print(hashlib.sha256(open(\"Cargo.lock\", \"rb\").read()).hexdigest())')"
+```
+
+Host that JSON at HTTPS and dispatch **Retain dashboard manual accessibility
+evidence** with its SHA-256 and the same full commit. The job checks out that
+commit, runs behind the protected `dashboard-release` environment, requires the
+authenticated dispatcher to equal `responsible_maintainer`, downloads both
+candidate artifacts from the recorded run, and verifies each archive against
+both its candidate fragment and signed submission. It renders and retains the
+raw submission plus canonical JSON/Markdown for 90 days as
+`dashboard-accessibility-evidence-<commit>`.
+
+Download `manual-accessibility.json` from that artifact and supply it unchanged
+to the release-manifest assembler. The non-manual results input contains the
+other eleven gates; the assembler derives the `manual-accessibility` gate only
+from the retained canonical run URL:
+
+```sh
+python3 scripts/dashboard_candidate_manifest.py \
+  --targets-dir target-fragments \
+  --browsers browsers.json \
+  --accessibility manual-accessibility.json \
+  --results non-manual-results.json \
+  --inventory inventory.json \
+  --maintainer "$GITHUB_ACTOR" \
+  --approved-by "$APPROVER" \
+  --output dashboard-verification.json
+```
 
 ## Publication gate
 

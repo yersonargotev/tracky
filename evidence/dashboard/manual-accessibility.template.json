@@ -1,0 +1,57 @@
+{
+  "candidate_run_id": 0,
+  "candidate_run_url": "",
+  "commit": "",
+  "lockfile_sha256": "",
+  "maintainer_sign_off": {"signed_at": "", "signed_by": "", "status": "not_run"},
+  "platforms": {
+    "firefox-orca": {
+      "artifact": {"name": "tracky-x86_64-unknown-linux-gnu.tar.xz", "sha256": ""},
+      "assistive_technology": {"name": "Orca", "version": ""},
+      "browser": {"name": "Firefox", "version": ""},
+      "checks": [
+        {"check": "200 percent zoom", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "320 CSS pixel reflow", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Keyboard-only operation", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "No color-only meaning", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Orca with Firefox", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Pointer target size", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Reduced motion", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Refresh and error announcements", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Visible and restored focus", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "WCAG 2.2 AA contrast", "evidence": "", "findings": "", "status": "not_run"}
+      ],
+      "date": "",
+      "environment": "Firefox with Orca",
+      "operating_system": "",
+      "sign_off": {"signed_at": "", "signed_by": "", "status": "not_run"},
+      "target": "x86_64-unknown-linux-gnu",
+      "tester": ""
+    },
+    "safari-voiceover": {
+      "artifact": {"name": "tracky-aarch64-apple-darwin.tar.xz", "sha256": ""},
+      "assistive_technology": {"name": "VoiceOver", "version": ""},
+      "browser": {"name": "Safari", "version": ""},
+      "checks": [
+        {"check": "200 percent zoom", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "320 CSS pixel reflow", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Keyboard-only operation", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "No color-only meaning", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Pointer target size", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Reduced motion", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Refresh and error announcements", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "Visible and restored focus", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "VoiceOver with Safari", "evidence": "", "findings": "", "status": "not_run"},
+        {"check": "WCAG 2.2 AA contrast", "evidence": "", "findings": "", "status": "not_run"}
+      ],
+      "date": "",
+      "environment": "Safari with VoiceOver",
+      "operating_system": "",
+      "sign_off": {"signed_at": "", "signed_by": "", "status": "not_run"},
+      "target": "aarch64-apple-darwin",
+      "tester": ""
+    }
+  },
+  "responsible_maintainer": "unassigned",
+  "schema_version": 1
+}

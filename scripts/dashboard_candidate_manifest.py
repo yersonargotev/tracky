@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import dashboard_evidence as evidence
+import dashboard_accessibility_evidence as accessibility
 
 
 TARGET_FIELDS = {
@@ -23,7 +24,7 @@ def _require_commands(commands, source):
     )
 
 
-def assemble(targets_dir, browsers_path, results_path, inventory_path, maintainer, approved_by):
+def assemble(targets_dir, browsers_path, accessibility_path, results_path, inventory_path, maintainer, approved_by):
     fragments = []
     for path in sorted(Path(targets_dir).glob("*.json")):
         fragment = evidence.read_json(path)
@@ -80,11 +81,24 @@ def assemble(targets_dir, browsers_path, results_path, inventory_path, maintaine
     _require_commands(browser_input["commands"], "browser evidence")
     commands.extend(browser_input["commands"])
 
+    accessibility_input = evidence.read_json(accessibility_path)
+    accessibility.validate_canonical(accessibility_input)
+    evidence.require(accessibility_input["commit"] == commit, "accessibility evidence commit differs from target fragments")
+    evidence.require(accessibility_input["lockfile_sha256"] == lockfile, "accessibility evidence lockfile differs from target fragments")
+    evidence.require(accessibility_input["responsible_maintainer"] == maintainer, "accessibility maintainer differs from release maintainer")
+    evidence.require(accessibility_input["status"] == "pass", "accessibility evidence must pass")
+
     results = evidence.read_json(results_path)
     evidence.require(isinstance(results, list), "results evidence must be a JSON list")
-    evidence.require(len(results) == len(evidence.REQUIRED_RELEASE_GATES) and {item.get("gate") for item in results} == evidence.REQUIRED_RELEASE_GATES, "results evidence must contain exactly the twelve required gates")
+    automated_gates = evidence.REQUIRED_RELEASE_GATES - {"manual-accessibility"}
+    evidence.require(len(results) == len(automated_gates) and {item.get("gate") for item in results} == automated_gates, "results evidence must contain exactly the eleven non-manual gates")
     evidence.require(all(item.get("status") == "pass" for item in results), "every release gate must pass")
     evidence.require(all(set(item) == {"gate", "status", "evidence"} and isinstance(item.get("evidence"), str) and evidence.RETAINED_EVIDENCE_URL.fullmatch(item["evidence"]) for item in results), "release gates must contain retained GitHub Actions evidence URLs")
+    results.append({
+        "gate": "manual-accessibility",
+        "status": "pass",
+        "evidence": accessibility_input["retained_run_url"],
+    })
 
     inventory = evidence.read_json(inventory_path)
     evidence.require(set(inventory) == {"resolved_package_count", "asset_bytes"}, "inventory must contain exactly resolved_package_count and asset_bytes")
@@ -114,13 +128,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--targets-dir", type=Path, required=True)
     parser.add_argument("--browsers", type=Path, required=True)
+    parser.add_argument("--accessibility", type=Path, required=True)
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--maintainer", required=True)
     parser.add_argument("--approved-by", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    manifest = assemble(args.targets_dir, args.browsers, args.results, args.inventory, args.maintainer, args.approved_by)
+    manifest = assemble(args.targets_dir, args.browsers, args.accessibility, args.results, args.inventory, args.maintainer, args.approved_by)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(evidence.canonical_json(manifest), encoding="utf-8")
 
