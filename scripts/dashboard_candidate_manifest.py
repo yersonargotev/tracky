@@ -66,7 +66,15 @@ def assemble(targets_dir, browsers_path, results_path, inventory_path, maintaine
         commands.extend(fragment["commands"])
 
     browser_input = evidence.read_json(browsers_path)
-    evidence.require(set(browser_input) == {"browsers", "commands"}, "browser evidence fields must be browsers and commands")
+    evidence.require(
+        set(browser_input) == {"commit", "lockfile_sha256", "browsers", "commands"},
+        "browser evidence fields must bind commit and lockfile with browsers and commands",
+    )
+    evidence.require(browser_input["commit"] == commit, "browser evidence commit differs from target fragments")
+    evidence.require(
+        browser_input["lockfile_sha256"] == lockfile,
+        "browser evidence lockfile differs from target fragments",
+    )
     browsers = browser_input["browsers"]
     evidence.require(isinstance(browsers, dict) and set(browsers) == evidence.REQUIRED_RELEASE_BROWSERS, "browser evidence must contain exactly the six required browsers")
     _require_commands(browser_input["commands"], "browser evidence")

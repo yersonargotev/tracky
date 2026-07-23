@@ -41,7 +41,7 @@ class DashboardCandidateManifestTest(unittest.TestCase):
             }
             self.write(self.targets / (target + ".json"), fragment)
         self.browsers = self.root / "browsers.json"
-        self.write(self.browsers, {"browsers": {
+        self.write(self.browsers, {"commit": self.commit, "lockfile_sha256": self.lockfile, "browsers": {
             "safari-minimum": "26.0", "safari-latest": "26.1",
             "firefox-esr-minimum": "153 ESR", "firefox-latest": "154",
             "chromium-minimum": "150", "chromium-latest": "151",
@@ -113,11 +113,22 @@ class DashboardCandidateManifestTest(unittest.TestCase):
             self.assemble()
 
     def setUp_browser_again(self):
-        self.write(self.browsers, {"browsers": {
+        self.write(self.browsers, {"commit": self.commit, "lockfile_sha256": self.lockfile, "browsers": {
             "safari-minimum": "26.0", "safari-latest": "26.1",
             "firefox-esr-minimum": "153 ESR", "firefox-latest": "154",
             "chromium-minimum": "150", "chromium-latest": "151",
         }, "commands": ["test browsers"]})
+
+    def test_rejects_browser_evidence_from_another_commit_or_lockfile(self):
+        original = json.loads(self.browsers.read_text())
+        for field, message in (("commit", "commit differs"), ("lockfile_sha256", "lockfile differs")):
+            with self.subTest(field=field):
+                changed = copy.deepcopy(original)
+                changed[field] = ("c" * 40) if field == "commit" else ("c" * 64)
+                self.write(self.browsers, changed)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.assemble()
+        self.write(self.browsers, original)
 
     def test_rejects_mismatched_size_target_and_inventory_shape(self):
         path = next(self.targets.glob("*.json"))
