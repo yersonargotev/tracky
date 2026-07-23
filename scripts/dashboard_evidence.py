@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 import struct
@@ -511,6 +512,13 @@ def check_all():
     validate_baseline(baseline)
     validate_schema_contract(read_json(SCHEMA))
     validate_manifest(read_json(TEMPLATE))
+    accessibility_spec = importlib.util.spec_from_file_location(
+        "dashboard_accessibility_evidence",
+        ROOT / "scripts" / "dashboard_accessibility_evidence.py",
+    )
+    accessibility = importlib.util.module_from_spec(accessibility_spec)
+    accessibility_spec.loader.exec_module(accessibility)
+    accessibility.check_contract()
     write_or_check(INVENTORY, dependency_inventory(), True)
     require(NOTICES_FILE.exists() and "THIRD-PARTY NOTICES" in NOTICES_FILE.read_text(encoding="utf-8"), "THIRD-PARTY-NOTICES is missing")
     require(MANUAL_ACCESSIBILITY.exists(), "manual accessibility checklist is missing")
