@@ -110,6 +110,27 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
         lane_job = workflow.split("  browser-lane:", 1)[1].split("\n  collect:", 1)[0]
         self.assertLess(lane_job.index("Initialize fail-closed raw lane output"), lane_job.index("Download the packaged candidate"))
         self.assertIn("shasum -a 256 --check", lane_job)
+        self.assertIn(
+            "browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795",
+            lane_job,
+        )
+        self.assertIn(
+            "browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd",
+            lane_job,
+        )
+
+    def test_canonical_drawer_interaction_uses_an_async_open_state_probe(self):
+        class Driver:
+            def async_script(self, script):
+                self.script = script
+                return True
+
+        driver = Driver()
+        self.assertTrue(harness.open_canonical_drawer(driver))
+        self.assertIn("[data-drawer]", driver.script)
+        self.assertIn(".open", driver.script)
+        self.assertIn("setInterval", driver.script)
+        self.assertIn("done(false)", driver.script)
 
     def test_harness_writes_failed_raw_gate_and_returns_nonzero(self):
         binary = self.root / "tracky"
