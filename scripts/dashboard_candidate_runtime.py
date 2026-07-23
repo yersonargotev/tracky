@@ -20,7 +20,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-TARGETS = {"aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"}
+TARGETS = {"aarch64-apple-darwin", "x86_64-unknown-linux-gnu"}
 LATENCY_LIMITS = {
     "readiness_p95_ms": 500, "initial_snapshot_p95_ms": 1500,
     "refresh_p95_ms": 1500, "navigation_p95_ms": 2000,

@@ -29,6 +29,7 @@ class DashboardEvidenceToolTest(unittest.TestCase):
                     "executable_sha256": "b" * 64,
                 }
                 for item in self.baseline["targets"]
+                if item["target"] in tool.TARGETS
             ],
         }
 

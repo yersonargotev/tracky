@@ -36,9 +36,9 @@ may be valuable later as an **explicit export**, but not as `tracky dashboard`.
 
 ## Why this shape fits the repository
 
-Tracky currently releases one Rust binary for Apple Silicon macOS, Intel macOS,
-and x86-64 GNU/Linux, using Cargo Dist and a Cargo-only release build. It does
-not declare a `rust-version`, and CI follows stable Rust. See
+At the time of this research, Tracky released one Rust binary for Apple Silicon
+macOS, Intel macOS, and x86-64 GNU/Linux, using Cargo Dist and a Cargo-only
+release build. It does not declare a `rust-version`, and CI follows stable Rust. See
 [`Cargo.toml`](../../Cargo.toml) and
 [`release.yml`](../../.github/workflows/release.yml).
 
@@ -189,8 +189,9 @@ Therefore:
   headers/content are exact;
 - lifecycle tests: open failure, `--no-open`, first/second Ctrl-C, SIGTERM on Unix,
   in-flight query drain, and database-open failure leave no listener behind;
-- release checks on all three Cargo Dist targets: dependency licenses, archive
-  contents, startup, asset availability, and real incremental binary size;
+- release checks on all three then-current Cargo Dist targets: dependency
+  licenses, archive contents, startup, asset availability, and real incremental
+  binary size;
 - browser checks should name a minimum supported Safari, Firefox, and Chromium
   version after the prototype fixes the JavaScript/CSS feature set; the HTML
   should retain a useful tabular fallback if SVG enhancement fails.

@@ -7,6 +7,8 @@ hashes, byte counts, and archive allowlists must not be moved by a change that
 benefits from a larger baseline. The exact accepted archives and per-target JSON
 are retained in the technical
 [`dashboard-baseline-f95fdaf` release](https://github.com/yersonargotev/tracky/releases/tag/dashboard-baseline-f95fdaf).
+Its Intel artifact remains only as immutable historical evidence; Intel macOS is
+not an active build, measurement, or support target.
 
 ## Fast pull-request gates
 
@@ -39,8 +41,8 @@ existing graph into an unrelated dependency cleanup.
 
 ## Artifact and static-asset comparison
 
-Build all three Cargo Dist targets with the versions recorded by the baseline,
-then measure and compare them:
+Build both supported Cargo Dist targets with the versions recorded by the
+baseline, then measure and compare them:
 
 ```sh
 python3 scripts/dashboard_evidence.py measure \

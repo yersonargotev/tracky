@@ -29,7 +29,10 @@ def assemble(targets_dir, browsers_path, results_path, inventory_path, maintaine
         fragment = evidence.read_json(path)
         evidence.require(set(fragment) == TARGET_FIELDS, "invalid target fragment fields in %s" % path.name)
         fragments.append(fragment)
-    evidence.require(len(fragments) == len(evidence.TARGETS), "targets directory must contain exactly three JSON fragments")
+    evidence.require(
+        len(fragments) == len(evidence.TARGETS),
+        "targets directory must contain exactly %d JSON fragments" % len(evidence.TARGETS),
+    )
 
     targets = [fragment["target"] for fragment in fragments]
     evidence.require(set(targets) == evidence.TARGETS and len(set(targets)) == len(targets), "target fragments must cover every target exactly once")
