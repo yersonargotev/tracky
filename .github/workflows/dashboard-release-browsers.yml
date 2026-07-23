@@ -1,0 +1,250 @@
+name: Test dashboard release browsers
+
+on:
+  workflow_dispatch:
+    inputs:
+      accepted_sha:
+        description: Exact lowercase 40-character candidate commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-candidate:
+    name: Package candidate (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            target: aarch64-apple-darwin
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Validate the accepted commit SHA
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+        shell: bash
+        run: |
+          if [[ ! "$ACCEPTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "accepted_sha must be exactly 40 lowercase hexadecimal characters" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.accepted_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Install the frozen Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.93.0
+      - name: Install Cargo Dist 0.32.0
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            --output cargo-dist-installer.sh \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh
+          echo 'b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5  cargo-dist-installer.sh' \
+            | shasum -a 256 --check
+          sh cargo-dist-installer.sh
+      - name: Build the packaged candidate
+        run: dist build --artifacts=local --target=${{ matrix.target }} --output-format=json
+      - name: Retain the packaged candidate for browser lanes
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dashboard-browser-candidate-${{ inputs.accepted_sha }}-${{ matrix.target }}
+          path: |
+            target/distrib/tracky-${{ matrix.target }}.tar.xz
+            target/distrib/tracky-${{ matrix.target }}.tar.xz.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  browser-lane:
+    name: Browser lane (${{ matrix.lane }})
+    needs: build-candidate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: safari-minimum
+            runner: macos-26
+            target: aarch64-apple-darwin
+            browser: safari
+            version: installed
+            minimum: '26.0'
+          - lane: safari-latest
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            browser: safari
+            version: installed
+            minimum: '26.0'
+          - lane: firefox-esr-minimum
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            browser: firefox
+            version: 153.0esr
+            minimum: '153'
+          - lane: firefox-latest
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            browser: firefox
+            version: latest
+            minimum: '153'
+          - lane: chromium-minimum
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            browser: chromium
+            version: '150'
+            minimum: '150'
+          - lane: chromium-latest
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            browser: chromium
+            version: stable
+            minimum: '150'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.accepted_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Initialize fail-closed raw lane output
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+          BROWSER: ${{ matrix.browser }}
+          LANE: ${{ matrix.lane }}
+        shell: bash
+        run: |
+          mkdir -p browser-results
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          gates = ["browser-flow", "progressive-no-javascript", "security", "lifecycle", "automated-accessibility"]
+          lockfile = hashlib.sha256(pathlib.Path("Cargo.lock").read_bytes()).hexdigest()
+          value = {
+              "schema_version": 1,
+              "lane": os.environ["LANE"],
+              "commit": os.environ["ACCEPTED_SHA"],
+              "lockfile_sha256": lockfile,
+              "browser": {"name": os.environ["BROWSER"], "version": "not-recorded"},
+              "driver": {"name": "not-recorded", "version": "not-recorded"},
+              "command": "workflow failed before the browser harness command",
+              "gates": [{"gate": gate, "status": "fail" if index == 0 else "not-run"} for index, gate in enumerate(gates)],
+          }
+          pathlib.Path("browser-results", os.environ["LANE"] + ".json").write_text(
+              json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+          )
+          PY
+      - name: Download the packaged candidate
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: dashboard-browser-candidate-${{ inputs.accepted_sha }}-${{ matrix.target }}
+          path: candidate
+      - name: Extract the packaged candidate
+        shell: bash
+        run: |
+          (cd candidate && shasum -a 256 --check "tracky-${{ matrix.target }}.tar.xz.sha256")
+          tar -xJf "candidate/tracky-${{ matrix.target }}.tar.xz" -C candidate
+          test -x "candidate/tracky-${{ matrix.target }}/tracky"
+      - name: Install Firefox for this lane
+        if: ${{ matrix.browser == 'firefox' }}
+        id: firefox
+        uses: browser-actions/setup-firefox@49cdbfc200e72729ff368b519201904af267e90c
+        with:
+          firefox-version: ${{ matrix.version }}
+      - name: Install Chromium and its driver for this lane
+        if: ${{ matrix.browser == 'chromium' }}
+        id: chrome
+        uses: browser-actions/setup-chrome@0eb8bbcc1e243e1d5290b6dcfe362aa5936e74e2
+        with:
+          chrome-version: ${{ matrix.version }}
+          install-chromedriver: true
+      - name: Enable Safari WebDriver
+        if: ${{ matrix.browser == 'safari' }}
+        run: sudo safaridriver --enable
+      - name: Install pinned automated-accessibility rules
+        run: npm install --global axe-core@4.10.3
+      - name: Exercise the real packaged browser lane
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+          BROWSER: ${{ matrix.browser }}
+          BROWSER_BINARY: ${{ matrix.browser == 'firefox' && steps.firefox.outputs.firefox-path || matrix.browser == 'chromium' && steps.chrome.outputs.chrome-path || '' }}
+          DRIVER: ${{ matrix.browser == 'chromium' && steps.chrome.outputs.chromedriver-path || '' }}
+          LANE: ${{ matrix.lane }}
+          MINIMUM_VERSION: ${{ matrix.minimum }}
+          TARGET: ${{ matrix.target }}
+        shell: bash
+        run: |
+          lockfile_sha256=$(shasum -a 256 Cargo.lock | cut -d ' ' -f 1)
+          arguments=(
+            --binary "candidate/tracky-${TARGET}/tracky"
+            --browser "$BROWSER"
+            --lane "$LANE"
+            --minimum-version "$MINIMUM_VERSION"
+            --commit "$ACCEPTED_SHA"
+            --lockfile-sha256 "$lockfile_sha256"
+            --output "browser-results/${LANE}.json"
+          )
+          if [[ -n "$BROWSER_BINARY" ]]; then arguments+=(--browser-binary "$BROWSER_BINARY"); fi
+          if [[ -n "$DRIVER" ]]; then arguments+=(--driver "$DRIVER"); fi
+          python3 scripts/dashboard_release_browser.py "${arguments[@]}"
+      - name: Retain raw lane output
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dashboard-browser-lane-${{ inputs.accepted_sha }}-${{ matrix.lane }}
+          path: browser-results/${{ matrix.lane }}.json
+          if-no-files-found: error
+          retention-days: 90
+
+  collect:
+    name: Assemble canonical browser evidence
+    needs: browser-lane
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ inputs.accepted_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+        shell: bash
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Download all raw browser results
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          pattern: dashboard-browser-lane-${{ inputs.accepted_sha }}-*
+          path: browser-results
+          merge-multiple: true
+      - name: Assemble the exact-SHA canonical browser input
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+        run: |
+          lockfile_sha256=$(sha256sum Cargo.lock | cut -d ' ' -f 1)
+          python3 scripts/dashboard_browser_evidence.py \
+            --results-dir browser-results \
+            --commit "$ACCEPTED_SHA" \
+            --lockfile-sha256 "$lockfile_sha256" \
+            --output browsers.json
+      - name: Retain canonical browser evidence and raw results
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: dashboard-browser-evidence-${{ inputs.accepted_sha }}
+          path: |
+            browsers.json
+            browser-results/*.json
+          if-no-files-found: error
+          retention-days: 90

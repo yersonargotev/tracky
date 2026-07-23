@@ -15,6 +15,7 @@ not an active build, measurement, or support target.
 ```sh
 python3 scripts/dashboard_evidence.py check
 python3 -m unittest tests/dashboard_evidence_tool.py
+python3 -m unittest tests/dashboard_browser_evidence.py
 cargo deny check advisories bans licenses sources
 ```
 
@@ -65,6 +66,32 @@ transaction runtime and 100 refresh cycles, and retains per-target fragments for
 Candidate fragments are inputs to release proof, not approval by themselves.
 Installer, Homebrew, all six real-browser lanes, and manual accessibility
 results still require retained evidence before the release manifest can pass.
+
+## Retained browser evidence
+
+After **Build dashboard release candidate** passes, dispatch **Test dashboard
+release browsers** with the same full commit SHA. The workflow builds the Cargo
+Dist packages for that commit and runs six independent lanes against the
+extracted packaged executable: minimum and current Safari, Firefox ESR and
+current Firefox, and minimum and current Chromium. Safari uses the installed
+SafariDriver on GitHub's pinned/current macOS images; Firefox and Chromium are
+installed explicitly for their matrix lanes. Every lane records the browser and
+driver versions reported by WebDriver and rejects a version below the documented
+support floor.
+
+Each lane fails closed on the browser interaction flow, progressive rendering
+without JavaScript, loopback/security invariants, process lifecycle cleanup, and
+axe automated accessibility checks. Its raw JSON is retained for 90 days even
+when the lane fails. The final job accepts only six passing, non-duplicate lane
+results bound to the dispatched commit and its `Cargo.lock` SHA-256, then retains
+`browsers.json` together with all raw results as
+`dashboard-browser-evidence-<commit>`.
+
+Download `browsers.json` from that artifact and pass it unchanged as `--browsers`
+to `scripts/dashboard_candidate_manifest.py`. The assembler rechecks its commit
+and lockfile binding against the native candidate fragments; CI's faster
+Chromium/Firefox/WebKit debug-build flow remains a pull-request gate and is not
+release evidence.
 
 Copy `evidence/dashboard/dashboard-verification.template.json`, populate it only
 from retained command output, and validate/render it with:
