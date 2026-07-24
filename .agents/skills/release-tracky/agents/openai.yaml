@@ -1,0 +1,4 @@
+interface:
+  display_name: "Release Tracky"
+  short_description: "Cut and verify an evidence-bound Tracky release"
+  default_prompt: "Use $release-tracky to publish the next Tracky release safely."
