@@ -232,10 +232,11 @@ def responsive_state(driver):
 
 
 def has_progressive_content(content, require_markup=True):
-    required = ["COP\u00a0$7.000,00", "2026-01-01", "2026-07-31", "COP"]
+    normalized = content.replace("\u00a0", " ")
+    required = ["COP $7.000,00", "2026-01-01", "2026-07-31", "COP"]
     if require_markup:
         required.extend(("<table", 'data-region="alerts"'))
-    return all(token in content for token in required)
+    return all(token in normalized for token in required)
 
 
 def main():

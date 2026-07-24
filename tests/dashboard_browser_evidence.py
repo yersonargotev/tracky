@@ -145,6 +145,9 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
     def test_progressive_content_tracks_the_refreshed_snapshot(self):
         content = 'COP\u00a0$7.000,00 2026-01-01 2026-07-31 COP <table data-region="alerts"'
         self.assertTrue(harness.has_progressive_content(content))
+        self.assertTrue(
+            harness.has_progressive_content(content.replace("\u00a0", " "))
+        )
         self.assertFalse(
             harness.has_progressive_content(
                 content.replace("COP\u00a0$7.000,00", "COP\u00a0$5.000,00")

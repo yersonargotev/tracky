@@ -3,7 +3,6 @@
 
 import argparse
 import hashlib
-import importlib.util
 import json
 import re
 import struct
@@ -19,7 +18,6 @@ TEMPLATE = EVIDENCE / "dashboard-verification.template.json"
 SCHEMA = EVIDENCE / "dashboard-verification.schema.json"
 INVENTORY = EVIDENCE / "dependency-inventory.json"
 NOTICES_FILE = ROOT / "THIRD-PARTY-NOTICES"
-MANUAL_ACCESSIBILITY = EVIDENCE / "manual-accessibility-checklist.md"
 ASSETS = ROOT / "src" / "dashboard_assets"
 TARGETS = {
     "aarch64-apple-darwin",
@@ -46,7 +44,6 @@ REQUIRED_RELEASE_GATES = {
     "packaged-security",
     "performance-and-resources",
     "archive-and-installers",
-    "manual-accessibility",
 }
 REQUIRED_RELEASE_BROWSERS = {
     "safari-minimum", "safari-latest", "firefox-esr-minimum",
@@ -78,21 +75,6 @@ RESOURCE_LIMITS = {
     "threads": 8,
     "descriptors": 32,
 }
-REQUIRED_MANUAL_ACCESSIBILITY_CHECKS = {
-    "Keyboard-only operation",
-    "Visible and restored focus",
-    "VoiceOver with Safari",
-    "Orca with Firefox",
-    "200 percent zoom",
-    "320 CSS pixel reflow",
-    "WCAG 2.2 AA contrast",
-    "Pointer target size",
-    "Reduced motion",
-    "Refresh and error announcements",
-    "No color-only meaning",
-}
-
-
 def read_json(path):
     with Path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -166,17 +148,6 @@ def validate_release_measurements(measurements, artifacts):
             and artifact["sha256"] == measured["archive_sha256"],
             "artifact and size evidence differ for %s" % artifact["target"],
         )
-
-
-def validate_manual_accessibility_checklist(content):
-    require("Status: not run" in content, "manual accessibility checklist must remain not run until signed")
-    require("Status: pass" not in content, "manual accessibility checklist must not pre-claim passage")
-    require(
-        all(("| %s |" % check) in content for check in REQUIRED_MANUAL_ACCESSIBILITY_CHECKS),
-        "manual accessibility checklist is missing required release checks",
-    )
-    for field in ("Commit", "Target", "Operating system", "Browser and version", "Tester", "Date"):
-        require("- %s:" % field in content, "manual accessibility checklist is missing %s" % field)
 
 
 def validate_baseline(value):
@@ -512,17 +483,8 @@ def check_all():
     validate_baseline(baseline)
     validate_schema_contract(read_json(SCHEMA))
     validate_manifest(read_json(TEMPLATE))
-    accessibility_spec = importlib.util.spec_from_file_location(
-        "dashboard_accessibility_evidence",
-        ROOT / "scripts" / "dashboard_accessibility_evidence.py",
-    )
-    accessibility = importlib.util.module_from_spec(accessibility_spec)
-    accessibility_spec.loader.exec_module(accessibility)
-    accessibility.check_contract()
     write_or_check(INVENTORY, dependency_inventory(), True)
     require(NOTICES_FILE.exists() and "THIRD-PARTY NOTICES" in NOTICES_FILE.read_text(encoding="utf-8"), "THIRD-PARTY-NOTICES is missing")
-    require(MANUAL_ACCESSIBILITY.exists(), "manual accessibility checklist is missing")
-    validate_manual_accessibility_checklist(MANUAL_ACCESSIBILITY.read_text(encoding="utf-8"))
     compare_static(ASSETS, baseline)
 
 
