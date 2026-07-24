@@ -50,8 +50,21 @@
     return String(value);
   };
 
-  const amount = (value, currency) =>
-    currency ? `${exact(value)} ${exact(currency)}` : exact(value);
+  const amount = (value, currency) => {
+    const raw = exact(value);
+    const code = exact(currency);
+    if (!["COP", "USD"].includes(code) || !/^-?\d+$/.test(raw)) {
+      return code ? `${raw} ${code}` : raw;
+    }
+    const sign = raw.startsWith("-") ? "-" : "";
+    const digits = (sign ? raw.slice(1) : raw).padStart(3, "0");
+    const major = digits.slice(0, -2);
+    const fraction = digits.slice(-2);
+    const group = code === "COP" ? "." : ",";
+    const decimal = code === "COP" ? "," : ".";
+    const grouped = major.replace(/\B(?=(\d{3})+(?!\d))/g, group);
+    return `${code}\u00a0${sign}$${grouped}${decimal}${fraction}`;
+  };
 
   const actionButton = (label, data) => {
     const button = element("button");
@@ -127,7 +140,7 @@
     scroll.setAttribute("role", "region");
     scroll.setAttribute("aria-label", "Exact monthly amounts by month and currency; horizontally scrollable when needed");
     const table = element("table");
-    table.append(element("caption", "Exact monthly amounts in minor units"));
+    table.append(element("caption", "Exact monthly amounts"));
     const head = element("thead");
     const headRow = element("tr");
     ["Month", "Income", "Consumption expense", "Savings", "Investment contributions"].forEach((label) => {
@@ -435,10 +448,20 @@
       keys.every((key) => (previous.dataset[key] || "") === (candidate.dataset[key] || ""))) || null;
   };
 
+  const detailValue = (key, value, record) => {
+    if (!key.endsWith("_minor")) return exact(value);
+    const currency = key === "historical_cost_minor"
+      ? record.cost_currency
+      : key === "observed_value_minor"
+        ? record.valuation_currency
+        : record.currency;
+    return amount(value, currency);
+  };
+
   const detailList = (record) => {
     const list = element("dl");
     Object.entries(record).forEach(([key, value]) => {
-      list.append(element("dt", key), element("dd", exact(value)));
+      list.append(element("dt", key), element("dd", detailValue(key, value, record)));
     });
     return list;
   };

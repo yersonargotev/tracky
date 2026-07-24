@@ -232,7 +232,7 @@ def responsive_state(driver):
 
 
 def has_progressive_content(content, require_markup=True):
-    required = ["700000 COP", "2026-01-01", "2026-07-31", "COP"]
+    required = ["COP\u00a0$7.000,00", "2026-01-01", "2026-07-31", "COP"]
     if require_markup:
         required.extend(("<table", 'data-region="alerts"'))
     return all(token in content for token in required)
@@ -288,7 +288,7 @@ def main():
             driver.navigate(url)
             flow = driver.script("""return {regions:[...document.querySelectorAll('[data-region]')].map(n=>n.dataset.region), text:document.body.innerText, storage:localStorage.length+sessionStorage.length+document.cookie.length, history:history.length};""")
             expected = ["scope", "currency", "summary", "monthly", "categories", "accounts", "alerts", "investments"]
-            if flow["regions"] != expected or "500000 COP" not in flow["text"] or flow["storage"]:
+            if flow["regions"] != expected or "COP\u00a0$5.000,00" not in flow["text"] or flow["storage"]:
                 raise RuntimeError("browser-flow: dashboard content, region order, or ephemeral state failed")
             if not open_canonical_drawer(driver):
                 raise RuntimeError("browser-flow: canonical drawer interaction failed")
@@ -313,7 +313,7 @@ def main():
               const done=arguments[arguments.length-1];
               const button=[...document.querySelectorAll('button')].find(node=>node.textContent.trim()==='Refresh');
               if(!button) return done(false); button.click();
-              const deadline=Date.now()+5000; const timer=setInterval(()=>{const ok=document.body.innerText.includes('700000 COP')&&document.body.innerText.includes('Dashboard refreshed'); if(ok||Date.now()>deadline){clearInterval(timer);done(ok);}},50);
+              const deadline=Date.now()+5000; const timer=setInterval(()=>{const ok=document.body.innerText.includes('COP $7.000,00')&&document.body.innerText.includes('Dashboard refreshed'); if(ok||Date.now()>deadline){clearInterval(timer);done(ok);}},50);
             """)
             if not refreshed:
                 raise RuntimeError("browser-flow: explicit refresh did not rebuild the snapshot")
@@ -323,7 +323,7 @@ def main():
               const done=arguments[arguments.length-1];
               const button=[...document.querySelectorAll('button')].find(node=>node.textContent.trim()==='Refresh');
               if(!button) return done(false); button.click();
-              const deadline=Date.now()+5000; const timer=setInterval(()=>{const text=document.body.innerText; const ok=text.includes('Refresh failed')&&text.includes('700000 COP'); if(ok||Date.now()>deadline){clearInterval(timer);done(ok);}},50);
+              const deadline=Date.now()+5000; const timer=setInterval(()=>{const text=document.body.innerText; const ok=text.includes('Refresh failed')&&text.includes('COP $7.000,00'); if(ok||Date.now()>deadline){clearInterval(timer);done(ok);}},50);
             """)
             unavailable.replace(database)
             if not failed_refresh:
@@ -359,7 +359,7 @@ def main():
                 rejected_response(url + "unknown"),
             ]
             protected_headers = ("Content-Security-Policy", "X-Frame-Options", "Referrer-Policy", "X-Content-Type-Options", "Cache-Control")
-            rejected_safely = all(status == 404 and "700000 COP" not in body and all(response_headers.get(name) for name in protected_headers) for status, response_headers, body in adversarial)
+            rejected_safely = all(status == 404 and "COP\u00a0$7.000,00" not in body and all(response_headers.get(name) for name in protected_headers) for status, response_headers, body in adversarial)
             if (not csp or external or not rejected_safely
                     or headers.get("X-Content-Type-Options", "").lower() != "nosniff"
                     or headers.get("Access-Control-Allow-Origin")):

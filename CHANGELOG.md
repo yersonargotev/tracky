@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2
+
+- Render COP and USD dashboard amounts in major currency units with familiar
+  locale-specific thousands and decimal separators.
+- Apply the readable format consistently to progressive HTML, live filters and
+  refreshes, breakdowns, investments, alerts, and canonical drill-down rows.
+- Preserve exact minor-unit integers in dashboard API transport and semantic
+  `data-minor` attributes.
+
 ## 0.2.1
 
 - Add content-based detection for Nu credit-card statements without relying on
