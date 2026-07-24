@@ -333,7 +333,7 @@ fn dashboard_is_public_in_tracky_0_2_help() {
     assert!(version.status.success());
     assert_eq!(
         String::from_utf8_lossy(&version.stdout).trim(),
-        "tracky 0.2.1"
+        "tracky 0.2.2"
     );
 
     let dashboard = sandboxed_command(root.path())
@@ -622,7 +622,7 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
     for semantic in [
         "aria-label=\"Ledger filters\"",
         "aria-label=\"Monthly income and consumption expense trend\"",
-        "<caption>Exact monthly amounts in minor units</caption>",
+        "<caption>Exact monthly amounts</caption>",
         "aria-label=\"Read-only canonical drawer\"",
         "JavaScript is optional",
     ] {
@@ -655,7 +655,10 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
             "net_cash_flow_minor",
             "investment_contribution_minor",
         ] {
-            assert!(response.body.contains(month[field].as_str().unwrap()));
+            assert!(response.body.contains(&format!(
+                "data-minor=\"{}\"",
+                month[field].as_str().unwrap()
+            )));
         }
     }
     assert!(!response.body.contains("http://"));
@@ -787,12 +790,15 @@ fn no_javascript_ledger_retains_exact_investment_and_freshness_detail() {
     for exact in [
         "Synthetic Fund",
         "1.250000000000000001",
-        "250000 COP",
-        "275000 COP",
+        "COP\u{a0}$2.500,00",
+        "COP\u{a0}$2.750,00",
+        "data-minor=\"250000\"",
+        "data-minor=\"275000\"",
+        "<span data-minor=\"0\">value difference COP\u{a0}$0,00</span>",
         "2026-02-27",
         "fresh",
         "reconciliation difference",
-        "Pending allocation: 0 COP",
+        "Pending allocation: <span data-minor=\"0\">COP\u{a0}$0,00</span>",
     ] {
         assert!(
             response.body.contains(exact),

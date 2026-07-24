@@ -275,22 +275,22 @@ def main():
               const expectedOrder = ["scope", "currency", "summary", "monthly", "categories", "accounts", "alerts", "investments"];
               const order = await page.locator("[data-region]").evaluateAll(nodes => nodes.map(node => node.dataset.region));
               if (JSON.stringify(order) !== JSON.stringify(expectedOrder)) fail(`wrong region order: ${order}`);
-              if (!await page.getByText("500000 COP", { exact: true }).first().isVisible()) fail("missing exact SSR amount");
+              if (!await page.getByText("COP $5.000,00", { exact: true }).first().isVisible()) fail("missing formatted SSR amount");
 
               const noJsContext = await page.context().browser().newContext({ javaScriptEnabled: false });
               const noJsPage = await noJsContext.newPage();
               await noJsPage.goto(initialUrl);
-              if (!await noJsPage.getByText("500000 COP", { exact: true }).first().isVisible()) fail("JavaScript-disabled SSR omitted exact amounts");
+              if (!await noJsPage.getByText("COP $5.000,00", { exact: true }).first().isVisible()) fail("JavaScript-disabled SSR omitted formatted amounts");
               if (!await noJsPage.getByText("2026-01-01", { exact: false }).first().isVisible()) fail("JavaScript-disabled SSR omitted period");
               if (!await noJsPage.getByText("stale", { exact: false }).first().isVisible()) fail("JavaScript-disabled SSR omitted freshness");
               if (!await noJsPage.getByRole("table").first().isVisible()) fail("JavaScript-disabled SSR omitted exact table");
               await noJsContext.close();
 
               await page.getByRole("button", { name: "USD", exact: true }).click();
-              await page.getByText("10000 USD", { exact: true }).first().waitFor();
+              await page.getByText("USD $100.00", { exact: true }).first().waitFor();
               if (page.url() !== initialUrl) fail("currency changed the page URL");
               await page.reload();
-              await page.getByText("500000 COP", { exact: true }).first().waitFor();
+              await page.getByText("COP $5.000,00", { exact: true }).first().waitFor();
 
               await page.locator('[data-region="monthly"] [data-month="2026-07"]').click();
               await page.getByRole("dialog", { name: "Read-only canonical drawer" }).waitFor();
@@ -311,7 +311,7 @@ def main():
               if (await page.evaluate(() => localStorage.length || sessionStorage.length || document.cookie.length)) fail("browser state persisted");
 
               await page.reload();
-              await page.getByText("500000 COP", { exact: true }).first().waitFor();
+              await page.getByText("COP $5.000,00", { exact: true }).first().waitFor();
               const interactionHistoryLength = await page.evaluate(() => history.length);
               const opener = page.locator('[data-region="summary"] [data-metric="income"]');
               await opener.click();
@@ -374,12 +374,12 @@ def main():
               await page.setViewportSize({ width: 1280, height: 900 });
               const initialUrl = page.url();
               const initialHistoryLength = await page.evaluate(() => history.length);
-              if (!await page.getByText("500000 COP", { exact: true }).first().isVisible()) fail("snapshot changed without an explicit refresh");
+              if (!await page.getByText("COP $5.000,00", { exact: true }).first().isVisible()) fail("snapshot changed without an explicit refresh");
               const refresh = page.getByRole("button", { name: "Refresh", exact: true });
               await page.locator('[data-region="summary"] [data-metric="income"]').click();
               await page.getByRole("dialog", { name: "Read-only canonical drawer" }).waitFor();
               await page.getByRole("dialog", { name: "Read-only canonical drawer" }).getByRole("button", { name: "Refresh", exact: true }).click();
-              await page.getByText("700000 COP", { exact: true }).first().waitFor();
+              await page.getByText("COP $7.000,00", { exact: true }).first().waitFor();
               const refreshedDrawer = page.getByRole("dialog", { name: "Read-only canonical drawer" });
               await refreshedDrawer.waitFor();
               if (!await refreshedDrawer.getByText("Externally added income", { exact: true }).isVisible()) fail("successful refresh did not rebuild applicable drawer detail");
@@ -412,7 +412,7 @@ def main():
               await drawer.getByRole("button", { name: "Refresh", exact: true }).click();
               const status = page.locator("[data-refresh-status]");
               await status.getByText("Refresh failed", { exact: false }).waitFor();
-              if (!await page.getByText("700000 COP", { exact: true }).first().isVisible()) fail("failed refresh replaced last-good values");
+              if (!await page.getByText("COP $7.000,00", { exact: true }).first().isVisible()) fail("failed refresh replaced last-good values");
               if (!await drawer.getByRole("button", { name: "Retry", exact: true }).isVisible()) fail("failed refresh omitted retry path");
               const visible = await page.locator("body").innerText();
               if (/sqlite|ledger\.sqlite|tracky-browser-|capability/i.test(visible)) fail("refresh failure leaked storage or capability detail");

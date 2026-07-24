@@ -1,6 +1,6 @@
 # Tracky
 
-Tracky 0.2.1 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
+Tracky 0.2.2 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
 
 ## Install
 
@@ -28,6 +28,11 @@ when browser launch fails, then open the printed URL yourself. Optional
 `--start-date`, `--end-date`, and `--currency` flags choose the initial inclusive
 period and one explicit ISO currency; the dashboard never converts or combines
 currencies.
+
+Monetary values are displayed in major currency units with familiar separators:
+COP uses Colombian formatting such as `COP $2.552.151,00`, while USD uses
+`USD $2,552,151.00`. Exact minor-unit integers remain unchanged in Tracky's
+canonical data and JSON APIs.
 
 The dashboard is local and read-only: it binds only to loopback, serves embedded
 assets from the Tracky process, makes no external network request, writes no

@@ -162,15 +162,15 @@ fn summary_item(
     currency: &str,
     note: &str,
 ) {
-    write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"{metric}\"><span>{label}</span><strong data-minor=\"{}\">{} {}</strong><small>{note}</small></button></li>", escape(value), escape(value), escape(currency)).expect("writing to a String cannot fail");
+    write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"{metric}\"><span>{label}</span><strong data-minor=\"{}\">{}</strong><small>{note}</small></button></li>", escape(value), escape(&format_money(value, currency))).expect("writing to a String cannot fail");
 }
 
 fn render_monthly(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
     html.push_str("<section data-region=\"monthly\" aria-labelledby=\"monthly-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Flow over time</p><h2 id=\"monthly-heading\">Monthly activity</h2><p id=\"trend-description\" class=\"visually-hidden\">Each month shows exact income and consumption expense amounts. The exact table follows the chart.</p></div><div class=\"trend\" role=\"group\" aria-label=\"Monthly income and consumption expense trend\" aria-describedby=\"trend-description\">");
     for month in &snapshot.monthly {
-        write!(html, "<button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-month=\"{}\"><span>{}</span><span class=\"trend-income\">Income <b>{} {}</b></span><span class=\"trend-expense\">Expense <b>{} {}</b></span></button>", escape(&month.month), escape(&month.month), escape(&month.measures.income_minor), escape(currency), escape(&month.measures.consumption_expense_minor), escape(currency)).expect("writing to a String cannot fail");
+        write!(html, "<button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-month=\"{}\"><span>{}</span><span class=\"trend-income\">Income <b data-minor=\"{}\">{}</b></span><span class=\"trend-expense\">Expense <b data-minor=\"{}\">{}</b></span></button>", escape(&month.month), escape(&month.month), escape(&month.measures.income_minor), escape(&format_money(&month.measures.income_minor, currency)), escape(&month.measures.consumption_expense_minor), escape(&format_money(&month.measures.consumption_expense_minor, currency))).expect("writing to a String cannot fail");
     }
-    html.push_str("</div><div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Exact monthly amounts by month and currency; horizontally scrollable when needed\"><table><caption>Exact monthly amounts in minor units</caption><thead><tr><th scope=\"col\">Month</th><th scope=\"col\">Income</th><th scope=\"col\">Consumption expense</th><th scope=\"col\">Savings</th><th scope=\"col\">Investment contributions</th></tr></thead><tbody>");
+    html.push_str("</div><div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Exact monthly amounts by month and currency; horizontally scrollable when needed\"><table><caption>Exact monthly amounts</caption><thead><tr><th scope=\"col\">Month</th><th scope=\"col\">Income</th><th scope=\"col\">Consumption expense</th><th scope=\"col\">Savings</th><th scope=\"col\">Investment contributions</th></tr></thead><tbody>");
     for month in &snapshot.monthly {
         write!(
             html,
@@ -188,17 +188,16 @@ fn render_monthly(html: &mut String, snapshot: &DashboardResponse, currency: &st
 
 fn amount_cell(value: &str, currency: &str) -> String {
     format!(
-        "<td data-minor=\"{}\">{} {}</td>",
+        "<td data-minor=\"{}\">{}</td>",
         escape(value),
-        escape(value),
-        escape(currency)
+        escape(&format_money(value, currency))
     )
 }
 
 fn render_categories(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
     html.push_str("<section data-region=\"categories\" aria-labelledby=\"categories-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Consumption map</p><h2 id=\"categories-heading\">Expense categories</h2></div><ul class=\"breakdown-list\">");
     for category in &snapshot.categories {
-        write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"consumption_expense\" data-category=\"{}\"><span>{}</span><strong data-minor=\"{}\">{} {}</strong></button></li>", escape(&category.category_id), escape(&category.category_name), escape(&category.amount_minor), escape(&category.amount_minor), escape(currency)).expect("writing to a String cannot fail");
+        write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"consumption_expense\" data-category=\"{}\"><span>{}</span><strong data-minor=\"{}\">{}</strong></button></li>", escape(&category.category_id), escape(&category.category_name), escape(&category.amount_minor), escape(&format_money(&category.amount_minor, currency))).expect("writing to a String cannot fail");
     }
     empty_list(
         html,
@@ -211,7 +210,7 @@ fn render_categories(html: &mut String, snapshot: &DashboardResponse, currency: 
 fn render_accounts(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
     html.push_str("<section data-region=\"accounts\" aria-labelledby=\"accounts-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Source activity</p><h2 id=\"accounts-heading\">Accounts</h2></div><ul class=\"breakdown-list\">");
     for account in &snapshot.accounts {
-        write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-account=\"{}\"><span>{}<small>{} canonical rows</small></span><strong data-minor=\"{}\">{} {}</strong></button></li>", escape(&account.account_id), escape(&account.account_name), account.row_count, escape(&account.measures.net_cash_flow_minor), escape(&account.measures.net_cash_flow_minor), escape(currency)).expect("writing to a String cannot fail");
+        write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-account=\"{}\"><span>{}<small>{} canonical rows</small></span><strong data-minor=\"{}\">{}</strong></button></li>", escape(&account.account_id), escape(&account.account_name), account.row_count, escape(&account.measures.net_cash_flow_minor), escape(&format_money(&account.measures.net_cash_flow_minor, currency))).expect("writing to a String cannot fail");
     }
     empty_list(
         html,
@@ -254,24 +253,32 @@ fn render_alert(
         .as_deref()
         .or(alert.account_id.as_deref())
         .unwrap_or("Ledger");
-    let mut details = vec![alert.currency.clone()];
+    let mut details = vec![escape(&alert.currency)];
     if let Some(date) = &alert.effective_date {
-        details.push(format!("effective {date}"));
+        details.push(format!("effective {}", escape(date)));
     }
     if let Some(observed_at) = &alert.observed_at {
-        details.push(format!("observed {observed_at}"));
+        details.push(format!("observed {}", escape(observed_at)));
     }
     if let Some(age_days) = alert.age_days {
         details.push(format!("age {age_days} days"));
     }
     if let Some(amount) = &alert.pending_amount_minor {
-        details.push(format!("pending {amount} {}", alert.currency));
+        details.push(format!(
+            "<span data-minor=\"{}\">pending {}</span>",
+            escape(amount),
+            escape(&format_money(amount, &alert.currency))
+        ));
     }
     if let Some(difference) = &alert.quantity_difference {
-        details.push(format!("quantity difference {difference}"));
+        details.push(format!("quantity difference {}", escape(difference)));
     }
     if let Some(difference) = &alert.value_difference_minor {
-        details.push(format!("value difference {difference} {}", alert.currency));
+        details.push(format!(
+            "<span data-minor=\"{}\">value difference {}</span>",
+            escape(difference),
+            escape(&format_money(difference, &alert.currency))
+        ));
     }
     let account = alert
         .account_id
@@ -286,11 +293,17 @@ fn render_alert(
         .as_deref()
         .map(|instrument| format!(" data-instrument=\"{}\"", escape(instrument)))
         .unwrap_or_default();
-    write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-detail=\"alert\" data-record-id=\"{}\" data-index=\"{index}\" data-metric=\"investment_contribution\"{account}{instrument}{affected_position}><span class=\"status status-{}\">{}</span><strong>{}</strong><small>{}</small></button></li>", escape(&alert.id), escape(&alert.severity), escape(&alert.kind.replace('_', " ")), escape(subject), escape(&details.join(" · "))).expect("writing to a String cannot fail");
+    write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-detail=\"alert\" data-record-id=\"{}\" data-index=\"{index}\" data-metric=\"investment_contribution\"{account}{instrument}{affected_position}><span class=\"status status-{}\">{}</span><strong>{}</strong><small>{}</small></button></li>", escape(&alert.id), escape(&alert.severity), escape(&alert.kind.replace('_', " ")), escape(subject), details.join(" · ")).expect("writing to a String cannot fail");
 }
 
 fn render_investments(html: &mut String, snapshot: &DashboardResponse) {
-    write!(html, "<section data-region=\"investments\" aria-labelledby=\"investments-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">As-of closing state</p><h2 id=\"investments-heading\">Investment positions</h2><p class=\"meta\">State: {} · Pending allocation: {} {}</p></div><div class=\"table-scroll\"><table class=\"positions\"><caption>Exact quantity, cost, valuation, freshness, and reconciliation</caption><thead><tr><th scope=\"col\">Position</th><th scope=\"col\">Quantity</th><th scope=\"col\">Historical cost</th><th scope=\"col\">Observed value</th><th scope=\"col\">Effective date</th><th scope=\"col\">Freshness</th><th scope=\"col\">Reconciliation</th></tr></thead><tbody>", escape(snapshot.investments.state), escape(&snapshot.investments.pending_allocation_minor), snapshot.filters.currency.as_deref().map(escape).unwrap_or_default()).expect("writing to a String cannot fail");
+    let pending_allocation = snapshot
+        .filters
+        .currency
+        .as_deref()
+        .map(|currency| format_money(&snapshot.investments.pending_allocation_minor, currency))
+        .unwrap_or_else(|| snapshot.investments.pending_allocation_minor.clone());
+    write!(html, "<section data-region=\"investments\" aria-labelledby=\"investments-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">As-of closing state</p><h2 id=\"investments-heading\">Investment positions</h2><p class=\"meta\">State: {} · Pending allocation: <span data-minor=\"{}\">{}</span></p></div><div class=\"table-scroll\"><table class=\"positions\"><caption>Exact quantity, cost, valuation, freshness, and reconciliation</caption><thead><tr><th scope=\"col\">Position</th><th scope=\"col\">Quantity</th><th scope=\"col\">Historical cost</th><th scope=\"col\">Observed value</th><th scope=\"col\">Effective date</th><th scope=\"col\">Freshness</th><th scope=\"col\">Reconciliation</th></tr></thead><tbody>", escape(snapshot.investments.state), escape(&snapshot.investments.pending_allocation_minor), escape(&pending_allocation)).expect("writing to a String cannot fail");
     for (index, position) in snapshot.investments.closing_positions.iter().enumerate() {
         let instrument_name = position.instrument_id.as_ref().and_then(|id| {
             snapshot
@@ -326,15 +339,48 @@ fn render_position(
         position.observed_value_minor.as_deref(),
         position.valuation_currency.as_deref(),
     );
+    let cost_minor = minor_attribute(position.historical_cost_minor.as_deref());
+    let valuation_minor = minor_attribute(position.observed_value_minor.as_deref());
     let instrument_id = position.instrument_id.as_deref().unwrap_or_default();
-    write!(html, "<tr><th scope=\"row\"><button type=\"button\" data-action=\"open-drawer\" data-detail=\"position\" data-index=\"{index}\" data-metric=\"investment_contribution\" data-account=\"{}\" data-instrument=\"{}\">{}<small>{}</small></button></th><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td><span class=\"status status-{}\">{}</span></td><td>{}</td></tr>", escape(&position.account_id), escape(instrument_id), escape(instrument), escape(&position.account_id), escape(quantity), escape(&cost), escape(&valuation), position.effective_date.as_deref().map(escape).unwrap_or_else(|| "Unavailable".into()), escape(&position.freshness), escape(&position.freshness), escape(&position.reconciliation_status)).expect("writing to a String cannot fail");
+    write!(html, "<tr><th scope=\"row\"><button type=\"button\" data-action=\"open-drawer\" data-detail=\"position\" data-index=\"{index}\" data-metric=\"investment_contribution\" data-account=\"{}\" data-instrument=\"{}\">{}<small>{}</small></button></th><td>{}</td><td{cost_minor}>{}</td><td{valuation_minor}>{}</td><td>{}</td><td><span class=\"status status-{}\">{}</span></td><td>{}</td></tr>", escape(&position.account_id), escape(instrument_id), escape(instrument), escape(&position.account_id), escape(quantity), escape(&cost), escape(&valuation), position.effective_date.as_deref().map(escape).unwrap_or_else(|| "Unavailable".into()), escape(&position.freshness), escape(&position.freshness), escape(&position.reconciliation_status)).expect("writing to a String cannot fail");
 }
 
 fn paired(value: Option<&str>, currency: Option<&str>) -> String {
     match (value, currency) {
-        (Some(value), Some(currency)) => format!("{value} {currency}"),
+        (Some(value), Some(currency)) => format_money(value, currency),
         _ => "Unavailable".to_string(),
     }
+}
+
+fn minor_attribute(value: Option<&str>) -> String {
+    value
+        .map(|value| format!(" data-minor=\"{}\"", escape(value)))
+        .unwrap_or_default()
+}
+
+fn format_money(value: &str, currency: &str) -> String {
+    let (group_separator, decimal_separator) = match currency {
+        "COP" => ('.', ','),
+        "USD" => (',', '.'),
+        _ => return format!("{value} {currency}"),
+    };
+    let (sign, digits) = value
+        .strip_prefix('-')
+        .map_or(("", value), |digits| ("-", digits));
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return format!("{value} {currency}");
+    }
+
+    let padded = format!("{digits:0>3}");
+    let (major, fraction) = padded.split_at(padded.len() - 2);
+    let mut grouped = String::with_capacity(major.len() + major.len() / 3);
+    for (index, digit) in major.chars().enumerate() {
+        if index > 0 && (major.len() - index) % 3 == 0 {
+            grouped.push(group_separator);
+        }
+        grouped.push(digit);
+    }
+    format!("{currency}\u{a0}{sign}${grouped}{decimal_separator}{fraction}")
 }
 
 fn empty_list(html: &mut String, empty: bool, message: &str) {
@@ -357,4 +403,21 @@ fn escape(value: &str) -> String {
         }
     }
     escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::amount_cell;
+
+    #[test]
+    fn monetary_cells_render_minor_units_in_major_currency() {
+        assert_eq!(
+            amount_cell("255215100", "COP"),
+            "<td data-minor=\"255215100\">COP\u{a0}$2.552.151,00</td>"
+        );
+        assert_eq!(
+            amount_cell("-255215100", "USD"),
+            "<td data-minor=\"-255215100\">USD\u{a0}-$2,552,151.00</td>"
+        );
+    }
 }
