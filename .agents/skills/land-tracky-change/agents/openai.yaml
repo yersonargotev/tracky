@@ -1,0 +1,4 @@
+interface:
+  display_name: "Land Tracky Change"
+  short_description: "Implement, review, PR, and merge Tracky work"
+  default_prompt: "Use $land-tracky-change to implement and land the requested Tracky change."
