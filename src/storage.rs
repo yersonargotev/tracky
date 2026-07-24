@@ -1057,7 +1057,7 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         connection,
         "candidate_transactions",
         "semantic_hint",
-        "ALTER TABLE candidate_transactions ADD COLUMN semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment'))",
+        "ALTER TABLE candidate_transactions ADD COLUMN semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment', 'card_credit', 'card_reversal', 'card_refund'))",
     )?;
     add_column_if_missing(
         connection,
@@ -1065,6 +1065,7 @@ pub fn apply_migrations(connection: &Connection) -> rusqlite::Result<()> {
         "account_resolution_json",
         "ALTER TABLE candidate_transactions ADD COLUMN account_resolution_json TEXT NOT NULL DEFAULT '{\"status\":\"unresolved\",\"reason\":\"not_evaluated\",\"compatible_account_count\":0,\"preventing_dimensions\":[]}'",
     )?;
+    migrate_candidate_semantic_hint_check(connection)?;
     add_column_if_missing(
         connection,
         "accounts",
@@ -1277,6 +1278,57 @@ fn migrate_canonical_transfer_pair_kind_check(connection: &Connection) -> rusqli
          ALTER TABLE canonical_transfer_pairs_v2 RENAME TO canonical_transfer_pairs;
          CREATE INDEX idx_canonical_transfer_pairs_from_candidate ON canonical_transfer_pairs(from_candidate_id);
          CREATE INDEX idx_canonical_transfer_pairs_to_candidate ON canonical_transfer_pairs(to_candidate_id);
+         COMMIT;
+         PRAGMA foreign_keys=ON;",
+    )
+}
+
+fn migrate_candidate_semantic_hint_check(connection: &Connection) -> rusqlite::Result<()> {
+    let sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='candidate_transactions'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !sql.contains("semantic_hint") || sql.contains("'card_credit'") {
+        return Ok(());
+    }
+    connection.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         BEGIN IMMEDIATE;
+         CREATE TABLE candidate_transactions_v2 (
+           id TEXT PRIMARY KEY,
+           import_batch_id TEXT NOT NULL REFERENCES import_batches(id),
+           source_document_id TEXT NOT NULL REFERENCES source_documents(id),
+           institution_id TEXT REFERENCES institutions(id),
+           institution_hint TEXT,
+           account_id TEXT REFERENCES accounts(id),
+           account_label_hint TEXT,
+           account_currency_hint TEXT,
+           account_masked_identifier_hint TEXT,
+           account_resolution_json TEXT NOT NULL DEFAULT '{\"status\":\"unresolved\",\"reason\":\"not_evaluated\",\"compatible_account_count\":0,\"preventing_dimensions\":[]}',
+           posted_date TEXT NOT NULL,
+           description TEXT NOT NULL,
+           amount_minor INTEGER NOT NULL,
+           currency TEXT NOT NULL,
+           balance_minor INTEGER,
+           direction_hint TEXT CHECK (direction_hint IN ('inflow', 'outflow')),
+           semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment', 'card_credit', 'card_reversal', 'card_refund')),
+           confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+           status TEXT NOT NULL CHECK (status IN ('pending_review', 'possible_duplicate', 'accepted', 'rejected')),
+           duplicate_status TEXT NOT NULL DEFAULT 'not_checked' CHECK (duplicate_status IN ('not_checked', 'unique', 'possible_duplicate', 'exact_duplicate')),
+           fingerprint TEXT,
+           validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+           canonical_transaction_id TEXT REFERENCES canonical_transactions(id),
+           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         );
+         INSERT INTO candidate_transactions_v2
+         SELECT * FROM candidate_transactions;
+         DROP TABLE candidate_transactions;
+         ALTER TABLE candidate_transactions_v2 RENAME TO candidate_transactions;
+         CREATE INDEX idx_candidate_transactions_batch ON candidate_transactions(import_batch_id);
+         CREATE INDEX idx_candidate_transactions_source_document ON candidate_transactions(source_document_id);
+         CREATE INDEX idx_candidate_transactions_status ON candidate_transactions(status);
+         CREATE INDEX idx_candidate_transactions_fingerprint ON candidate_transactions(fingerprint);
          COMMIT;
          PRAGMA foreign_keys=ON;",
     )
@@ -2605,6 +2657,9 @@ fn semantic_hint_value(semantic_hint: &SemanticHint) -> &'static str {
         SemanticHint::BankMovement => "bank_movement",
         SemanticHint::CardCharge => "card_charge",
         SemanticHint::CardPayment => "card_payment",
+        SemanticHint::CardCredit => "card_credit",
+        SemanticHint::CardReversal => "card_reversal",
+        SemanticHint::CardRefund => "card_refund",
     }
 }
 

@@ -1,6 +1,6 @@
 # Tracky
 
-Tracky 0.2.0 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
+Tracky 0.2.1 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
 
 ## Install
 
@@ -52,6 +52,14 @@ tracky pdf inspect ~/statements/redacted-sample.pdf \
 ```
 
 `pdf inspect` is read-only. It returns document, extractor, parser, candidate preview, duplicate, and provenance-shaped JSON, but writes no SQLite rows.
+
+The generic PDF workflow supports Nequi wallet and RappiCard statements and
+content-detects Nu credit-card statements without trusting their filename. Nu
+card purchases, fees, and interest remain reviewable `card_charge` candidates;
+payments are `card_payment`; credits, reversals, and refunds keep their own
+explicit semantic hints so they are not silently treated as income. Nu Cuenta
+mixed investment statements continue to use `investment-documents`, not this
+generic path.
 
 ### 2. Import reviewable candidates
 

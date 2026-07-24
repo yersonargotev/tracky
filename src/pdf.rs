@@ -223,6 +223,9 @@ pub enum SemanticHint {
     BankMovement,
     CardCharge,
     CardPayment,
+    CardCredit,
+    CardReversal,
+    CardRefund,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -380,6 +383,7 @@ struct MoneyToken {
 enum Institution {
     Nequi,
     Rappi,
+    NuCreditCard,
     Unknown(String),
 }
 
@@ -403,6 +407,7 @@ impl Institution {
         match hint.into().to_ascii_lowercase().as_str() {
             "nequi" => Self::Nequi,
             "rappi" => Self::Rappi,
+            "nu" | "nu_credit_card" => Self::NuCreditCard,
             other => Self::Unknown(other.to_string()),
         }
     }
@@ -423,35 +428,40 @@ impl Institution {
         match self {
             Self::Nequi => "nequi",
             Self::Rappi => "rappi",
+            Self::NuCreditCard => "nu",
             Self::Unknown(hint) => hint.as_str(),
         }
     }
 
     fn parser_id(&self) -> String {
-        format!("{}.statement.v1", self.as_str())
+        match self {
+            Self::NuCreditCard => "nu.credit-card.statement.v1".to_string(),
+            _ => format!("{}.statement.v1", self.as_str()),
+        }
     }
 
     fn account_label(&self) -> String {
         match self {
             Self::Nequi => "Nequi wallet".to_string(),
             Self::Rappi => "Rappi card".to_string(),
+            Self::NuCreditCard => "Nu credit card".to_string(),
             Self::Unknown(hint) => format!("{hint} account"),
         }
     }
 
     fn is_supported(&self) -> bool {
-        matches!(self, Self::Nequi | Self::Rappi)
+        matches!(self, Self::Nequi | Self::Rappi | Self::NuCreditCard)
     }
 }
 
 pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfInspectResponse> {
     let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let content_sha256 = hex_sha256(&bytes);
-    let institution = options
+    let mut institution = options
         .institution_hint
         .map(Institution::from_hint)
         .unwrap_or_else(|| Institution::from_path(path));
-    let source_document = SourceDocument {
+    let mut source_document = SourceDocument {
         id: source_document_id(&content_sha256),
         input_name: input_name(path),
         content_sha256,
@@ -469,6 +479,11 @@ pub fn inspect_pdf(path: &Path, options: InspectPdfOptions<'_>) -> Result<PdfIns
     let extraction = extract_pdf_oxide_lines(path, options.document_credential.unwrap_or(""));
     let (extractor_status, parser_status, candidates, errors) = match extraction {
         Ok(extracted) => {
+            if let Some(detected) = detect_institution_from_lines(&extracted.lines) {
+                institution = detected;
+                source_document.institution_hint = institution.as_str().to_string();
+                source_document.account_hint = account_hint(&institution);
+            }
             let extractor_status = ExtractorStatus {
                 status: if extracted.errors.is_empty() {
                     ExtractorState::Succeeded
@@ -631,8 +646,12 @@ pub fn parse_lines_for_inspection(
     source_document: &SourceDocument,
     lines: &[ExtractedLine],
 ) -> (ParserStatus, Vec<CandidateTransaction>, Vec<TrackyError>) {
-    let institution = Institution::from_hint(&source_document.institution_hint);
-    parse_lines_for_contract(source_document, &institution, lines)
+    let institution = detect_institution_from_lines(lines)
+        .unwrap_or_else(|| Institution::from_hint(&source_document.institution_hint));
+    let mut detected_source = source_document.clone();
+    detected_source.institution_hint = institution.as_str().to_string();
+    detected_source.account_hint = account_hint(&institution);
+    parse_lines_for_contract(&detected_source, &institution, lines)
 }
 
 fn parse_lines_for_contract(
@@ -667,9 +686,10 @@ fn parse_lines_for_contract(
     }
 
     let rows = visual_rows(lines);
-    let movements = match institution {
-        Institution::Rappi => parse_rappi_rows(&rows),
-        Institution::Nequi => parse_nequi_rows(&rows),
+    let (movements, warnings) = match institution {
+        Institution::Rappi => (parse_rappi_rows(&rows), Vec::new()),
+        Institution::Nequi => (parse_nequi_rows(&rows), Vec::new()),
+        Institution::NuCreditCard => parse_nu_credit_card_rows(&rows, lines),
         Institution::Unknown(_) => unreachable!("unsupported institution returned earlier"),
     };
     let candidates = movements
@@ -703,7 +723,7 @@ fn parse_lines_for_contract(
             parser_version: PARSER_VERSION,
             candidates_found: candidates.len(),
             candidates_valid: candidates.len(),
-            warnings: Vec::new(),
+            warnings,
         },
         candidates,
         errors,
@@ -785,6 +805,9 @@ fn candidate_from_movement(
 fn direction_hint_for_movement(amount_minor: i64, semantic_hint: &SemanticHint) -> DirectionHint {
     match semantic_hint {
         SemanticHint::CardCharge => DirectionHint::Outflow,
+        SemanticHint::CardCredit | SemanticHint::CardReversal | SemanticHint::CardRefund => {
+            DirectionHint::Inflow
+        }
         SemanticHint::BankMovement | SemanticHint::CardPayment => {
             if amount_minor < 0 {
                 DirectionHint::Outflow
@@ -793,6 +816,27 @@ fn direction_hint_for_movement(amount_minor: i64, semantic_hint: &SemanticHint) 
             }
         }
     }
+}
+
+fn detect_institution_from_lines(lines: &[ExtractedLine]) -> Option<Institution> {
+    let content = normalize_for_matching(
+        &lines
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
+    let nu_credit_card_markers = [
+        "NU",
+        "TU EXTRACTO",
+        "TUS TARJETAS",
+        "FECHA DESCRIPCION VALOR CUOTAS",
+        "VALOR INTERES",
+    ];
+    nu_credit_card_markers
+        .iter()
+        .all(|marker| content.contains(marker))
+        .then_some(Institution::NuCreditCard)
 }
 
 fn visual_rows(lines: &[ExtractedLine]) -> Vec<VisualRow> {
@@ -904,6 +948,262 @@ fn normalize_nequi_date(date: &str) -> String {
         return date.to_string();
     };
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn parse_nu_credit_card_rows(
+    rows: &[VisualRow],
+    lines: &[ExtractedLine],
+) -> (Vec<ParsedMovement>, Vec<String>) {
+    let date_re =
+        Regex::new(r"(?i)\b(\d{1,2})\s+(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)\.?\b")
+            .unwrap();
+    let year_re = Regex::new(r"\b20\d{2}\b").unwrap();
+    let statement_month_re = Regex::new(
+        r"(?i)TU EXTRACTO DE (ENERO|FEBRERO|MARZO|ABRIL|MAYO|JUNIO|JULIO|AGOSTO|SEPTIEMBRE|OCTUBRE|NOVIEMBRE|DICIEMBRE)",
+    )
+    .unwrap();
+    let year = lines
+        .iter()
+        .find_map(|line| year_re.find(&line.text))
+        .and_then(|matched| matched.as_str().parse::<i32>().ok());
+    let statement_month = lines.iter().find_map(|line| {
+        let normalized = normalize_for_matching(&line.text);
+        statement_month_re
+            .captures(&normalized)
+            .and_then(|captures| month_number(&captures[1]))
+    });
+    let anchors = rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| date_re.is_match(&row_text(row)).then_some(index))
+        .collect::<Vec<_>>();
+    let mut movements = Vec::new();
+    let mut warnings = Vec::new();
+
+    for (anchor_position, &row_index) in anchors.iter().enumerate() {
+        let row = &rows[row_index];
+        let anchor_text = row_text(row);
+        let Some(date_match) = date_re.captures(&anchor_text) else {
+            continue;
+        };
+        let Some(day) = date_match[1].parse::<u32>().ok() else {
+            continue;
+        };
+        let Some(month) = month_number(&date_match[2]) else {
+            continue;
+        };
+        let end = anchors
+            .get(anchor_position + 1)
+            .copied()
+            .unwrap_or(rows.len());
+        let block_cells = rows[row_index..end]
+            .iter()
+            .filter(|block_row| {
+                block_row.page == row.page
+                    && match (row.bbox, block_row.bbox) {
+                        (Some(anchor), Some(candidate)) => (anchor.y - candidate.y).abs() <= 30.0,
+                        _ => block_row.row_index == row.row_index,
+                    }
+            })
+            .flat_map(|block_row| block_row.cells.iter())
+            .filter(|cell| cell.bbox.is_none() || bbox_x(cell) < 300.0)
+            .collect::<Vec<_>>();
+        let block_text = block_cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let semantic_text = block_cells
+            .iter()
+            .map(|cell| cell.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let amount = money_tokens_with_x(row)
+            .into_iter()
+            .min_by(|left, right| {
+                left.x
+                    .partial_cmp(&right.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|token| token.money);
+        let Some(amount) = amount else {
+            warnings.push(format!(
+                "nu credit-card row {} on page {} was not emitted because no amount matched",
+                row.row_index, row.page
+            ));
+            continue;
+        };
+        let Some(mut posted_year) = year else {
+            warnings.push(format!(
+                "nu credit-card row {} on page {} was not emitted because no statement year matched",
+                row.row_index, row.page
+            ));
+            continue;
+        };
+        if statement_month.is_some_and(|cutoff_month| month > cutoff_month) {
+            posted_year -= 1;
+        }
+        let date_text = date_match.get(0).unwrap().as_str();
+        let description = description_from_row(&block_text, date_text);
+        let redacted_description = redact_nu_credit_card_text(&description);
+        let redacted_evidence = redact_nu_credit_card_text(&block_text);
+        movements.push(ParsedMovement {
+            page: row.page,
+            row_index: row.row_index,
+            row_bbox: row.bbox,
+            posted_date: format!("{posted_year:04}-{month:02}-{day:02}"),
+            description_sample: redact_description_sample(&redacted_description),
+            amount,
+            balance: None,
+            semantic_hint: nu_credit_card_semantic_hint(&semantic_text),
+            confidence: if description.trim().is_empty() {
+                0.72
+            } else {
+                0.9
+            },
+            evidence_text: redact_row_for_evidence(&redacted_evidence),
+        });
+    }
+
+    for (row_index, row) in rows.iter().enumerate() {
+        if anchors.contains(&row_index)
+            || !money_tokens_with_x(row).iter().any(|token| token.x < 300.0)
+        {
+            continue;
+        }
+        let Some(row_y) = row.bbox.map(|bbox| bbox.y) else {
+            continue;
+        };
+        let page_anchor_ys = anchors
+            .iter()
+            .filter_map(|anchor_index| {
+                let anchor = &rows[*anchor_index];
+                (anchor.page == row.page)
+                    .then(|| anchor.bbox.map(|bbox| bbox.y))
+                    .flatten()
+            })
+            .collect::<Vec<_>>();
+        let Some(first_anchor_y) = page_anchor_ys.iter().copied().reduce(f32::max) else {
+            continue;
+        };
+        let Some(last_anchor_y) = page_anchor_ys.iter().copied().reduce(f32::min) else {
+            continue;
+        };
+        if row_y > first_anchor_y || row_y < last_anchor_y {
+            continue;
+        }
+        let is_supported_continuation = page_anchor_ys
+            .iter()
+            .any(|anchor_y| *anchor_y >= row_y && *anchor_y - row_y <= 30.0);
+        if !is_supported_continuation {
+            warnings.push(format!(
+                "nu credit-card row {} on page {} was not emitted because no supported date matched",
+                row.row_index, row.page
+            ));
+        }
+    }
+
+    (movements, warnings)
+}
+
+fn month_number(month: &str) -> Option<u32> {
+    match normalize_for_matching(month).as_str() {
+        "ENE" | "ENERO" => Some(1),
+        "FEB" | "FEBRERO" => Some(2),
+        "MAR" | "MARZO" => Some(3),
+        "ABR" | "ABRIL" => Some(4),
+        "MAY" | "MAYO" => Some(5),
+        "JUN" | "JUNIO" => Some(6),
+        "JUL" | "JULIO" => Some(7),
+        "AGO" | "AGOSTO" => Some(8),
+        "SEP" | "SEPTIEMBRE" => Some(9),
+        "OCT" | "OCTUBRE" => Some(10),
+        "NOV" | "NOVIEMBRE" => Some(11),
+        "DIC" | "DICIEMBRE" => Some(12),
+        _ => None,
+    }
+}
+
+fn nu_credit_card_semantic_hint(description: &str) -> SemanticHint {
+    let normalized = description
+        .lines()
+        .map(normalize_for_matching)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if normalized.contains("REVERS") {
+        SemanticHint::CardReversal
+    } else if normalized.contains("DEVOLU")
+        || normalized.contains("REEMBOLSO")
+        || normalized.contains("REFUND")
+    {
+        SemanticHint::CardRefund
+    } else if normalized.contains("CREDITO")
+        || normalized.contains("ABONO")
+        || normalized.contains("AJUSTE")
+    {
+        SemanticHint::CardCredit
+    } else if Regex::new(
+        r"(?m)(?:^\s*PAGO\b|^\s*\d{1,2}\s+(?:ENE|FEB|MAR|ABR|MAY|JUN|JUL|AGO|SEP|OCT|NOV|DIC)\.?\s+PAGO\b)",
+    )
+    .unwrap()
+    .is_match(&normalized)
+    {
+        SemanticHint::CardPayment
+    } else {
+        SemanticHint::CardCharge
+    }
+}
+
+fn redact_nu_credit_card_text(text: &str) -> String {
+    const REVIEW_WORDS: &[&str] = &[
+        "NU",
+        "COMPRA",
+        "COMPRAS",
+        "PAGO",
+        "PAGOS",
+        "RECIBIDO",
+        "RECIBIMOS",
+        "CREDITO",
+        "ABONO",
+        "AJUSTE",
+        "REVERSION",
+        "DEVOLUCION",
+        "REEMBOLSO",
+        "REFUND",
+        "INTERES",
+        "INTERESES",
+        "COMISION",
+        "COMISIONES",
+        "CUOTA",
+        "CUOTAS",
+        "AVANCE",
+        "AVANCES",
+        "ENE",
+        "FEB",
+        "MAR",
+        "ABR",
+        "MAY",
+        "JUN",
+        "JUL",
+        "AGO",
+        "SEP",
+        "OCT",
+        "NOV",
+        "DIC",
+        "DE",
+        "DEL",
+    ];
+    let word_re = Regex::new(r"(?i)\b[A-ZÁÉÍÓÚÜÑ]{2,}\b").unwrap();
+    let redacted = word_re.replace_all(text, |captures: &regex::Captures<'_>| {
+        let word = normalize_for_matching(&captures[0]);
+        if REVIEW_WORDS.contains(&word.as_str()) {
+            captures[0].to_string()
+        } else {
+            "<counterparty>".to_string()
+        }
+    });
+    normalize_spaces(&redact_line(&redacted))
+        .replace("<counterparty> <counterparty>", "<counterparty>")
 }
 
 fn parse_rappi_rows(rows: &[VisualRow]) -> Vec<ParsedMovement> {
@@ -1163,6 +1463,16 @@ fn redact_counterparties(text: &str) -> String {
 
 fn normalize_spaces(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn normalize_for_matching(text: &str) -> String {
+    normalize_spaces(text)
+        .to_uppercase()
+        .replace(['Á', 'À', 'Ä'], "A")
+        .replace(['É', 'È', 'Ë'], "E")
+        .replace(['Í', 'Ì', 'Ï'], "I")
+        .replace(['Ó', 'Ò', 'Ö'], "O")
+        .replace(['Ú', 'Ù', 'Ü'], "U")
 }
 
 fn union_bbox<I>(mut boxes: I) -> Option<BBox>
@@ -1437,5 +1747,107 @@ mod tests {
             serde_json::to_value(DocumentDuplicateState::DuplicateSourceDocument).unwrap(),
             "duplicate_source_document"
         );
+    }
+
+    #[test]
+    fn nu_credit_card_content_detection_emits_explicit_review_semantics() {
+        let lines = vec![
+            line(1, "Nu", 30.0, 760.0),
+            line(1, "Resumen de tu extracto", 30.0, 745.0),
+            line(1, "Tus tarjetas", 30.0, 730.0),
+            line(
+                1,
+                "Fecha Descripción Valor Cuotas Valor interés Monto total",
+                30.0,
+                715.0,
+            ),
+            line(1, "Fecha de corte 07 mayo 2026", 30.0, 700.0),
+            line(2, "05 may COMPRA REDACTADA $ 120.000", 30.0, 650.0),
+            line(2, "06 may MOVIMIENTO REDACTADO $ 120.000", 30.0, 600.0),
+            line(2, "PAGO RECIBIDO", 80.0, 592.0),
+            line(2, "07 may CRÉDITO REDACTADO -$ 20.000", 30.0, 550.0),
+            line(
+                2,
+                "08 may REVERSIÓN DE PAGO REDACTADA -$ 30.000",
+                30.0,
+                500.0,
+            ),
+            line(
+                2,
+                "09 may DEVOLUCIÓN DE PAGO REDACTADA -$ 40.000",
+                30.0,
+                450.0,
+            ),
+            line(2, "Información general de pago", 30.0, 100.0),
+        ];
+
+        let (status, candidates, errors) = parse_lines_for_inspection(&source("unknown"), &lines);
+
+        assert!(errors.is_empty());
+        assert_eq!(status.status, ParserState::Succeeded);
+        assert_eq!(status.parser_id, "nu.credit-card.statement.v1");
+        assert_eq!(status.parser_version, "1");
+        assert_eq!(candidates.len(), 5);
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.institution_hint == "nu"));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.account_hint.label == "Nu credit card"));
+        assert_eq!(candidates[0].semantic_hint, SemanticHint::CardCharge);
+        assert_eq!(candidates[0].direction_hint, DirectionHint::Outflow);
+        assert_eq!(candidates[1].semantic_hint, SemanticHint::CardPayment);
+        assert_eq!(candidates[2].semantic_hint, SemanticHint::CardCredit);
+        assert_eq!(candidates[3].semantic_hint, SemanticHint::CardReversal);
+        assert_eq!(candidates[4].semantic_hint, SemanticHint::CardRefund);
+        assert!(candidates[2..]
+            .iter()
+            .all(|candidate| candidate.direction_hint == DirectionHint::Inflow));
+        assert_eq!(candidates[0].posted_date, "2026-05-05");
+        assert!(candidates.iter().all(|candidate| {
+            candidate.provenance.evidence.redaction == "redacted"
+                && candidate.provenance.evidence.raw_storage_policy == "redacted_only"
+                && candidate.provenance.parser.id == "nu.credit-card.statement.v1"
+                && !candidate.description.contains("REDACTADA")
+                && !candidate.provenance.evidence.text.contains("REDACTADA")
+        }));
+    }
+
+    #[test]
+    fn nu_credit_card_malformed_rows_remain_visible_as_redacted_warnings() {
+        let lines = vec![
+            line(1, "Nu", 30.0, 760.0),
+            line(1, "Resumen de tu extracto", 30.0, 745.0),
+            line(1, "Tus tarjetas", 30.0, 730.0),
+            line(
+                1,
+                "Fecha Descripción Valor Cuotas Valor interés Monto total",
+                30.0,
+                715.0,
+            ),
+            line(1, "Fecha de corte 07 mayo 2026", 30.0, 700.0),
+            line(2, "05 may COMPRA REDACTADA $ 120.000", 30.0, 650.0),
+            line(2, "FILA SIN FECHA REDACTADA $ 50.000", 30.0, 610.0),
+            line(2, "06 may FILA PARCIAL REDACTADA", 30.0, 600.0),
+        ];
+
+        let (status, candidates, errors) = parse_lines_for_inspection(&source("unknown"), &lines);
+
+        assert!(errors.is_empty());
+        assert_eq!(status.status, ParserState::Succeeded);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(status.warnings.len(), 2);
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("because no amount matched")));
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("because no supported date matched")));
+        assert!(status
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("FILA")));
     }
 }

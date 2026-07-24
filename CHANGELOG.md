@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+- Add content-based detection for Nu credit-card statements without relying on
+  filenames.
+- Preserve explicit card charge, payment, credit, reversal, and refund
+  semantics through the review-first PDF workflow.
+- Keep imported statement evidence redacted, migrate existing SQLite databases
+  compatibly, and suggest card-payment transfers only when the destination
+  account resolves uniquely.
+
 ## 0.2.0
 
 - Add the supported `tracky dashboard` command for read-only local finance,

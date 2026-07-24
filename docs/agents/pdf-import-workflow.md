@@ -6,6 +6,9 @@ This guide describes the current CLI/JSON path for Tracky's review-first PDF imp
 
 - `tracky pdf inspect` is read-only. It returns transient candidate-shaped JSON and does not write SQLite data.
 - `tracky import pdf` writes a `SourceDocument`, `ImportBatch`, `Provenance`, duplicate markers, and **candidate transactions** only. It must not create canonical transactions.
+- Nu credit-card statements are content-detected through the generic `pdf inspect` / `import pdf`
+  path. Detection does not trust the filename, and credentials still come only from
+  `--password-env`.
 - A Nu Cuenta statement is inspected/imported once through `investment-documents`; its v2 response
   contains both `events[]` and `ordinary_candidates[]` in one atomic review-first boundary. Do not
   run the same PDF through the generic import path as a workaround.
@@ -269,8 +272,11 @@ Semantic hints:
 | Hint | Meaning | Agent action |
 | --- | --- | --- |
 | `bank_movement` | Regular bank/wallet movement. | Review with amount, direction, provenance, and future income/category rules. |
-| `card_charge` | RappiCard purchase/subscription/fee/interest/installment; expense-like card activity even if the raw amount is positive. | Do not treat as income; accept as a categorized expense only with explicit `accept-expense`. |
-| `card_payment` | RappiCard payment/liability reduction such as `PAGOS POR PSE`. | Keep distinct from purchases; future transfer/card-payment resolution should link it to the paying owned account. |
+| `card_charge` | RappiCard or Nu purchase/subscription/fee/interest/installment; expense-like card activity even if the raw amount is positive. | Do not treat as income; accept as a categorized expense only with explicit `accept-expense`. |
+| `card_payment` | RappiCard or Nu payment/liability reduction. | Keep distinct from purchases; pair it only with an exact owned-account outflow after both accounts resolve uniquely. |
+| `card_credit` | Explicit Nu card credit or adjustment. | Keep review-first; current income/expense actions must not silently classify it. |
+| `card_reversal` | Explicit Nu reversal. | Keep review-first and distinct from both income and card payments. |
+| `card_refund` | Explicit Nu refund. | Keep review-first and distinct from both income and card payments. |
 
 Duplicate statuses:
 
