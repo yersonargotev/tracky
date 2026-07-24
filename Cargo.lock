@@ -1671,7 +1671,7 @@ checksum = "32ec76821f3c4bdb31cb55e57f31508e6ff8d3e26c93e6705513412b6de7b515"
 dependencies = [
  "dirs",
  "flate2",
- "pdfium-render",
+ "pdfium-render 0.8.37",
  "reqwest",
  "tar",
  "thiserror 2.0.18",
@@ -1682,6 +1682,32 @@ name = "pdfium-render"
 version = "0.8.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6553f6604a52b3203db7b4e9d51eb4dd193cf455af9e56d40cab6575b547b679"
+dependencies = [
+ "bitflags 2.13.0",
+ "bytemuck",
+ "bytes",
+ "chrono",
+ "console_error_panic_hook",
+ "console_log",
+ "image",
+ "itertools",
+ "js-sys",
+ "libloading",
+ "log",
+ "maybe-owned",
+ "once_cell",
+ "utf16string",
+ "vecmath",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "pdfium-render"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "826f8f64bc88cb15381cbb5aa245c1500632cd8a453b244bc2b0cbaff7098077"
 dependencies = [
  "bitflags 2.13.0",
  "bytemuck",
@@ -2725,7 +2751,7 @@ dependencies = [
  "lopdf",
  "pdf_oxide",
  "pdfium-auto",
- "pdfium-render",
+ "pdfium-render 0.9.3",
  "rand",
  "regex",
  "rpassword",
