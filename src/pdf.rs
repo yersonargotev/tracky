@@ -996,7 +996,7 @@ fn parse_nu_credit_card_rows(
             .get(anchor_position + 1)
             .copied()
             .unwrap_or(rows.len());
-        let block_cells = rows[row_index..end]
+        let block_rows = rows[row_index..end]
             .iter()
             .filter(|block_row| {
                 block_row.page == row.page
@@ -1005,6 +1005,9 @@ fn parse_nu_credit_card_rows(
                         _ => block_row.row_index == row.row_index,
                     }
             })
+            .collect::<Vec<_>>();
+        let block_cells = block_rows
+            .iter()
             .flat_map(|block_row| block_row.cells.iter())
             .filter(|cell| cell.bbox.is_none() || bbox_x(cell) < 300.0)
             .collect::<Vec<_>>();
@@ -1018,8 +1021,9 @@ fn parse_nu_credit_card_rows(
             .map(|cell| cell.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let amount = money_tokens_with_x(row)
-            .into_iter()
+        let amount = block_rows
+            .iter()
+            .flat_map(|block_row| money_tokens_with_x(block_row))
             .min_by(|left, right| {
                 left.x
                     .partial_cmp(&right.x)

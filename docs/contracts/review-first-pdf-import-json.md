@@ -585,8 +585,11 @@ Both commands return `schema_version: "tracky.transfer-review.v1"` and machine-r
 - both candidates are `pending_review` or `possible_duplicate`;
 - both candidates have resolved account IDs;
 - both resolved accounts are registered as owned accounts;
-- the source candidate is an outflow `bank_movement`;
+- the source candidate is an outflow `bank_movement` or `card_payment`;
 - the destination candidate is a `card_payment`;
+- a `card_payment` source specifically requires a positive inflow `card_payment`
+  destination resolved to an owned `credit_card` account;
+- the resolved source and destination account IDs are distinct;
 - posted date, absolute amount, and currency match.
 
 Accepted pairs set both candidates to `accepted`, create two canonical rows with `transaction_kind: "own_account_transfer"`, normalize the canonical leg amounts to a balancing transfer outflow/inflow pair, and preserve each candidate's provenance link. Reports must treat these rows as transfers/card payments, not income or expense.
