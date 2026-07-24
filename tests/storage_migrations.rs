@@ -240,6 +240,71 @@ fn migrations_add_semantic_hint_to_existing_candidate_transactions() {
 }
 
 #[test]
+fn migrations_expand_existing_candidate_card_semantics_without_losing_rows() {
+    let (_dir, connection) = temporary_database();
+    connection
+        .execute_batch(
+            "CREATE TABLE candidate_transactions (
+                id TEXT PRIMARY KEY,
+                import_batch_id TEXT NOT NULL,
+                source_document_id TEXT NOT NULL,
+                institution_id TEXT,
+                institution_hint TEXT,
+                account_id TEXT,
+                account_label_hint TEXT,
+                account_currency_hint TEXT,
+                account_masked_identifier_hint TEXT,
+                account_resolution_json TEXT NOT NULL DEFAULT '{}',
+                posted_date TEXT NOT NULL,
+                description TEXT NOT NULL,
+                amount_minor INTEGER NOT NULL,
+                currency TEXT NOT NULL,
+                balance_minor INTEGER,
+                direction_hint TEXT CHECK (direction_hint IN ('inflow', 'outflow')),
+                semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment')),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                status TEXT NOT NULL CHECK (status IN ('pending_review', 'possible_duplicate', 'accepted', 'rejected')),
+                duplicate_status TEXT NOT NULL DEFAULT 'not_checked' CHECK (duplicate_status IN ('not_checked', 'unique', 'possible_duplicate', 'exact_duplicate')),
+                fingerprint TEXT,
+                validation_warnings_json TEXT NOT NULL DEFAULT '[]',
+                canonical_transaction_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+            );
+            INSERT INTO candidate_transactions (
+                id, import_batch_id, source_document_id, institution_hint,
+                account_label_hint, account_currency_hint, posted_date, description,
+                amount_minor, currency, direction_hint, semantic_hint, confidence,
+                status, duplicate_status
+            ) VALUES (
+                'cand_existing', 'batch_existing', 'srcdoc_existing', 'rappi',
+                'Rappi card', 'COP', '2026-07-05', 'Redacted',
+                1000, 'COP', 'outflow', 'card_charge', 0.9,
+                'pending_review', 'not_checked'
+            );",
+        )
+        .expect("seed prior candidate semantic vocabulary");
+
+    apply_migrations(&connection).expect("expand candidate semantic vocabulary");
+
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT semantic_hint FROM candidate_transactions WHERE id = 'cand_existing'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "card_charge"
+    );
+    connection
+        .execute(
+            "UPDATE candidate_transactions SET semantic_hint = 'card_refund' WHERE id = 'cand_existing'",
+            [],
+        )
+        .expect("new explicit card semantic is accepted");
+}
+
+#[test]
 fn migrations_add_pending_investment_allocation_to_existing_canonical_ledger() {
     let (_dir, connection) = temporary_database();
     connection

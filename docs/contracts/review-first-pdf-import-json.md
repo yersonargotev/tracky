@@ -263,15 +263,18 @@ from `institution`, `currency`, `masked_identifier`, and `label_or_type`.
 | `accepted` | Candidate has been accepted by a future review command; acceptance may create or link a canonical transaction outside this import command. |
 | `rejected` | Candidate has been rejected by a future review command and should not become canonical. |
 
-`direction_hint` remains a coarse sign/direction hint (`inflow` or `outflow`). For RappiCard statements, use `semantic_hint` to avoid interpreting card rows as ordinary income or expenses from sign alone.
+`direction_hint` remains a coarse sign/direction hint (`inflow` or `outflow`). For RappiCard and Nu credit-card statements, use `semantic_hint` to avoid interpreting card rows as ordinary income or expenses from sign alone.
 
 `semantic_hint` values:
 
 | Value | Meaning |
 | --- | --- |
 | `bank_movement` | Regular bank/wallet movement whose amount sign can be reviewed with the existing direction hint. |
-| `card_charge` | Credit-card purchase, subscription, fee, interest, installment, restaurant, or supermarket row. These are expense-like card charges even when the raw statement amount is positive. |
+| `card_charge` | RappiCard or Nu credit-card purchase, subscription, fee, interest, installment, restaurant, or supermarket row. These are expense-like card charges even when the raw statement amount is positive. |
 | `card_payment` | Credit-card payment/liability reduction such as `PAGOS POR PSE`; it is distinct from purchases and should not be treated as ordinary income. |
+| `card_credit` | Explicit credit or adjustment on a Nu credit-card statement; it remains review-first and is not ordinary income. |
+| `card_reversal` | Explicit reversal on a Nu credit-card statement; it remains review-first and is not a payment or ordinary income. |
+| `card_refund` | Explicit refund on a Nu credit-card statement; it remains review-first and is not a payment or ordinary income. |
 
 `duplicate_status.status` values:
 
@@ -416,9 +419,9 @@ Every split line must use an existing distinct category and the canonical transa
 Eligible first-slice expense candidates are:
 
 - `bank_movement` outflows with negative amounts, such as Nequi purchases.
-- `card_charge` outflows, such as RappiCard purchases/subscriptions/fees, even when the source statement amount is positive; the canonical expense and its line are normalized to a negative outflow amount.
+- `card_charge` outflows, such as RappiCard or Nu purchases/subscriptions/fees, even when the source statement amount is positive; the canonical expense and its line are normalized to a negative outflow amount.
 
-`accept-expense` refuses income/inflows, `card_payment` rows, likely own-account transfer outflows that match an unreviewed owned counterparty candidate (including card-payment rows or bank/wallet inflows), missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
+`accept-expense` refuses income/inflows, `card_payment`, `card_credit`, `card_reversal`, and `card_refund` rows, likely own-account transfer outflows that match an unreviewed owned counterparty candidate (including card-payment rows or bank/wallet inflows), missing categories, and already accepted/rejected candidates. Stable refusal codes include `candidate_not_expense_eligible`, `candidate_possible_own_account_transfer`, `candidate_already_accepted`, `candidate_already_rejected`, and `category_not_found`.
 
 ## Investment contribution acceptance JSON
 

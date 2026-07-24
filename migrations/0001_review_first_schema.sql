@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS candidate_transactions (
     currency TEXT NOT NULL,
     balance_minor INTEGER,
     direction_hint TEXT CHECK (direction_hint IN ('inflow', 'outflow')),
-    semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment')),
+    semantic_hint TEXT CHECK (semantic_hint IN ('bank_movement', 'card_charge', 'card_payment', 'card_credit', 'card_reversal', 'card_refund')),
     confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
     status TEXT NOT NULL CHECK (status IN ('pending_review', 'possible_duplicate', 'accepted', 'rejected')),
     duplicate_status TEXT NOT NULL DEFAULT 'not_checked' CHECK (duplicate_status IN ('not_checked', 'unique', 'possible_duplicate', 'exact_duplicate')),

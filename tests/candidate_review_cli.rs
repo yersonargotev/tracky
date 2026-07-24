@@ -1186,6 +1186,153 @@ fn candidate_review_cli_lists_and_accepts_nequi_to_rappicard_pse_pair() {
 }
 
 #[test]
+fn nu_savings_outflow_pairs_with_nu_credit_card_payment_only_when_accounts_are_unique() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nu", "Nu account", "savings");
+    register_account(&connection, "nu", "Nu credit card", "credit_card");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "abababababababababababababababababababababababababababababababab",
+            institution: "nu",
+            account_label: "Nu account",
+            candidate_id: "cand_nu_savings_card_payment",
+            description: "PAGASTE TU TARJETA REDACTED",
+            amount_minor: -4590000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist Nu savings outflow");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            institution: "nu",
+            account_label: "Nu credit card",
+            candidate_id: "cand_nu_card_payment",
+            description: "PAGO RECIBIDO REDACTED",
+            amount_minor: 4590000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::CardPayment,
+        }),
+    )
+    .expect("persist Nu credit-card payment");
+    drop(connection);
+
+    let output = Command::new(tracky())
+        .args([
+            "candidates",
+            "list-transfer-pairs",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("list Nu transfer pair");
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("Nu transfer-pair JSON");
+    assert_eq!(json["transfer_pairs"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        json["transfer_pairs"][0]["from_candidate"]["id"],
+        "cand_nu_savings_card_payment"
+    );
+    assert_eq!(
+        json["transfer_pairs"][0]["to_candidate"]["id"],
+        "cand_nu_card_payment"
+    );
+    assert_eq!(json["transfer_pairs"][0]["transfer_kind"], "card_payment");
+}
+
+#[test]
+fn nu_card_payment_is_not_paired_when_destination_account_is_ambiguous() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nu", "Nu account", "savings");
+    register_account(&connection, "nu", "Nu primary credit card", "credit_card");
+    register_account(&connection, "nu", "Nu secondary credit card", "credit_card");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+            institution: "nu",
+            account_label: "Nu account",
+            candidate_id: "cand_nu_ambiguous_savings_payment",
+            description: "PAGASTE TU TARJETA REDACTED",
+            amount_minor: -4590000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::BankMovement,
+        }),
+    )
+    .expect("persist Nu savings outflow");
+    persist_pdf_import(
+        &mut connection,
+        transfer_inspect_response(TransferCandidateFixture {
+            hash: "1212121212121212121212121212121212121212121212121212121212121212",
+            institution: "nu",
+            account_label: "Nu credit card",
+            candidate_id: "cand_nu_ambiguous_card_payment",
+            description: "PAGO RECIBIDO REDACTED",
+            amount_minor: 4590000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::CardPayment,
+        }),
+    )
+    .expect("persist ambiguous Nu credit-card payment");
+    drop(connection);
+
+    let list = Command::new(tracky())
+        .args([
+            "candidates",
+            "list",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("list ambiguous Nu candidate");
+    assert!(list.status.success());
+    let list_json: serde_json::Value =
+        serde_json::from_slice(&list.stdout).expect("candidate-list JSON");
+    let card_candidate = list_json["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"] == "cand_nu_ambiguous_card_payment")
+        .unwrap();
+    assert_eq!(card_candidate["account_resolution"]["status"], "ambiguous");
+    assert_eq!(
+        card_candidate["account_resolution"]["compatible_account_count"],
+        3
+    );
+
+    let pairs = Command::new(tracky())
+        .args([
+            "candidates",
+            "list-transfer-pairs",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("list transfer pairs with ambiguous destination");
+    assert!(pairs.status.success());
+    let pairs_json: serde_json::Value =
+        serde_json::from_slice(&pairs.stdout).expect("transfer-pair JSON");
+    assert!(pairs_json["transfer_pairs"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn candidate_review_cli_resolves_owned_bank_movement_pair_coherently() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("tracky.sqlite");
