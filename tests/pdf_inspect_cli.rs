@@ -105,10 +105,12 @@ fn synthetic_encrypted_nu_card_pdf(path: &std::path::Path, password: &str, marke
         (670, "Fecha de corte 07 mayo 2026"),
         (650, marker),
         (610, "05 may COMPRA REDACTADA $ 120.000"),
-        (570, "06 may PAGO RECIBIDO $ 120.000"),
-        (530, "07 may CREDITO REDACTADO -$ 20.000"),
-        (490, "08 may REVERSION REDACTADA -$ 30.000"),
-        (450, "09 may DEVOLUCION REDACTADA -$ 40.000"),
+        (590, "05 may COMISION POR CONVERSION INTERNACIONAL"),
+        (580, "$ 12.000"),
+        (550, "06 may PAGO RECIBIDO $ 120.000"),
+        (510, "07 may CREDITO REDACTADO -$ 20.000"),
+        (470, "08 may REVERSION REDACTADA -$ 30.000"),
+        (430, "09 may DEVOLUCION REDACTADA -$ 40.000"),
     ] {
         operations.push(Operation::new(
             "Tm",
@@ -185,7 +187,7 @@ fn protected_nu_card_pdf_is_content_detected_and_imported_review_first() {
         "nu.credit-card.statement.v1"
     );
     assert_eq!(inspect_json["parser_status"]["parser_version"], "1");
-    assert_eq!(inspect_json["candidates"].as_array().unwrap().len(), 5);
+    assert_eq!(inspect_json["candidates"].as_array().unwrap().len(), 6);
     let semantics = inspect_json["candidates"]
         .as_array()
         .unwrap()
@@ -196,12 +198,30 @@ fn protected_nu_card_pdf_is_content_detected_and_imported_review_first() {
         semantics,
         vec![
             "card_charge",
+            "card_charge",
             "card_payment",
             "card_credit",
             "card_reversal",
             "card_refund"
         ]
     );
+    let conversion_fee = inspect_json["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| {
+            candidate["description"]
+                .as_str()
+                .is_some_and(|description| description.contains("COMISION"))
+        })
+        .expect("conversion fee candidate");
+    assert_eq!(conversion_fee["semantic_hint"], "card_charge");
+    assert_eq!(conversion_fee["direction_hint"], "outflow");
+    assert_eq!(conversion_fee["amount_minor"], 1_200_000);
+    assert!(conversion_fee["provenance"]["evidence"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("COMISION"));
     assert!(inspect_json["candidates"]
         .as_array()
         .unwrap()
@@ -258,7 +278,7 @@ fn protected_nu_card_pdf_is_content_detected_and_imported_review_first() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .unwrap();
-    assert_eq!(counts, (2, 2, 10, 0));
+    assert_eq!(counts, (2, 2, 12, 0));
     let duplicate_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM candidate_transactions
@@ -268,7 +288,7 @@ fn protected_nu_card_pdf_is_content_detected_and_imported_review_first() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(duplicate_count, 5);
+    assert_eq!(duplicate_count, 6);
     let provenance_count: i64 = connection
         .query_row(
             "SELECT COUNT(*) FROM provenance
@@ -278,5 +298,5 @@ fn protected_nu_card_pdf_is_content_detected_and_imported_review_first() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(provenance_count, 10);
+    assert_eq!(provenance_count, 12);
 }

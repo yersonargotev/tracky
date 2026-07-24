@@ -5018,6 +5018,11 @@ fn build_transfer_pair_evidence(
         .ok_or(TransferPairError::AccountNotOwned)?;
     let to_account = owned_account_by_id(connection, to_account_id)?
         .ok_or(TransferPairError::AccountNotOwned)?;
+    if from_candidate.semantic_hint.as_deref() == Some("card_payment")
+        && to_account.account_type != "credit_card"
+    {
+        return Err(TransferPairError::NotMatching.into());
+    }
     Ok(ReviewTransferPair {
         id: transfer_pair_id(&from_candidate.id, &to_candidate.id),
         transfer_kind: transfer_kind_for_destination(&to_candidate),
@@ -5046,7 +5051,9 @@ fn validate_transfer_pair_shape(
     {
         return Err(TransferPairError::NotReviewable);
     }
-    if from_candidate.semantic_hint.as_deref() != Some("bank_movement") {
+    let source_is_bank_movement = from_candidate.semantic_hint.as_deref() == Some("bank_movement");
+    let source_is_card_payment = from_candidate.semantic_hint.as_deref() == Some("card_payment");
+    if !source_is_bank_movement && !source_is_card_payment {
         return Err(TransferPairError::NotMatching);
     }
     if from_candidate.direction_hint.as_deref() != Some("outflow")
@@ -5058,6 +5065,12 @@ fn validate_transfer_pair_shape(
     let destination_is_bank_inflow = to_candidate.semantic_hint.as_deref() == Some("bank_movement")
         && to_candidate.direction_hint.as_deref() == Some("inflow")
         && to_candidate.amount_minor > 0;
+    let card_payment_source_has_matching_destination = destination_is_card_payment
+        && to_candidate.direction_hint.as_deref() == Some("inflow")
+        && to_candidate.amount_minor > 0;
+    if source_is_card_payment && !card_payment_source_has_matching_destination {
+        return Err(TransferPairError::NotMatching);
+    }
     if !destination_is_card_payment && !destination_is_bank_inflow {
         return Err(TransferPairError::NotMatching);
     }

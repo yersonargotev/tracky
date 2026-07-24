@@ -1203,7 +1203,7 @@ fn nu_savings_outflow_pairs_with_nu_credit_card_payment_only_when_accounts_are_u
             description: "PAGASTE TU TARJETA REDACTED",
             amount_minor: -4590000,
             direction_hint: DirectionHint::Outflow,
-            semantic_hint: SemanticHint::BankMovement,
+            semantic_hint: SemanticHint::CardPayment,
         }),
     )
     .expect("persist Nu savings outflow");
@@ -1250,6 +1250,220 @@ fn nu_savings_outflow_pairs_with_nu_credit_card_payment_only_when_accounts_are_u
         "cand_nu_card_payment"
     );
     assert_eq!(json["transfer_pairs"][0]["transfer_kind"], "card_payment");
+
+    let generic_accept = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept",
+            "cand_nu_savings_card_payment",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("run generic accept for Nu card payment");
+    assert!(!generic_accept.status.success());
+    let generic_json: serde_json::Value =
+        serde_json::from_slice(&generic_accept.stdout).expect("generic accept JSON");
+    assert_eq!(
+        generic_json["errors"][0]["code"],
+        "candidate_requires_transfer_pair_review"
+    );
+
+    let accept_pair = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-transfer-pair",
+            "cand_nu_savings_card_payment",
+            "cand_nu_card_payment",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("accept Nu transfer pair");
+    assert!(
+        accept_pair.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&accept_pair.stderr)
+    );
+    let accept_json: serde_json::Value =
+        serde_json::from_slice(&accept_pair.stdout).expect("Nu transfer accept JSON");
+    assert_eq!(accept_json["ok"], true);
+    assert_eq!(
+        accept_json["transfer_pair"]["transfer_kind"],
+        "card_payment"
+    );
+    assert_ne!(
+        accept_json["transfer_pair"]["from_account"]["id"],
+        accept_json["transfer_pair"]["to_account"]["id"]
+    );
+    assert_eq!(
+        accept_json["transfer_pair"]["from_candidate"]["status"],
+        "accepted"
+    );
+    assert_eq!(
+        accept_json["transfer_pair"]["to_candidate"]["status"],
+        "accepted"
+    );
+}
+
+#[test]
+fn nu_card_payment_pair_rejects_the_same_owned_account_without_mutation() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir.path().join("tracky.sqlite");
+    let mut connection = Connection::open(&db_path).expect("open db");
+    apply_migrations(&connection).expect("apply migrations");
+    register_account(&connection, "nu", "Nu shared card", "credit_card");
+    for fixture in [
+        TransferCandidateFixture {
+            hash: "3434343434343434343434343434343434343434343434343434343434343434",
+            institution: "nu",
+            account_label: "Nu shared card",
+            candidate_id: "cand_nu_same_account_outflow",
+            description: "PAGASTE TU TARJETA REDACTED",
+            amount_minor: -4590000,
+            direction_hint: DirectionHint::Outflow,
+            semantic_hint: SemanticHint::CardPayment,
+        },
+        TransferCandidateFixture {
+            hash: "5656565656565656565656565656565656565656565656565656565656565656",
+            institution: "nu",
+            account_label: "Nu shared card",
+            candidate_id: "cand_nu_same_account_inflow",
+            description: "PAGO RECIBIDO REDACTED",
+            amount_minor: 4590000,
+            direction_hint: DirectionHint::Inflow,
+            semantic_hint: SemanticHint::CardPayment,
+        },
+    ] {
+        persist_pdf_import(&mut connection, transfer_inspect_response(fixture))
+            .expect("persist same-account candidate");
+    }
+    drop(connection);
+
+    let accept = Command::new(tracky())
+        .args([
+            "candidates",
+            "accept-transfer-pair",
+            "cand_nu_same_account_outflow",
+            "cand_nu_same_account_inflow",
+            "--db",
+            db_path.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .expect("reject same-account transfer pair");
+    assert!(!accept.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&accept.stdout).expect("same-account transfer JSON");
+    assert_eq!(json["errors"][0]["code"], "transfer_pair_not_matching");
+
+    let connection = Connection::open(&db_path).expect("reopen db");
+    let counts: (i64, i64) = connection
+        .query_row(
+            "SELECT
+                (SELECT COUNT(*) FROM canonical_transactions),
+                (SELECT COUNT(*) FROM candidate_transactions
+                 WHERE id IN ('cand_nu_same_account_outflow', 'cand_nu_same_account_inflow')
+                   AND status = 'pending_review'
+                   AND canonical_transaction_id IS NULL)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("read same-account rejection state");
+    assert_eq!(counts, (0, 2));
+}
+
+#[test]
+fn nu_card_payment_source_requires_an_inflow_credit_card_payment_destination() {
+    for (
+        case_name,
+        destination_account_type,
+        destination_direction,
+        destination_semantic,
+        destination_amount,
+    ) in [
+        (
+            "bank-inflow",
+            "savings",
+            DirectionHint::Inflow,
+            SemanticHint::BankMovement,
+            4590000,
+        ),
+        (
+            "card-outflow",
+            "credit_card",
+            DirectionHint::Outflow,
+            SemanticHint::CardPayment,
+            -4590000,
+        ),
+        (
+            "non-card-account",
+            "savings",
+            DirectionHint::Inflow,
+            SemanticHint::CardPayment,
+            4590000,
+        ),
+    ] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("tracky.sqlite");
+        let mut connection = Connection::open(&db_path).expect("open db");
+        apply_migrations(&connection).expect("apply migrations");
+        let source_label = format!("Nu source {case_name}");
+        let destination_label = format!("Nu destination {case_name}");
+        register_account(&connection, "nu", &source_label, "savings");
+        register_account(
+            &connection,
+            "nu",
+            &destination_label,
+            destination_account_type,
+        );
+        for fixture in [
+            TransferCandidateFixture {
+                hash: "7878787878787878787878787878787878787878787878787878787878787878",
+                institution: "nu",
+                account_label: &source_label,
+                candidate_id: "cand_nu_shape_source",
+                description: "PAGASTE TU TARJETA REDACTED",
+                amount_minor: -4590000,
+                direction_hint: DirectionHint::Outflow,
+                semantic_hint: SemanticHint::CardPayment,
+            },
+            TransferCandidateFixture {
+                hash: "9090909090909090909090909090909090909090909090909090909090909090",
+                institution: "nu",
+                account_label: &destination_label,
+                candidate_id: "cand_nu_shape_destination",
+                description: "PAGO RECIBIDO REDACTED",
+                amount_minor: destination_amount,
+                direction_hint: destination_direction,
+                semantic_hint: destination_semantic,
+            },
+        ] {
+            persist_pdf_import(&mut connection, transfer_inspect_response(fixture))
+                .expect("persist invalid-shape candidate");
+        }
+        drop(connection);
+
+        let pairs = Command::new(tracky())
+            .args([
+                "candidates",
+                "list-transfer-pairs",
+                "--db",
+                db_path.to_str().unwrap(),
+                "--json",
+            ])
+            .output()
+            .expect("list invalid-shape transfer pairs");
+        assert!(pairs.status.success(), "case: {case_name}");
+        let json: serde_json::Value =
+            serde_json::from_slice(&pairs.stdout).expect("invalid-shape transfer JSON");
+        assert!(
+            json["transfer_pairs"].as_array().unwrap().is_empty(),
+            "case: {case_name}"
+        );
+    }
 }
 
 #[test]

@@ -198,7 +198,11 @@ Each line must name an existing distinct category, use the canonical currency, a
 
 ### 7. Review likely own-account transfer/card-payment pairs
 
-For card payments, first ask Tracky for likely pairs. For example, a Nequi PSE outflow can match a RappiCard `card_payment` row when both accounts are registered as owned, the date/currency match, and the absolute amount is the same.
+For card payments, first ask Tracky for likely pairs. For example, a Nequi PSE
+outflow can match a RappiCard `card_payment` row, and a Nu savings
+`card_payment` outflow can match the corresponding Nu credit-card payment. Both
+accounts must be distinct, registered as owned, and uniquely resolved; the
+date/currency and absolute amount must also match.
 
 ```bash
 tracky candidates list-transfer-pairs --db /tmp/tracky-review.sqlite --json
