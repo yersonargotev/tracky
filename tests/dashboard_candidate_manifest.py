@@ -47,22 +47,9 @@ class DashboardCandidateManifestTest(unittest.TestCase):
             "chromium-minimum": "150", "chromium-latest": "151",
         }, "commands": ["test browsers"]})
         self.results = self.root / "results.json"
-        self.write(self.results, [{"gate": gate, "status": "pass", "evidence": "https://github.com/yersonargotev/tracky/actions/runs/%d" % index} for index, gate in enumerate(sorted(evidence.REQUIRED_RELEASE_GATES - {"manual-accessibility"}), 1)])
+        self.write(self.results, [{"gate": gate, "status": "pass", "evidence": "https://github.com/yersonargotev/tracky/actions/runs/%d" % index} for index, gate in enumerate(sorted(evidence.REQUIRED_RELEASE_GATES), 1)])
         self.inventory = self.root / "inventory.json"
         self.write(self.inventory, {"resolved_package_count": baseline["resolved_package_count"], "asset_bytes": 0})
-        self.accessibility = self.root / "accessibility.json"
-        self.write(self.accessibility, {
-            "schema_version": 1,
-            "commit": self.commit,
-            "lockfile_sha256": self.lockfile,
-            "candidate_run_id": 123,
-            "candidate_run_url": "https://github.com/yersonargotev/tracky/actions/runs/123",
-            "responsible_maintainer": "release-owner",
-            "maintainer_sign_off": {"status": "pass", "signed_by": "release-owner", "signed_at": "2026-07-22T20:30:00Z"},
-            "platforms": self.accessibility_platforms(),
-            "status": "pass",
-            "retained_run_url": "https://github.com/yersonargotev/tracky/actions/runs/456",
-        })
 
     def tearDown(self):
         self.temp.cleanup()
@@ -71,25 +58,8 @@ class DashboardCandidateManifestTest(unittest.TestCase):
     def write(path, value):
         path.write_text(json.dumps(value), encoding="utf-8")
 
-    def accessibility_platforms(self):
-        platforms = {}
-        for name, spec in collector.accessibility.PLATFORMS.items():
-            platforms[name] = {
-                "environment": name,
-                "target": spec["target"],
-                "operating_system": "macOS 26.3" if spec["browser"] == "Safari" else "Ubuntu 24.04 Linux",
-                "browser": {"name": spec["browser"], "version": "26.3" if spec["browser"] == "Safari" else "154.0"},
-                "assistive_technology": {"name": spec["assistive_technology"], "version": "26.3" if spec["browser"] == "Safari" else "49.1"},
-                "artifact": {"name": "tracky-%s.tar.xz" % spec["target"], "sha256": "c" * 64},
-                "tester": "accessibility-tester",
-                "date": "2026-07-22",
-                "checks": [{"check": check, "status": "pass", "findings": "No issue found.", "evidence": "Observed manually."} for check in sorted(collector.accessibility.COMMON_CHECKS | {spec["required_check"]})],
-                "sign_off": {"status": "pass", "signed_by": "accessibility-tester", "signed_at": "2026-07-22T20:00:00Z"},
-            }
-        return platforms
-
     def assemble(self):
-        return collector.assemble(self.targets, self.browsers, self.accessibility, self.results, self.inventory, "release-owner", "reviewer")
+        return collector.assemble(self.targets, self.browsers, self.results, self.inventory, "release-owner", "reviewer")
 
     def test_assembles_release_valid_canonical_inputs_deterministically(self):
         manifest = self.assemble()
@@ -101,7 +71,7 @@ class DashboardCandidateManifestTest(unittest.TestCase):
 
     def test_cli_writes_canonical_json(self):
         output = self.root / "nested" / "manifest.json"
-        subprocess.run([sys.executable, str(SCRIPT), "--targets-dir", str(self.targets), "--browsers", str(self.browsers), "--accessibility", str(self.accessibility), "--results", str(self.results), "--inventory", str(self.inventory), "--maintainer", "release-owner", "--approved-by", "reviewer", "--output", str(output)], check=True)
+        subprocess.run([sys.executable, str(SCRIPT), "--targets-dir", str(self.targets), "--browsers", str(self.browsers), "--results", str(self.results), "--inventory", str(self.inventory), "--maintainer", "release-owner", "--approved-by", "reviewer", "--output", str(output)], check=True)
         self.assertEqual(output.read_text(encoding="utf-8"), evidence.canonical_json(json.loads(output.read_text(encoding="utf-8"))))
 
     def test_rejects_missing_duplicate_and_unknown_targets(self):
@@ -159,24 +129,6 @@ class DashboardCandidateManifestTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     self.assemble()
         self.write(self.browsers, original)
-
-    def test_rejects_accessibility_evidence_from_another_commit_or_maintainer(self):
-        original = json.loads(self.accessibility.read_text())
-        cases = [
-            ("commit", "c" * 40, "accessibility evidence commit differs"),
-            ("responsible_maintainer", "someone-else", "accessibility maintainer differs"),
-            ("status", "fail", "accessibility evidence must pass"),
-        ]
-        for field, value, message in cases:
-            with self.subTest(field=field):
-                changed = copy.deepcopy(original)
-                changed[field] = value
-                if field == "responsible_maintainer":
-                    changed["maintainer_sign_off"]["signed_by"] = value
-                self.write(self.accessibility, changed)
-                with self.assertRaisesRegex(ValueError, message):
-                    self.assemble()
-        self.write(self.accessibility, original)
 
     def test_rejects_mismatched_size_target_and_inventory_shape(self):
         path = next(self.targets.glob("*.json"))

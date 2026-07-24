@@ -1,15 +1,15 @@
 ---
 name: release-tracky
-description: Release Tracky from a merged exact commit through native candidates, browser and manual accessibility evidence, approved proof, tag publication, GitHub Release, and Homebrew. Use when publishing a Tracky version, creating a release tag, or recovering a failed Tracky release workflow.
+description: Release Tracky from a merged exact commit through native candidates, automated browser evidence, approved proof, tag publication, GitHub Release, and Homebrew. Use when publishing a Tracky version, creating a release tag, or recovering a failed Tracky release workflow.
 ---
 
 # Release Tracky
 
-Treat **exact** as the invariant: one final commit and lockfile bind the candidates, browsers, human sign-off, proof, tag, release assets, and package-manager formula.
+Treat **exact** as the invariant: one final commit and lockfile bind the candidates, browsers, proof, tag, release assets, and package-manager formula.
 
-An explicit request to publish authorizes routine workflow dispatches, protected-environment approvals, tag creation, GitHub Release publication, and Homebrew publication for that version. Stop for a missing version or scope, genuine human-only test results, or evidence that would require changing the frozen commit.
+An explicit request to publish authorizes routine workflow dispatches, protected-environment approvals, tag creation, GitHub Release publication, and Homebrew publication for that version. Stop for a missing version or scope, or evidence that would require changing the frozen commit.
 
-Before dispatching any workflow, read `docs/dashboard-evidence.md` and the current commit's `.github/workflows/dashboard-release-candidate.yml`, `dashboard-release-browsers.yml`, `dashboard-release-accessibility.yml`, `dashboard-release-proof.yml`, and `release.yml`. They are the source of truth for names, inputs, protected environments, and retained artifacts.
+Before dispatching any workflow, read `docs/dashboard-evidence.md` and the current commit's `.github/workflows/dashboard-release-candidate.yml`, `dashboard-release-browsers.yml`, `dashboard-release-proof.yml`, and `release.yml`. They are the source of truth for names, inputs, protected environments, and retained artifacts.
 
 ## 1. Freeze the release commit
 
@@ -31,19 +31,9 @@ Complete when the release commit is immutable in practice: every later input mus
 
 Complete when both canonical artifacts cover every supported target and browser lane with passing status and the exact bindings.
 
-## 3. Obtain human-only accessibility evidence
+## 3. Assemble and approve the proof
 
-1. Present the exact candidate archives, hashes, operating environments, and full checklist to the human tester.
-2. Wait for explicit results for every Safari/VoiceOver and Firefox/Orca row. Automation is supporting evidence, not a human attestation.
-3. Build the signed submission from the tester's actual findings, validate it locally, host it at a hash-pinned HTTPS URL, and dispatch **Retain dashboard manual accessibility evidence**.
-4. Approve the `dashboard-release` environment only after checking dispatcher identity, submission hash, candidate provenance, and every signed row.
-5. Download the canonical `manual-accessibility.json`.
-
-Complete when the protected retention run passes and its canonical artifact remains bound to the frozen SHA and lockfile.
-
-## 4. Assemble and approve the proof
-
-1. Create the eleven non-manual gate records from retained GitHub Actions URLs.
+1. Create the required automated gate records from retained GitHub Actions URLs.
 2. Compute a fresh package count and embedded asset byte total from the accepted source tree.
 3. Assemble `dashboard-verification.json` with `scripts/dashboard_candidate_manifest.py`.
 4. Run release validation, render Markdown, and verify the hosted copy byte-for-byte.
@@ -51,7 +41,7 @@ Complete when the protected retention run passes and its canonical artifact rema
 
 Complete when a successful proof run retains JSON and Markdown named for the frozen commit.
 
-## 5. Tag and publish
+## 4. Tag and publish
 
 1. Confirm the intended local and remote tag do not exist.
 2. Create an annotated tag on the frozen SHA and push only that tag.
@@ -61,7 +51,7 @@ Complete when a successful proof run retains JSON and Markdown named for the fro
 
 Complete when the release workflow, including Homebrew and announcement, succeeds.
 
-## 6. Verify publication and clean up
+## 5. Verify publication and clean up
 
 1. Confirm the release is public, non-draft, non-prerelease unless intended, and targets the peeled tag commit.
 2. Verify the expected asset set, proof digest, both native archive checksums, and native `tracky --version`.

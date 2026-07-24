@@ -75,7 +75,6 @@ jobs:
         run: |
           python3 -m unittest tests/dashboard_evidence_tool.py
           python3 -m unittest tests/dashboard_browser_evidence.py
-          python3 -m unittest tests/dashboard_accessibility_evidence.py
           python3 -m unittest tests/dashboard_candidate_manifest.py
           python3 -m unittest tests/dashboard_candidate_runtime.py
           python3 scripts/dashboard_evidence.py check

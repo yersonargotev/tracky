@@ -8,6 +8,8 @@
   refreshes, breakdowns, investments, alerts, and canonical drill-down rows.
 - Preserve exact minor-unit integers in dashboard API transport and semantic
   `data-minor` attributes.
+- Keep releases fast for Tracky's personal-use scope by relying on retained
+  automated accessibility checks instead of mandatory VoiceOver/Orca sign-off.
 
 ## 0.2.1
 
