@@ -333,7 +333,7 @@ fn dashboard_is_public_in_tracky_0_2_help() {
     assert!(version.status.success());
     assert_eq!(
         String::from_utf8_lossy(&version.stdout).trim(),
-        "tracky 0.2.0"
+        "tracky 0.2.1"
     );
 
     let dashboard = sandboxed_command(root.path())
