@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3
+
+- Redesign the dashboard as a personal treasury view with net cash flow as the
+  dominant metric and a clearer scan hierarchy for monthly movement, spending,
+  accounts, alerts, and investments.
+- Add responsive in-page navigation, a stronger native-currency scope, and
+  consistent section labels across progressive HTML, filters, and refreshes.
+- Preserve valid heading references and navigation behavior in filter-empty and
+  valid-empty states while retaining the exact read-only finance contract.
+
 ## 0.2.2
 
 - Render COP and USD dashboard amounts in major currency units with familiar

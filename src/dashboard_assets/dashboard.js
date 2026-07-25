@@ -5,6 +5,7 @@
   if (!dashboard) return;
 
   const filterPanel = dashboard.querySelector("[data-filter-panel]");
+  const sectionNav = dashboard.querySelector(".section-nav");
   const drawer = document.querySelector("[data-drawer]");
   const drawerContent = drawer?.querySelector("[data-drawer-content]");
   const refreshStatus = dashboard.querySelector("[data-refresh-status]");
@@ -78,38 +79,56 @@
     return button;
   };
 
+  const sectionHeadings = {
+    summary: ["Current scope", "What came in, what went out, and what remained available."],
+    monthly: ["Flow over time", "Income and consumption, month by month."],
+    categories: ["Consumption map", "Where spending accumulated in the selected scope."],
+    accounts: ["Source activity", "Net movement by account."],
+    alerts: ["Context, not command", "Freshness and reconciliation signals that need attention."],
+    investments: ["As-of closing state", "Positions remain separate from consumption expense."],
+  };
+
   const heading = (name, text) => {
     const node = region(name);
     if (!node) return null;
-    node.replaceChildren(element("h2", text));
+    const wrapper = element("div", undefined, "section-heading");
+    const [eyebrow, description] = sectionHeadings[name] || [];
+    if (eyebrow) wrapper.append(element("p", eyebrow, "eyebrow"));
+    const title = element("h2", text);
+    title.id = `${name}-heading`;
+    wrapper.append(title);
+    if (description) wrapper.append(element("p", description));
+    node.replaceChildren(wrapper);
+    node.setAttribute("aria-labelledby", title.id);
     return node;
   };
 
   const empty = (parent) => parent.append(element("p", "No matching canonical activity.", "empty"));
 
   const renderSummary = (data) => {
-    const parent = heading("summary", "Ledger summary");
+    const parent = heading("summary", "Cash flow at a glance");
     if (!parent) return;
     if (data.state === "filter_empty") {
-      parent.replaceChildren(
-        element("p", "Filter-empty ledger", "eyebrow"),
-        element("h2", "No activity matches these filters"),
+      parent.append(
+        element("h3", "No activity matches these filters"),
         element("p", "Review the selected accounts and expense categories in Filters.", "empty"),
       );
       return;
     }
     const list = element("ul");
     const metrics = [
-      ["Income", "income", "income_minor"],
-      ["Consumption expense", "consumption_expense", "consumption_expense_minor"],
-      ["Savings / net cash flow", "net_cash_flow", "net_cash_flow_minor"],
-      ["Investment contributions", "investment_contribution", "investment_contribution_minor"],
+      ["Income", "income", "income_minor", "Canonical inflows"],
+      ["Consumption expense", "consumption_expense", "consumption_expense_minor", "Consumption only"],
+      ["Savings / net cash flow", "net_cash_flow", "net_cash_flow_minor", "Income minus consumption expense"],
+      ["Investment contributions", "investment_contribution", "investment_contribution_minor", "Separate from expense"],
     ];
-    metrics.forEach(([label, metric, field]) => {
+    metrics.forEach(([label, metric, field, note]) => {
       const item = element("li");
-      const row = element("span", label);
-      row.append(element("strong", amount(data.summary[field], data.summary.currency)));
-      item.append(actionButton(row, { metric }));
+      const button = actionButton(element("span", label), { metric });
+      const value = element("strong", amount(data.summary[field], data.summary.currency));
+      value.dataset.minor = exact(data.summary[field]);
+      button.append(value, element("small", note));
+      item.append(button);
       list.append(item);
     });
     parent.append(list);
@@ -128,8 +147,14 @@
     trend.setAttribute("aria-describedby", "trend-description");
     data.monthly.forEach((month) => {
       const label = element("span", exact(month.month));
-      const income = element("span", `Income ${amount(month.income_minor, month.currency)}`, "trend-income");
-      const expense = element("span", `Expense ${amount(month.consumption_expense_minor, month.currency)}`, "trend-expense");
+      const income = element("span", "Income", "trend-income");
+      const incomeValue = element("b", amount(month.income_minor, month.currency));
+      incomeValue.dataset.minor = exact(month.income_minor);
+      income.append(incomeValue);
+      const expense = element("span", "Expense", "trend-expense");
+      const expenseValue = element("b", amount(month.consumption_expense_minor, month.currency));
+      expenseValue.dataset.minor = exact(month.consumption_expense_minor);
+      expense.append(expenseValue);
       const button = actionButton(label, { metric: "activity", month: month.month });
       button.append(income, expense);
       trend.append(button);
@@ -157,7 +182,9 @@
       monthCell.append(actionButton(exact(month.month), { metric: "activity", month: month.month }));
       row.append(monthCell);
       ["income_minor", "consumption_expense_minor", "net_cash_flow_minor", "investment_contribution_minor"].forEach((field) => {
-        row.append(element("td", amount(month[field], month.currency)));
+        const cell = element("td", amount(month[field], month.currency));
+        cell.dataset.minor = exact(month[field]);
+        row.append(cell);
       });
       body.append(row);
     });
@@ -170,14 +197,13 @@
     const parent = heading(name, title);
     if (!parent) return;
     if (!rows.length) return empty(parent);
-    const list = element("ul", undefined, "ledger-list");
+    const list = element("ul", undefined, "breakdown-list");
     rows.forEach((row) => {
       const item = element("li");
       const content = element("span", undefined, "ledger-row");
-      content.append(
-        element("span", exact(row[options.label])),
-        element("strong", options.value(row)),
-      );
+      const value = element("strong", options.value(row));
+      if (options.minor) value.dataset.minor = exact(options.minor(row));
+      content.append(element("span", exact(row[options.label])), value);
       item.append(actionButton(content, options.data(row)));
       list.append(item);
     });
@@ -185,17 +211,16 @@
   };
 
   const renderAlerts = (data) => {
-    const parent = heading("alerts", "Alerts");
+    const parent = heading("alerts", "Freshness and reconciliation alerts");
     if (!parent) return;
     if (!data.alerts.length) return empty(parent);
-    const list = element("ul", undefined, "ledger-list");
+    const list = element("ul", undefined, "alert-list");
     data.alerts.forEach((alert, index) => {
-      const item = element("li", undefined, "alert");
-      const content = element("span", undefined, "ledger-row");
-      content.append(element("span", exact(alert.kind)), element("strong", exact(alert.severity)));
+      const item = element("li");
       const positionIndex = data.investments.closing_positions.findIndex((position) =>
         alert.account_id === position.account_id && (!alert.instrument_id || alert.instrument_id === position.instrument_id));
-      item.append(actionButton(content, {
+      const status = element("span", exact(alert.kind).replaceAll("_", " "), `status status-${exact(alert.severity)}`);
+      const button = actionButton(status, {
         detail: "alert",
         recordId: alert.id,
         index,
@@ -203,66 +228,131 @@
         account: alert.account_id,
         instrument: alert.instrument_id,
         positionIndex: positionIndex >= 0 ? positionIndex : null,
-      }));
+      });
+      button.append(element("strong", exact(alert.instrument_id ?? alert.account_id ?? "Ledger")));
+      const details = element("small");
+      const detailParts = [exact(alert.currency)];
+      if (alert.effective_date) detailParts.push(`effective ${exact(alert.effective_date)}`);
+      if (alert.observed_at) detailParts.push(`observed ${exact(alert.observed_at)}`);
+      if (alert.age_days !== null && alert.age_days !== undefined) detailParts.push(`age ${exact(alert.age_days)} days`);
+      details.append(document.createTextNode(detailParts.join(" · ")));
+      [["pending_amount_minor", "pending"], ["value_difference_minor", "value difference"]].forEach(([field, label]) => {
+        if (alert[field] === null || alert[field] === undefined) return;
+        const value = element("span", `${label} ${amount(alert[field], alert.currency)}`);
+        value.dataset.minor = exact(alert[field]);
+        details.append(document.createTextNode(" · "), value);
+      });
+      if (alert.quantity_difference !== null && alert.quantity_difference !== undefined) {
+        details.append(document.createTextNode(` · quantity difference ${exact(alert.quantity_difference)}`));
+      }
+      button.append(details);
+      item.append(button);
       list.append(item);
     });
     parent.append(list);
   };
 
   const renderInvestments = (data) => {
-    const parent = heading("investments", "Investments");
+    const parent = heading("investments", "Investment positions");
     if (!parent) return;
-    parent.append(element("p", `State: ${exact(data.investments.state)}`, "meta"));
-    parent.append(element("p", `Pending allocation: ${amount(data.investments.pending_allocation_minor, data.filters.currency)}`, "meta"));
-    if (data.investments.flows.length) {
-      const flows = element("ul", undefined, "ledger-list");
-      data.investments.flows.forEach((flow) => {
-        const item = element("li");
-        item.append(
-          element("span", exact(flow.account_id)),
-          element("strong", amount(flow.amount_minor, flow.currency)),
-        );
-        flows.append(item);
-      });
-      parent.append(flows);
-    }
-    const list = element("ul", undefined, "ledger-list");
+    const meta = element("p", `State: ${exact(data.investments.state)} · Pending allocation: `, "meta");
+    const pending = element("span", amount(data.investments.pending_allocation_minor, data.filters.currency));
+    pending.dataset.minor = exact(data.investments.pending_allocation_minor);
+    meta.append(pending);
+    parent.append(meta);
+    const scroll = element("div", undefined, "table-scroll");
+    const table = element("table");
+    table.className = "positions";
+    table.append(element("caption", "Exact quantity, cost, valuation, freshness, and reconciliation"));
+    const head = element("thead");
+    const headRow = element("tr");
+    ["Position", "Quantity", "Historical cost", "Observed value", "Effective date", "Freshness", "Reconciliation"].forEach((label) => {
+      const cell = element("th", label);
+      cell.scope = "col";
+      headRow.append(cell);
+    });
+    head.append(headRow);
+    const body = element("tbody");
     data.investments.closing_positions.forEach((position, index) => {
-      const item = element("li");
-      const content = element("span", undefined, "ledger-row");
-      content.append(
-        element("span", exact(data.dimensions.instruments.find((instrument) => instrument.id === position.instrument_id)?.name ?? position.instrument_id ?? position.instrument_type ?? position.account_id)),
-        element("strong", exact(position.freshness)),
-      );
-      item.append(actionButton(content, {
+      const row = element("tr");
+      const name = exact(data.dimensions.instruments.find((instrument) => instrument.id === position.instrument_id)?.name ?? position.instrument_id ?? "Pending allocation");
+      const positionCell = element("th");
+      positionCell.scope = "row";
+      const positionButton = actionButton(element("span", name), {
         detail: "position",
         index,
         metric: "investment_contribution",
         account: position.account_id,
         instrument: position.instrument_id,
-      }));
-      list.append(item);
+      });
+      positionButton.append(element("small", exact(position.account_id)));
+      positionCell.append(positionButton);
+      const cost = position.historical_cost_minor === null || position.historical_cost_minor === undefined
+        ? element("td", "Unavailable")
+        : element("td", amount(position.historical_cost_minor, position.cost_currency));
+      if (position.historical_cost_minor !== null && position.historical_cost_minor !== undefined) {
+        cost.dataset.minor = exact(position.historical_cost_minor);
+      }
+      const valuation = position.observed_value_minor === null || position.observed_value_minor === undefined
+        ? element("td", "Unavailable")
+        : element("td", amount(position.observed_value_minor, position.valuation_currency));
+      if (position.observed_value_minor !== null && position.observed_value_minor !== undefined) {
+        valuation.dataset.minor = exact(position.observed_value_minor);
+      }
+      const freshness = element("span", exact(position.freshness), `status status-${exact(position.freshness)}`);
+      const freshnessCell = element("td");
+      freshnessCell.append(freshness);
+      row.append(
+        positionCell,
+        element("td", exact(position.quantity ?? "Unavailable")),
+        cost,
+        valuation,
+        element("td", exact(position.effective_date ?? "Unavailable")),
+        freshnessCell,
+        element("td", exact(position.reconciliation_status)),
+      );
+      body.append(row);
     });
-    if (list.children.length) parent.append(list);
-    else if (!data.investments.flows.length) empty(parent);
+    if (!body.children.length) {
+      const row = element("tr");
+      const cell = element("td", "No investment positions in this scope.");
+      cell.colSpan = 7;
+      row.append(cell);
+      body.append(row);
+    }
+    table.append(head, body);
+    scroll.append(table);
+    parent.append(scroll);
   };
 
   const renderValidEmpty = () => {
     const summary = region("summary");
-    summary?.replaceChildren(
-      element("p", "Valid empty ledger", "eyebrow"),
-      element("h2", "No currency activity"),
-      element("p", "Add canonical activity with the Tracky CLI, then refresh the dashboard.", "empty"),
-    );
+    if (summary) {
+      const title = element("h2", "No currency activity");
+      title.id = "summary-heading";
+      summary.replaceChildren(
+        element("p", "Valid empty ledger", "eyebrow"),
+        title,
+        element("p", "Add canonical activity with the Tracky CLI, then refresh the dashboard.", "empty"),
+      );
+    }
     ["monthly", "categories", "accounts", "alerts", "investments"].forEach((name) => {
-      region(name)?.replaceChildren();
+      const node = region(name);
+      node?.replaceChildren();
+      node?.removeAttribute("aria-labelledby");
     });
   };
 
   const renderSnapshot = (data) => {
     snapshot = data;
+    if (sectionNav) sectionNav.hidden = data.state === "empty";
     const scope = region("scope");
     if (scope) {
+      const scopeItem = (label, ...content) => {
+        const item = element("span");
+        item.append(element("small", label), ...content);
+        return item;
+      };
       const scopeNames = (ids, dimensions, empty) => {
         if (!ids.length) return empty;
         const names = ids.map((id) => dimensions.find((item) => item.id === id)?.name || id);
@@ -270,16 +360,29 @@
       };
       const accounts = scopeNames(data.filters.account_ids, data.dimensions.accounts, "No accounts selected");
       const categories = scopeNames(data.filters.category_ids, data.dimensions.categories, "No expense categories selected");
+      const period = scopeItem("Period");
+      const start = element("time", exact(data.filters.start_date));
+      const end = element("time", exact(data.filters.end_date));
+      period.append(start, document.createTextNode(" — "), end);
       scope.replaceChildren(
-        element("p", "Local analytical ledger · read-only", "eyebrow"),
+        element("p", "Personal treasury · local and read-only", "eyebrow"),
         element("h1", "Monthly ledger"),
-        element("p", `${exact(data.filters.start_date)} through ${exact(data.filters.end_date)} · ${exact(data.filters.currency)} · Accounts: ${accounts} · Expense categories: ${categories} · read ${exact(data.read_at)}`, "scope"),
       );
+      const details = element("p", undefined, "scope");
+      details.append(
+        period,
+        scopeItem("Accounts", document.createTextNode(accounts)),
+        scopeItem("Expense categories", document.createTextNode(categories)),
+        scopeItem("Snapshot", document.createTextNode(exact(data.read_at))),
+      );
+      scope.append(details);
     }
     const currency = region("currency");
     selectedCurrency = data.filters.currency === null ? "" : exact(data.filters.currency);
     if (currency) {
-      currency.replaceChildren(element("span", "Native-currency ledger"));
+      const label = element("span");
+      label.append(element("small", "Viewing"), document.createTextNode("Native-currency ledger"));
+      currency.replaceChildren(label);
       const choices = element("div");
       data.dimensions.currencies.forEach((value) => {
         const button = element("button", exact(value));
@@ -297,14 +400,16 @@
     }
     renderSummary(data);
     renderMonthly(data);
-    renderBreakdown("categories", "Consumption categories", data.categories, {
+    renderBreakdown("categories", "Expense categories", data.categories, {
       label: "category_name",
       value: (row) => amount(row.amount_minor, row.currency),
+      minor: (row) => row.amount_minor,
       data: (row) => ({ metric: "consumption_expense", category: row.category_id }),
     });
     renderBreakdown("accounts", "Accounts", data.accounts, {
       label: "account_name",
       value: (row) => amount(row.net_cash_flow_minor, row.currency),
+      minor: (row) => row.net_cash_flow_minor,
       data: (row) => ({ metric: "activity", account: row.account_id }),
     });
     renderAlerts(data);
