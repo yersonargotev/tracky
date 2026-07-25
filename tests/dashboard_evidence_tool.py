@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dashboard_evidence.py"
 SPEC = importlib.util.spec_from_file_location("dashboard_evidence", SCRIPT)
@@ -196,6 +197,18 @@ class DashboardEvidenceToolTest(unittest.TestCase):
             self.assertEqual(measured["archive_contents"], sorted(tool.REQUIRED_ARCHIVE_FILES))
             tool.verify_dist_checksum(archive)
             tool.verify_packaged_size_measurement(measured, measured)
+
+            with tarfile.open(archive, "r:xz") as cargo_dist_bundle:
+                for member in cargo_dist_bundle.getmembers():
+                    if member.isfile():
+                        member.mode |= 0o100000
+                with mock.patch.object(
+                    tool.tarfile, "open", return_value=cargo_dist_bundle
+                ):
+                    tool.inspect_release_archive(
+                        archive, target, expected_root=source
+                    )
+
             placeholder = dict(measured)
             placeholder["executable_bytes"] = 1
             with self.assertRaisesRegex(ValueError, "executable_bytes"):

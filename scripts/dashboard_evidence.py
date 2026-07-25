@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -373,7 +374,7 @@ def inspect_release_archive_contents(archive, target, expected_root=ROOT):
             name = Path(member.name).name
             expected_mode = 0o755 if name == "tracky" else 0o644
             require(
-                member.mode == expected_mode,
+                stat.S_IMODE(member.mode) == expected_mode,
                 "%s permissions must be %04o" % (name, expected_mode),
             )
             packaged = bundle.extractfile(member)
