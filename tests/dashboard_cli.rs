@@ -623,6 +623,7 @@ fn capability_get_returns_exact_semantic_html_without_mutating_database() {
         "aria-label=\"Ledger filters\"",
         "aria-label=\"Monthly income and consumption expense trend\"",
         "<caption>Exact monthly amounts</caption>",
+        "<div class=\"table-scroll\" tabindex=\"0\" role=\"region\" aria-label=\"Investment positions; horizontally scrollable when needed\">",
         "aria-label=\"Read-only canonical drawer\"",
         "JavaScript is optional",
     ] {
