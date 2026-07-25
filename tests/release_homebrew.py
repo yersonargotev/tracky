@@ -146,7 +146,7 @@ class ReleaseHomebrewTest(unittest.TestCase):
         formula, evidence = self.fixture.prepare()
         self.assertIn('desc "Local-first, review-first personal finance CLI"', formula)
         self.assertIn('license "MIT"', formula)
-        self.assertIn('version "0.2.4"', formula)
+        self.assertNotIn('version "0.2.4"', formula)
         self.assertIn("on_macos do", formula)
         self.assertIn("on_linux do", formula)
         self.assertIn("tracky 0.2.4", formula)
