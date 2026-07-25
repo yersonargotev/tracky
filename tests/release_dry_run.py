@@ -12,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release_identity.py"
 SUMMARY_SCRIPT = ROOT / "scripts" / "release_dry_run_summary.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "release-dry-run.yml"
+BROWSER_ACTION = (
+    ROOT / ".github" / "actions" / "dashboard-browser-lane" / "action.yml"
+)
 SPEC = importlib.util.spec_from_file_location("release_identity", SCRIPT)
 identity = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(identity)
@@ -138,6 +141,23 @@ class ReleaseDryRunWorkflowTest(unittest.TestCase):
             workflow,
         )
         self.assertIn("--target=${{ matrix.target }} --output-format=json", workflow)
+        for lane in ("safari-latest", "firefox-latest", "chromium-latest"):
+            self.assertIn("lane: " + lane, workflow)
+        browser_job = workflow.split("  browser-current:", 1)[1].split(
+            "\n  collect-current-browsers:", 1
+        )[0]
+        self.assertNotIn("dist build", browser_job)
+        self.assertIn("scripts/dashboard_evidence.py validate-semantic", browser_job)
+        self.assertIn("release-dry-run-built-", browser_job)
+        self.assertIn("uses: ./.github/actions/dashboard-browser-lane", browser_job)
+        self.assertNotIn("setup-firefox@", browser_job)
+        self.assertNotIn("setup-chrome@", browser_job)
+        self.assertIn(
+            "scripts/dashboard_release_browser.py",
+            BROWSER_ACTION.read_text(encoding="utf-8"),
+        )
+        self.assertIn("--profile current", workflow)
+        self.assertIn("current-browser-evidence.json", workflow)
 
         for gate in (
             "cargo fmt --all -- --check",
@@ -180,6 +200,22 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         self.identity_path = self.root / "release-identity.json"
         self.identity_path.write_text(
             json.dumps(self.identity, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        self.browser_evidence = self.root / "current-browser-evidence.json"
+        self.browser_evidence.write_text(
+            json.dumps(
+                {
+                    "commit": self.commit,
+                    "lockfile_sha256": self.identity["lockfile_sha256"],
+                    "browsers": {
+                        "safari-latest": "26.3",
+                        "firefox-latest": "154",
+                        "chromium-latest": "151",
+                    },
+                    "commands": ["current Safari", "current Firefox", "current Chromium"],
+                }
+            ),
             encoding="utf-8",
         )
         self.verified = self.root / "verified"
@@ -268,9 +304,15 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         self.temp.cleanup()
 
     def test_assembles_both_exact_native_bundles_deterministically(self):
-        value = summary.assemble(self.verified, self.identity)
+        value = summary.assemble(
+            self.verified, self.identity, self.browser_evidence
+        )
         self.assertEqual(value["mode"], "dry-run")
         self.assertFalse(value["published"])
+        self.assertEqual(
+            set(value["browsers"]),
+            {"safari-latest", "firefox-latest", "chromium-latest"},
+        )
         self.assertEqual(
             [artifact["target"] for artifact in value["artifacts"]],
             sorted(summary.evidence.TARGETS),
@@ -280,6 +322,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         summary.main([
             "--verified-root", str(self.verified),
             "--identity", str(self.identity_path),
+            "--browser-evidence", str(self.browser_evidence),
             "--output", str(output),
         ])
         self.assertEqual(
@@ -295,13 +338,20 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         archive = directory / "candidate" / ("tracky-%s.tar.xz" % target)
         archive.write_bytes(b"substituted")
         with self.assertRaisesRegex(ValueError, "checksum|size"):
-            summary.assemble(self.verified, self.identity)
+            summary.assemble(self.verified, self.identity, self.browser_evidence)
 
         # Removing a bundle is covered without deleting operator files: move it
         # under a non-matching name inside the isolated temporary directory.
         directory.rename(directory.with_name("ignored-bundle"))
         with self.assertRaisesRegex(ValueError, "exactly"):
-            summary.assemble(self.verified, self.identity)
+            summary.assemble(self.verified, self.identity, self.browser_evidence)
+
+    def test_rejects_browser_evidence_from_another_identity(self):
+        value = json.loads(self.browser_evidence.read_text(encoding="utf-8"))
+        value["lockfile_sha256"] = "f" * 64
+        self.browser_evidence.write_text(json.dumps(value), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "browser evidence lockfile"):
+            summary.assemble(self.verified, self.identity, self.browser_evidence)
 
 
 if __name__ == "__main__":

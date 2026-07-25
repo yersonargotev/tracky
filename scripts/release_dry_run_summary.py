@@ -8,10 +8,11 @@ from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dashboard_browser_evidence as browser_contract  # noqa: E402
 import dashboard_evidence as evidence  # noqa: E402
 
 
-def assemble(verified_root, identity):
+def assemble(verified_root, identity, browser_evidence_path):
     evidence.require(
         set(identity) == {
             "schema_version", "source_sha", "package_version", "lockfile_sha256",
@@ -77,6 +78,13 @@ def assemble(verified_root, identity):
         })
 
     evidence.require(found_targets == evidence.TARGETS, "dry run targets are incomplete")
+    browser_evidence = evidence.read_json(browser_evidence_path)
+    browser_contract.validate_canonical_browser_evidence(
+        browser_evidence,
+        identity["source_sha"],
+        identity["lockfile_sha256"],
+        "current",
+    )
     return {
         "schema_version": 1,
         "source_sha": identity["source_sha"],
@@ -84,6 +92,7 @@ def assemble(verified_root, identity):
         "lockfile_sha256": identity["lockfile_sha256"],
         "mode": "dry-run",
         "published": False,
+        "browsers": dict(sorted(browser_evidence["browsers"].items())),
         "artifacts": sorted(artifacts, key=lambda item: item["target"]),
     }
 
@@ -92,9 +101,14 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--verified-root", type=Path, required=True)
     parser.add_argument("--identity", type=Path, required=True)
+    parser.add_argument("--browser-evidence", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
-    value = assemble(args.verified_root, evidence.read_json(args.identity))
+    value = assemble(
+        args.verified_root,
+        evidence.read_json(args.identity),
+        args.browser_evidence,
+    )
     args.output.write_text(
         json.dumps(value, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

@@ -9,16 +9,25 @@ import shlex
 import shutil
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
 
-GATES = ("browser-flow", "progressive-no-javascript", "security", "lifecycle", "automated-accessibility")
+GATES = (
+    "browser-flow",
+    "progressive-no-javascript",
+    "security",
+    "read-only",
+    "lifecycle",
+    "automated-accessibility",
+)
 
 
 def gate(result, name):
@@ -239,6 +248,13 @@ def has_progressive_content(content, require_markup=True):
     return all(token in normalized for token in required)
 
 
+def database_snapshot(database):
+    uri = "file:%s?mode=ro" % urllib.parse.quote(str(database.resolve()))
+    with sqlite3.connect(uri, uri=True) as connection:
+        connection.execute("PRAGMA query_only = ON")
+        return "\n".join(connection.iterdump())
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
@@ -278,6 +294,7 @@ def main():
                    "TMPDIR": str(root / "tmp")}
             database = root / "dashboard.sqlite"
             account, source = seed(args.binary.resolve(), env, database)
+            startup_read_only_snapshot = database_snapshot(database)
             dashboard, url = start_dashboard(args.binary.resolve(), env, database)
             driver = Driver(args.browser, executable, args.browser_binary, env)
             result["driver"]["version"] = driver.version
@@ -306,10 +323,13 @@ def main():
             if not filtered:
                 raise RuntimeError("browser-flow: filters did not expose the valid empty state")
             driver.navigate(url)
+            if database_snapshot(database) != startup_read_only_snapshot:
+                raise RuntimeError("read-only: initial browser activity mutated the database")
             run_json(args.binary.resolve(), env, "transactions", "add-income", "--db", str(database),
                      "--account-id", account, "--posted-date", "2026-07-20", "--description",
                      "Externally added income", "--amount-minor", "200000", "--currency", "COP",
                      "--income-source-id", source, "--income-kind", "salary")
+            read_only_snapshot = database_snapshot(database)
             refreshed = driver.async_script("""
               const done=arguments[arguments.length-1];
               const button=[...document.querySelectorAll('button')].find(node=>node.textContent.trim()==='Refresh');
@@ -355,7 +375,6 @@ def main():
             adversarial = [
                 rejected_response(url.replace(capability, "0" * 64)),
                 rejected_response(url, headers={"Host": "evil.invalid"}),
-                rejected_response(url, method="POST"),
                 rejected_response(url + "%2e%2e/api/v1/dashboard"),
                 rejected_response(url + "unknown"),
             ]
@@ -366,6 +385,16 @@ def main():
                     or headers.get("Access-Control-Allow-Origin")):
                 raise RuntimeError("security: required headers or network isolation failed")
             gate(result, "security")["status"] = "pass"
+
+            status, response_headers, body = rejected_response(url, method="POST")
+            if (
+                status != 404
+                or "COP\u00a0$7.000,00" in body
+                or not all(response_headers.get(name) for name in protected_headers)
+                or database_snapshot(database) != read_only_snapshot
+            ):
+                raise RuntimeError("read-only: dashboard mutated state or accepted a write request")
+            gate(result, "read-only")["status"] = "pass"
 
             if dashboard.poll() is not None:
                 raise RuntimeError("lifecycle: dashboard exited while browser was active")
