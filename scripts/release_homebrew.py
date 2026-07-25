@@ -162,7 +162,6 @@ def render_formula(repository, tag, package_version, archives):
     return """class Tracky < Formula
   desc "Local-first, review-first personal finance CLI"
   homepage "https://github.com/%(repository)s"
-  version "%(formula_version)s"
   license "MIT"
 
   on_macos do
@@ -189,7 +188,6 @@ def render_formula(repository, tag, package_version, archives):
 end
 """ % {
         "repository": repository,
-        "formula_version": formula_version,
         "mac_url": mac["url"],
         "mac_sha": mac["sha256"],
         "linux_url": linux["url"],
