@@ -8,8 +8,8 @@ from pathlib import Path
 
 
 SPEC = importlib.util.spec_from_file_location(
-    "release_prerelease",
-    Path(__file__).parents[1] / "scripts" / "release_prerelease.py",
+    "release_publish",
+    Path(__file__).parents[1] / "scripts" / "release_publish.py",
 )
 publication = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(publication)
@@ -18,7 +18,7 @@ SPEC.loader.exec_module(publication)
 class Fixture:
     sha = "a" * 40
     version = "1.2.3"
-    tag = "v1.2.3-rc.1"
+    tag = "v1.2.3"
     lockfile = "b" * 64
 
     def __init__(self, root):
@@ -27,7 +27,7 @@ class Fixture:
         artifacts = []
         for target in sorted(publication.evidence.TARGETS):
             candidate = self.verified / (
-                "release-dry-run-verified-%s-%s" % (self.sha, target)
+                "release-verified-%s-%s" % (self.sha, target)
             ) / "candidate"
             candidate.mkdir(parents=True)
             archive = candidate / ("tracky-%s.tar.xz" % target)
@@ -70,14 +70,14 @@ class Fixture:
                     },
                 },
             })
-        self.evidence = root / "release-dry-run-evidence.json"
-        self.markdown = root / "release-dry-run-evidence.md"
+        self.evidence = root / "release-evidence.json"
+        self.markdown = root / "release-evidence.md"
         self.value = {
             "schema_version": 2,
             "source_sha": self.sha,
             "package_version": self.version,
             "lockfile_sha256": self.lockfile,
-            "mode": "dry-run",
+            "mode": "release",
             "published": False,
             "gates": [
                 {"gate": gate, "status": "pass"}
@@ -130,7 +130,7 @@ class FakeClient:
             "id": 9,
             "html_url": "https://github.com/o/r/releases/tag/untagged-draft",
             "tag_name": tag,
-            "prerelease": True,
+            "prerelease": False,
             "draft": True,
             "target_commitish": sha,
             "upload_url": (
@@ -182,7 +182,7 @@ class FakeClient:
         self.published += 1
 
 
-class ReleasePrereleaseTest(unittest.TestCase):
+class ReleasePublishTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.fixture = Fixture(Path(self.temp.name))
@@ -197,8 +197,8 @@ class ReleasePrereleaseTest(unittest.TestCase):
             (self.fixture.sha, self.fixture.version, self.fixture.lockfile),
         )
         self.assertEqual([item.name for item in assets], sorted([
-            "release-dry-run-evidence.json",
-            "release-dry-run-evidence.md",
+            "release-evidence.json",
+            "release-evidence.md",
             "tracky-aarch64-apple-darwin.tar.xz",
             "tracky-aarch64-apple-darwin.tar.xz.sha256",
             "tracky-x86_64-unknown-linux-gnu.tar.xz",
@@ -207,20 +207,26 @@ class ReleasePrereleaseTest(unittest.TestCase):
         self.assertTrue(all(item.size > 0 for item in assets))
         self.assertTrue(all(len(item.sha256) == 64 for item in assets))
 
-    def test_requires_exact_rc_tag_and_positive_sequence(self):
-        for tag in ("v1.2.3", "v1.2.3-rc.0", "v1.2.4-rc.1", "v1.2.3-rc.-1"):
-            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "prerelease tag"):
+    def test_requires_exact_stable_tag(self):
+        for tag in ("1.2.3", "v1.2.3-rc.1", "v1.2.4", "v1.2.3+build"):
+            with self.subTest(tag=tag), self.assertRaisesRegex(ValueError, "release tag"):
                 publication.prepare_assets(
                     self.fixture.verified, self.fixture.evidence,
                     self.fixture.markdown, tag,
                 )
+        for version in ("1.2.3-rc.1", "1.2.3+build"):
+            with self.subTest(version=version), self.assertRaisesRegex(
+                ValueError, "stable SemVer"
+            ):
+                publication.validate_tag("v" + version, version)
 
     def test_rejects_schema_identity_gate_and_publish_tampering(self):
         mutations = [
             ("schema_version", 1, "schema"),
             ("source_sha", "b" * 39, "source SHA"),
             ("package_version", "next", "version"),
-            ("published", True, "unpublished"),
+            ("mode", "dry-run", "unpublished release"),
+            ("published", True, "unpublished release"),
         ]
         for key, changed, message in mutations:
             with self.subTest(key=key):
@@ -294,14 +300,14 @@ class ReleasePrereleaseTest(unittest.TestCase):
         self.assertEqual(publication.reconcile_tag(self.fixture.sha, self.fixture.sha), "keep")
         with self.assertRaisesRegex(ValueError, "different commit"):
             publication.reconcile_tag("b" * 40, self.fixture.sha)
-        with self.assertRaisesRegex(ValueError, "not a prerelease"):
+        with self.assertRaisesRegex(ValueError, "is a prerelease"):
             publication.reconcile_release(
-                {"prerelease": False, "draft": True, "target_commitish": self.fixture.sha},
+                {"prerelease": True, "draft": True, "target_commitish": self.fixture.sha},
                 self.fixture.sha,
             )
         with self.assertRaisesRegex(ValueError, "different commit"):
             publication.reconcile_release(
-                {"prerelease": True, "draft": True, "target_commitish": "b" * 40},
+                {"prerelease": False, "draft": True, "target_commitish": "b" * 40},
                 self.fixture.sha,
             )
         _, _, _, assets = self.fixture.prepare()
@@ -315,7 +321,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
             "id": 9,
             "html_url": "https://github.com/o/r/releases/tag/untagged-partial",
             "tag_name": self.fixture.tag,
-            "prerelease": True,
+            "prerelease": False,
             "draft": True,
             "target_commitish": self.fixture.sha,
             "assets": [{
@@ -341,7 +347,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
             "id": 9,
             "html_url": "https://github.com/o/r/releases/tag/untagged-partial",
             "tag_name": self.fixture.tag,
-            "prerelease": True,
+            "prerelease": False,
             "draft": True,
             "target_commitish": self.fixture.sha,
             "assets": [
@@ -398,7 +404,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
                     "id": 9,
                     "html_url": "https://github.com/o/r/releases/tag/untagged-partial",
                     "tag_name": self.fixture.tag,
-                    "prerelease": True,
+                    "prerelease": False,
                     "draft": True,
                     "target_commitish": self.fixture.sha,
                     "assets": [remote],
@@ -418,7 +424,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
             "id": 9,
             "html_url": "https://github.com/o/r/releases/tag/untagged-partial",
             "tag_name": self.fixture.tag,
-            "prerelease": True,
+            "prerelease": False,
             "draft": True,
             "target_commitish": self.fixture.sha,
             "assets": [
@@ -452,7 +458,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
             "id": 9,
             "html_url": "https://github.com/o/r/releases/tag/" + self.fixture.tag,
             "tag_name": self.fixture.tag,
-            "prerelease": True,
+            "prerelease": False,
             "draft": False,
             "target_commitish": self.fixture.sha,
             "assets": [{
@@ -474,7 +480,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
         release = {
             "id": 9, "html_url": "https://github.com/o/r/releases/tag/" + self.fixture.tag,
             "tag_name": self.fixture.tag, "draft": True,
-            "prerelease": True, "target_commitish": self.fixture.sha,
+            "prerelease": False, "target_commitish": self.fixture.sha,
             "assets": [{
                 "id": 42, "name": assets[0].name, "state": "uploaded",
                 "size": assets[0].size, "digest": "sha256:" + assets[0].sha256,
@@ -487,14 +493,14 @@ class ReleasePrereleaseTest(unittest.TestCase):
         self.assertEqual(client.uploaded, [])
         self.assertEqual(client.published, 0)
 
-    def test_complete_published_prerelease_is_exact_no_op(self):
+    def test_complete_published_release_is_exact_no_op(self):
         _, _, _, assets = self.fixture.prepare()
         release = {
             "id": 9,
             "html_url": "https://github.com/o/r/releases/tag/" + self.fixture.tag,
             "tag_name": self.fixture.tag,
             "draft": False,
-            "prerelease": True,
+            "prerelease": False,
             "target_commitish": self.fixture.sha,
             "assets": [],
         }
@@ -537,7 +543,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
                     "html_url": "https://github.com/o/r/releases/tag/" + self.fixture.tag,
                     "tag_name": self.fixture.tag,
                     "draft": True,
-                    "prerelease": True,
+                    "prerelease": False,
                     "target_commitish": self.fixture.sha,
                     "assets": [remote],
                 }
@@ -557,7 +563,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
             publication.Gh("example.com/repo")
         release = {
             "id": 9,
-            "prerelease": True,
+            "prerelease": False,
             "draft": True,
             "target_commitish": self.fixture.sha,
             "tag_name": "wrong",
@@ -570,6 +576,33 @@ class ReleasePrereleaseTest(unittest.TestCase):
             publication.reconcile_release(
                 release, self.fixture.sha, self.fixture.tag, "o/r"
             )
+
+
+    def test_github_release_creation_is_stable_and_draft(self):
+        calls = []
+        release = {
+            "id": 9,
+            "html_url": "https://github.com/o/r/releases/tag/untagged-draft",
+            "tag_name": self.fixture.tag,
+            "prerelease": False,
+            "draft": True,
+            "target_commitish": self.fixture.sha,
+            "assets": [],
+        }
+
+        def runner(argv, binary=False):
+            calls.append(argv)
+            if argv[2].endswith("/releases?per_page=100"):
+                return 0, json.dumps([[release]]), ""
+            return 0, "{}", ""
+
+        client = publication.Gh("o/r", runner=runner)
+        self.assertEqual(client.create_release(self.fixture.tag, self.fixture.sha), release)
+        create = calls[0]
+        self.assertIn("draft=true", create)
+        self.assertIn("prerelease=false", create)
+        self.assertIn("body=Tracky stable release.", create)
+        self.assertNotIn("prerelease=true", create)
 
     def test_upload_uses_validated_uploads_host_and_keeps_token_out_of_commands(self):
         _, _, _, assets = self.fixture.prepare()
@@ -638,7 +671,7 @@ class ReleasePrereleaseTest(unittest.TestCase):
         self.assertEqual(value["source_sha"], self.fixture.sha)
         self.assertEqual(value["package_version"], self.fixture.version)
         self.assertEqual(value["lockfile_sha256"], self.fixture.lockfile)
-        self.assertTrue(value["prerelease"])
+        self.assertFalse(value["prerelease"])
         self.assertEqual(len(value["assets"]), 6)
         self.assertTrue(all(
             item["id"] > 0

@@ -21,4 +21,7 @@ Document the behavior at its current user-facing source and identify the future 
 
 ## Packaging or release-pipeline change
 
-Run the release workflow's PR path and every dashboard evidence unit test. Inspect the generated Cargo Dist workflow diff explicitly; preserve Tracky's custom proof job and `allow-dirty = ["ci"]` contract.
+Run the release workflow's pull-request path and every release-evidence unit
+test. Tracky's production workflow is repository-owned rather than generated:
+keep Cargo Dist CI generation disabled, retain explicit GitHub hosting, and
+verify that no tag-triggered fresh-build workflow is introduced.

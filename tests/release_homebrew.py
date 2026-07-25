@@ -18,9 +18,9 @@ SPEC.loader.exec_module(homebrew)
 
 class Fixture:
     repository = "owner/tracky"
-    tag = "v0.2.3-rc.1"
+    tag = "v0.2.4"
     source_sha = "a" * 40
-    version = "0.2.3"
+    version = "0.2.4"
     lockfile = "b" * 64
 
     def __init__(self, root):
@@ -73,7 +73,7 @@ class Fixture:
             "source_sha": self.source_sha,
             "package_version": self.version,
             "lockfile_sha256": self.lockfile,
-            "mode": "dry-run",
+            "mode": "release",
             "published": False,
             "gates": [
                 {"gate": gate, "status": "pass"}
@@ -81,17 +81,17 @@ class Fixture:
             ],
             "artifacts": artifacts,
         }
-        (self.assets / "release-dry-run-evidence.json").write_text(
+        (self.assets / "release-evidence.json").write_text(
             json.dumps(self.evidence_value)
         )
-        (self.assets / "release-dry-run-evidence.md").write_text(
-            "# Exact dry-run evidence\n\n"
+        (self.assets / "release-evidence.md").write_text(
+            "# Exact release evidence\n\n"
             "`tracky --db <sandbox>/ledger.sqlite --help`\n"
         )
         self.release_value = {
             "id": 7,
             "draft": False,
-            "prerelease": True,
+            "prerelease": False,
             "tag_name": self.tag,
             "target_commitish": self.source_sha,
             "html_url": (
@@ -146,11 +146,11 @@ class ReleaseHomebrewTest(unittest.TestCase):
         formula, evidence = self.fixture.prepare()
         self.assertIn('desc "Local-first, review-first personal finance CLI"', formula)
         self.assertIn('license "MIT"', formula)
-        self.assertIn('version "0.2.3-rc.1"', formula)
+        self.assertIn('version "0.2.4"', formula)
         self.assertIn("on_macos do", formula)
         self.assertIn("on_linux do", formula)
-        self.assertIn("tracky 0.2.3", formula)
-        self.assertNotIn("tracky 0.2.3-rc.1", formula)
+        self.assertIn("tracky 0.2.4", formula)
+        self.assertNotIn("tracky 0.2.4-rc.1", formula)
         for target in homebrew.dashboard.TARGETS:
             name = "tracky-%s.tar.xz" % target
             self.assertIn(
@@ -158,8 +158,8 @@ class ReleaseHomebrewTest(unittest.TestCase):
                 % (self.fixture.repository, self.fixture.tag, name),
                 formula,
             )
-        self.assertEqual(evidence["formula_version"], "0.2.3-rc.1")
-        self.assertEqual(evidence["package_version"], "0.2.3")
+        self.assertEqual(evidence["formula_version"], "0.2.4")
+        self.assertEqual(evidence["package_version"], "0.2.4")
         self.assertEqual(
             evidence["formula"]["sha256"],
             hashlib.sha256(formula.encode()).hexdigest(),
@@ -173,8 +173,8 @@ class ReleaseHomebrewTest(unittest.TestCase):
     def test_rejects_release_identity_and_state_drift(self):
         mutations = (
             ("draft", True, "published"),
-            ("prerelease", False, "prerelease"),
-            ("tag_name", "v0.2.3-rc.2", "tag"),
+            ("prerelease", True, "stable"),
+            ("tag_name", "v0.2.5", "tag"),
             ("target_commitish", "e" * 40, "target"),
             ("html_url", "https://example.com/release", "URL|placeholder"),
         )
@@ -247,7 +247,7 @@ class ReleaseHomebrewTest(unittest.TestCase):
 
         semantic = self.fixture.evidence_value["artifacts"][0]["semantic_manifest"]
         semantic["lockfile_sha256"] = "e" * 64
-        evidence_path = self.fixture.assets / "release-dry-run-evidence.json"
+        evidence_path = self.fixture.assets / "release-evidence.json"
         evidence_path.write_text(json.dumps(self.fixture.evidence_value))
         self.fixture.refresh_remote()
         self.fixture.write_release()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish an already-verified Tracky native candidate as a safe prerelease."""
+"""Publish already-verified Tracky native artifacts as a stable release."""
 
 import argparse
 import hashlib
@@ -19,7 +19,7 @@ import dashboard_evidence as evidence  # noqa: E402
 
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
-SEMVER = re.compile(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?")
+SEMVER = re.compile(r"\d+\.\d+\.\d+")
 PLACEHOLDER = re.compile(r"(?i)(?:placeholder|todo|tbd|example\.com|<[^>]+>)")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 
@@ -48,10 +48,10 @@ def _asset(path):
 
 
 def validate_tag(tag, package_version):
-    require(SEMVER.fullmatch(package_version or ""), "package version must be SemVer")
+    require(SEMVER.fullmatch(package_version or ""), "package version must be stable SemVer")
     require(
-        re.fullmatch(r"v%s-rc\.[1-9]\d*" % re.escape(package_version), tag or ""),
-        "prerelease tag must be v{exact package_version}-rc.<positive integer>",
+        re.fullmatch(r"v%s" % re.escape(package_version), tag or ""),
+        "release tag must be v{exact package_version}",
     )
 
 
@@ -60,8 +60,8 @@ def prepare_assets(verified_root, evidence_json, evidence_markdown, tag):
     verified_root = Path(verified_root)
     evidence_json = Path(evidence_json)
     evidence_markdown = Path(evidence_markdown)
-    require(evidence_json.name == "release-dry-run-evidence.json", "evidence JSON name is invalid")
-    require(evidence_markdown.name == "release-dry-run-evidence.md", "evidence Markdown name is invalid")
+    require(evidence_json.name == "release-evidence.json", "evidence JSON name is invalid")
+    require(evidence_markdown.name == "release-evidence.md", "evidence Markdown name is invalid")
     value = json.loads(evidence_json.read_text(encoding="utf-8"))
     require(isinstance(value, dict), "release evidence must be an object")
     require(value.get("schema_version") == 2, "release evidence schema is invalid")
@@ -74,8 +74,8 @@ def prepare_assets(verified_root, evidence_json, evidence_markdown, tag):
         DIGEST.fullmatch(str(lockfile_sha256 or "")),
         "release evidence lockfile digest is invalid",
     )
-    require(value.get("mode") == "dry-run" and value.get("published") is False,
-            "release evidence must be an unpublished dry run")
+    require(value.get("mode") == "release" and value.get("published") is False,
+            "release evidence must describe an unpublished release")
     validate_tag(tag, version)
     gates = value.get("gates")
     require(
@@ -118,7 +118,7 @@ def prepare_assets(verified_root, evidence_json, evidence_markdown, tag):
         require(transport.get("archive_name") == name, "semantic archive name differs")
         require(transport.get("archive_bytes") == item["archive_bytes"], "semantic archive bytes differ")
         require(transport.get("archive_sha256") == item["archive_sha256"], "semantic archive digest differs")
-        matches = list(verified_root.glob("release-dry-run-verified-%s-%s/candidate/%s" % (source_sha, target, name)))
+        matches = list(verified_root.glob("release-verified-%s-%s/candidate/%s" % (source_sha, target, name)))
         require(len(matches) == 1, "expected exactly one verified bundle for %s" % target)
         archive = matches[0]
         require(archive.stat().st_size == item["archive_bytes"], "archive byte count differs")
@@ -149,7 +149,7 @@ def reconcile_tag(existing_target, source_sha):
 def reconcile_release(release, source_sha, tag=None, repository=None):
     if release is None:
         return "create"
-    require(release.get("prerelease") is True, "existing release is not a prerelease")
+    require(release.get("prerelease") is False, "existing release is a prerelease")
     require(release.get("target_commitish") == source_sha, "existing release targets a different commit")
     require(isinstance(release.get("draft"), bool), "existing release draft state is invalid")
     require(
@@ -284,9 +284,9 @@ class Gh:
             "-f", "tag_name=" + tag,
             "-f", "target_commitish=" + source_sha,
             "-f", "name=" + tag,
-            "-f", "body=Controlled prerelease.",
+            "-f", "body=Tracky stable release.",
             "-F", "draft=true",
-            "-F", "prerelease=true",
+            "-F", "prerelease=false",
         )
         return self.release(tag)
 
@@ -390,7 +390,7 @@ def publication_evidence(
         "schema_version": 1, "tag": tag, "source_sha": source_sha,
         "package_version": package_version, "lockfile_sha256": lockfile_sha256,
         "release_id": release.get("id"),
-        "release_url": release.get("html_url"), "prerelease": True,
+        "release_url": release.get("html_url"), "prerelease": False,
         "assets": [
             {
                 "name": asset.name,

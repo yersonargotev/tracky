@@ -1,6 +1,6 @@
 [package]
 name = "tracky"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 publish = false
 default-run = "tracky"
@@ -40,15 +40,13 @@ include = ["README.md", "LICENSE", "THIRD-PARTY-NOTICES"]
 
 [workspace.metadata.dist]
 cargo-dist-version = "0.32.0"
-allow-dirty = ["ci"]
-ci = ["github"]
-installers = ["shell", "homebrew"]
+ci = []
+hosting = ["github"]
+installers = ["shell"]
 targets = [
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
 ]
-tap = "yersonargotev/homebrew-tap"
-publish-jobs = ["homebrew"]
 checksum = "sha256"
 
 # The profile that 'dist' will build with

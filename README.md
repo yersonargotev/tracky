@@ -1,6 +1,6 @@
 # Tracky
 
-Tracky 0.2.3 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
+Tracky 0.2.4 is a local-first finance tracker with a review-first CLI and a supported, read-only local analytics dashboard.
 
 ## Install
 

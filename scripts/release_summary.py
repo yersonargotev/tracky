@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assemble complete same-run evidence from a successful release dry run."""
+"""Assemble complete same-run evidence from a successful release."""
 
 import argparse
 import json
@@ -17,6 +17,7 @@ import release_quality_evidence as quality_contract  # noqa: E402
 
 
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
@@ -71,8 +72,8 @@ def validate_workflow_run(value, identity, repository):
         "workflow run attempt is invalid",
     )
     evidence.require(
-        value.get("head_sha") == identity["source_sha"],
-        "workflow run has a stale source identity",
+        SHA.fullmatch(str(value.get("head_sha", ""))) is not None,
+        "workflow run head SHA is invalid",
     )
     run_url = concrete(value.get("html_url"), "workflow run URL")
     expected_url = "https://github.com/%s/actions/runs/%s" % (
@@ -117,8 +118,8 @@ def validate_jobs(payload, workflow_run, identity):
             "workflow job belongs to another run",
         )
         evidence.require(
-            job.get("head_sha") == identity["source_sha"],
-            "workflow job has a stale source identity",
+            job.get("head_sha") == workflow_run["head_sha"],
+            "workflow job belongs to another workflow commit",
         )
         evidence.require(
             job.get("status") == "completed" and job.get("conclusion") == "success",
@@ -164,19 +165,19 @@ def validate_jobs(payload, workflow_run, identity):
 
 def required_artifact_names(source_sha):
     return {
-        "release-dry-run-identity-%s" % source_sha,
-        "release-dry-run-quality-evidence-%s" % source_sha,
-        "release-dry-run-current-browser-evidence-%s" % source_sha,
+        "release-identity-%s" % source_sha,
+        "release-quality-evidence-%s" % source_sha,
+        "release-current-browser-evidence-%s" % source_sha,
         *{
-            "release-dry-run-built-%s-%s" % (source_sha, target)
+            "release-built-%s-%s" % (source_sha, target)
             for target in evidence.TARGETS
         },
         *{
-            "release-dry-run-verified-%s-%s" % (source_sha, target)
+            "release-verified-%s-%s" % (source_sha, target)
             for target in evidence.TARGETS
         },
         *{
-            "release-dry-run-current-browser-%s-%s" % (source_sha, lane)
+            "release-current-browser-%s-%s" % (source_sha, lane)
             for lane in browser_contract.CURRENT_LANES
         },
     }
@@ -206,8 +207,8 @@ def validate_retained_artifacts(payload, workflow_run, identity):
             "retained artifact belongs to another workflow run",
         )
         evidence.require(
-            bound_run.get("head_sha") == identity["source_sha"],
-            "retained artifact has a stale source SHA identity",
+            bound_run.get("head_sha") == workflow_run["head_sha"],
+            "retained artifact belongs to another workflow commit",
         )
         evidence.require(item.get("expired") is False, "retained artifact is expired")
         evidence.require(
@@ -358,7 +359,7 @@ def assemble(
         identity,
     )
 
-    prefix = "release-dry-run-verified-%s-" % identity["source_sha"]
+    prefix = "release-verified-%s-" % identity["source_sha"]
     directories = sorted(
         path
         for path in Path(verified_root).iterdir()
@@ -452,11 +453,11 @@ def assemble(
             "runtime": runtime_command_evidence,
         }
         tools[target] = semantic["tools"]
-        built_name = "release-dry-run-built-%s-%s" % (
+        built_name = "release-built-%s-%s" % (
             identity["source_sha"],
             target,
         )
-        verified_name = "release-dry-run-verified-%s-%s" % (
+        verified_name = "release-verified-%s-%s" % (
             identity["source_sha"],
             target,
         )
@@ -570,13 +571,14 @@ def assemble(
         "source_sha": identity["source_sha"],
         "package_version": identity["package_version"],
         "lockfile_sha256": identity["lockfile_sha256"],
-        "mode": "dry-run",
+        "mode": "release",
         "published": False,
         "workflow": {
             "repository": repository,
             "run_id": workflow_run["id"],
             "run_attempt": workflow_run["run_attempt"],
             "run_url": workflow_run["html_url"],
+            "workflow_sha": workflow_run["head_sha"],
             "started_at": workflow_run["run_started_at"],
         },
         "jobs": jobs,

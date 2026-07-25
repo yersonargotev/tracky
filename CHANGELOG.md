@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.4
+
+- Publish releases from one serialized version-changing merge workflow that
+  builds each native package once, verifies it on current Safari, Firefox, and
+  Chromium, and reuses those exact retained bytes for GitHub and Homebrew.
+- Remove the legacy candidate, approval, and fresh tag-rebuild handoffs while
+  preserving scheduled minimum-browser compatibility checks.
+- Support fail-closed recovery from an explicit full source SHA and record
+  release timings, cache state, artifact identities, and publication URLs.
+
 ## 0.2.3
 
 - Redesign the dashboard as a personal treasury view with net cash flow as the

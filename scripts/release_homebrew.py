@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and verify the Homebrew formula for one published Tracky prerelease."""
+"""Prepare and verify the Homebrew formula for one published Tracky release."""
 
 import argparse
 import hashlib
@@ -10,11 +10,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import dashboard_evidence as dashboard  # noqa: E402
-import release_prerelease as prerelease  # noqa: E402
+import release_publish as publication  # noqa: E402
 
 
-PLACEHOLDER = prerelease.PLACEHOLDER
-FORMULA_VERSION = re.compile(r"\d+\.\d+\.\d+-rc\.[1-9]\d*")
+PLACEHOLDER = publication.PLACEHOLDER
+FORMULA_VERSION = re.compile(r"\d+\.\d+\.\d+")
 TARGET_SYSTEM = {
     "aarch64-apple-darwin": "macos-arm64",
     "x86_64-unknown-linux-gnu": "linux-x86_64",
@@ -38,7 +38,7 @@ def read_json(path):
 
 
 def expected_asset_names():
-    names = {"release-dry-run-evidence.json", "release-dry-run-evidence.md"}
+    names = {"release-evidence.json", "release-evidence.md"}
     for target in dashboard.TARGETS:
         archive = "tracky-%s.tar.xz" % target
         names.update({archive, archive + ".sha256"})
@@ -54,11 +54,11 @@ def validate_inputs(
     package_version,
 ):
     """Fail closed and return validated archive information keyed by target."""
-    prerelease.validate_tag(tag, package_version)
-    require(prerelease.REPOSITORY.fullmatch(repository or ""), "repository must be owner/name")
-    require(prerelease.SHA.fullmatch(source_sha or ""), "source SHA is invalid")
+    publication.validate_tag(tag, package_version)
+    require(publication.REPOSITORY.fullmatch(repository or ""), "repository must be owner/name")
+    require(publication.SHA.fullmatch(source_sha or ""), "source SHA is invalid")
     require(release.get("draft") is False, "release must be published")
-    require(release.get("prerelease") is True, "release must be a prerelease")
+    require(release.get("prerelease") is False, "release must be stable")
     require(release.get("tag_name") == tag, "release tag differs")
     require(release.get("target_commitish") == source_sha, "release target differs")
     release_url = "https://github.com/%s/releases/tag/%s" % (repository, tag)
@@ -98,27 +98,27 @@ def validate_inputs(
         )
         local[name] = {"path": path, "bytes": size, "sha256": digest}
 
-    evidence = read_json(local["release-dry-run-evidence.json"]["path"])
-    require(evidence.get("schema_version") == 2, "dry-run evidence schema is invalid")
-    require(evidence.get("source_sha") == source_sha, "dry-run evidence source differs")
-    require(evidence.get("package_version") == package_version, "dry-run evidence version differs")
-    require(evidence.get("mode") == "dry-run" and evidence.get("published") is False,
-            "dry-run evidence publication state is invalid")
+    evidence = read_json(local["release-evidence.json"]["path"])
+    require(evidence.get("schema_version") == 2, "release evidence schema is invalid")
+    require(evidence.get("source_sha") == source_sha, "release evidence source differs")
+    require(evidence.get("package_version") == package_version, "release evidence version differs")
+    require(evidence.get("mode") == "release" and evidence.get("published") is False,
+            "release evidence publication state is invalid")
     lockfile = evidence.get("lockfile_sha256")
-    require(prerelease.DIGEST.fullmatch(str(lockfile or "")), "dry-run lockfile digest is invalid")
+    require(publication.DIGEST.fullmatch(str(lockfile or "")), "release lockfile digest is invalid")
     gates = evidence.get("gates")
     require(
         isinstance(gates, list)
         and {item.get("gate") for item in gates} == dashboard.REQUIRED_RELEASE_GATES
         and all(item.get("status") == "pass" for item in gates),
-        "dry-run release gates are incomplete or failed",
+        "release gates are incomplete or failed",
     )
     artifacts = evidence.get("artifacts")
     require(
         isinstance(artifacts, list)
         and {item.get("target") for item in artifacts} == dashboard.TARGETS
         and len(artifacts) == len(dashboard.TARGETS),
-        "dry-run native artifacts are incomplete",
+        "release native artifacts are incomplete",
     )
     result = {}
     for artifact in artifacts:
@@ -149,8 +149,8 @@ def validate_inputs(
             "url": "https://github.com/%s/releases/download/%s/%s"
             % (repository, tag, name),
         }
-    markdown = local["release-dry-run-evidence.md"]["path"].read_text(encoding="utf-8")
-    require(markdown.strip(), "dry-run Markdown evidence is empty")
+    markdown = local["release-evidence.md"]["path"].read_text(encoding="utf-8")
+    require(markdown.strip(), "release Markdown evidence is empty")
     return release_url, lockfile, result
 
 

@@ -11,16 +11,16 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release_identity.py"
-SUMMARY_SCRIPT = ROOT / "scripts" / "release_dry_run_summary.py"
+SUMMARY_SCRIPT = ROOT / "scripts" / "release_summary.py"
 QUALITY_SCRIPT = ROOT / "scripts" / "release_quality_evidence.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "release-dry-run.yml"
+WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 BROWSER_ACTION = (
     ROOT / ".github" / "actions" / "dashboard-browser-lane" / "action.yml"
 )
 SPEC = importlib.util.spec_from_file_location("release_identity", SCRIPT)
 identity = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(identity)
-SUMMARY_SPEC = importlib.util.spec_from_file_location("release_dry_run_summary", SUMMARY_SCRIPT)
+SUMMARY_SPEC = importlib.util.spec_from_file_location("release_summary_summary", SUMMARY_SCRIPT)
 summary = importlib.util.module_from_spec(SUMMARY_SPEC)
 SUMMARY_SPEC.loader.exec_module(summary)
 
@@ -120,115 +120,7 @@ class ReleaseIdentityTest(unittest.TestCase):
                     identity.validate_release_identity(self.root, *arguments)
 
 
-class ReleaseDryRunWorkflowTest(unittest.TestCase):
-    def test_unified_run_builds_each_native_target_once_and_publishes_only_after_gates(self):
-        workflow = WORKFLOW.read_text(encoding="utf-8")
-        for required_input in (
-            "accepted_sha:",
-            "package_version:",
-            "lockfile_sha256:",
-            "prerelease_tag:",
-        ):
-            self.assertIn(required_input, workflow)
-        self.assertIn("pull_request:", workflow)
-        self.assertIn("cancel-in-progress: false", workflow)
-        self.assertIn("group: release-dry-run", workflow)
-        self.assertEqual(workflow.count("dist build --artifacts=local"), 1)
-        self.assertIn("aarch64-apple-darwin", workflow)
-        self.assertIn("x86_64-unknown-linux-gnu", workflow)
-        self.assertIn("scripts/release_identity.py", workflow)
-        self.assertIn("scripts/release_dry_run_summary.py", workflow)
-        self.assertIn("scripts/dashboard_evidence.py semantic-manifest", workflow)
-        self.assertIn("scripts/dashboard_evidence.py validate-semantic", workflow)
-        self.assertIn("actions/download-artifact@", workflow)
-        self.assertIn("scripts/dashboard_candidate_runtime.py", workflow)
-        self.assertIn("cargo test --locked --test dashboard_cli", workflow)
-        self.assertIn(
-            "dist manifest --artifacts=local --no-local-paths",
-            workflow,
-        )
-        self.assertIn('"--target=$TARGET" --output-format=json', workflow)
-        for lane in ("safari-latest", "firefox-latest", "chromium-latest"):
-            self.assertIn("lane: " + lane, workflow)
-        browser_job = workflow.split("  browser-current:", 1)[1].split(
-            "\n  collect-current-browsers:", 1
-        )[0]
-        self.assertNotIn("dist build", browser_job)
-        self.assertIn("scripts/dashboard_evidence.py validate-semantic", browser_job)
-        self.assertIn("release-dry-run-built-", browser_job)
-        self.assertIn("uses: ./.github/actions/dashboard-browser-lane", browser_job)
-        self.assertNotIn("setup-firefox@", browser_job)
-        self.assertNotIn("setup-chrome@", browser_job)
-        self.assertIn(
-            "scripts/dashboard_release_browser.py",
-            BROWSER_ACTION.read_text(encoding="utf-8"),
-        )
-        self.assertIn("--profile current", workflow)
-        self.assertIn("current-browser-evidence.json", workflow)
-        self.assertIn("actions: read", workflow)
-        self.assertIn("actions/runs/$RUN_ID/jobs?filter=latest", workflow)
-        self.assertIn("actions/runs/$RUN_ID/artifacts?per_page=100", workflow)
-        self.assertIn("--workflow-run workflow-run.json", workflow)
-        self.assertIn("--workflow-jobs workflow-jobs.json", workflow)
-        self.assertIn("--workflow-artifacts workflow-artifacts.json", workflow)
-        self.assertIn("release-dry-run-evidence.json", workflow)
-        self.assertIn("release-dry-run-evidence.md", workflow)
-        self.assertIn("scripts/release_quality_evidence.py", workflow)
-        self.assertIn("release-dry-run-quality-evidence-", workflow)
-        publish_job = workflow.split("\n  publish-prerelease:", 1)[1]
-        self.assertIn("needs: [identity, summarize]", publish_job)
-        self.assertIn("inputs.prerelease_tag != ''", publish_job)
-        self.assertIn("github.event.repository.default_branch", publish_job)
-        self.assertIn('ref: ${{ github.sha }}', publish_job)
-        self.assertIn(
-            'git merge-base --is-ancestor "$ACCEPTED_SHA" "$WORKFLOW_SHA"',
-            publish_job,
-        )
-        self.assertNotIn(
-            "ref: ${{ needs.identity.outputs.source_sha }}",
-            publish_job,
-        )
-        self.assertIn("contents: write", publish_job)
-        self.assertIn("scripts/release_prerelease.py", publish_job)
-        self.assertIn("release-dry-run-verified-", publish_job)
-        self.assertIn("release-dry-run-evidence-", publish_job)
-        self.assertIn("release-prerelease-publication-", publish_job)
-        self.assertNotIn("dist build", publish_job)
-        self.assertNotIn("--clobber", publish_job)
-
-        self.assertIn("EmbarkStudios/cargo-deny-action@", workflow)
-        quality_source = QUALITY_SCRIPT.read_text(encoding="utf-8")
-        for command_part in (
-            '"fmt", "--all", "--", "--check"',
-            '"test", "--locked", "--all-targets"',
-            '"clippy",',
-            '"scripts/dashboard_evidence.py", "check"',
-        ):
-            self.assertIn(command_part, quality_source)
-
-        for retained in (
-            ".tar.xz",
-            ".tar.xz.sha256",
-            "dist-manifest.json",
-            "semantic-manifest.json",
-        ):
-            self.assertIn(retained, workflow)
-
-        for forbidden in (
-            "environment:",
-            "HOMEBREW_TAP_TOKEN",
-            "git push",
-            "actions/create-release",
-        ):
-            self.assertNotIn(forbidden, workflow)
-
-        legacy_release = (
-            ROOT / ".github" / "workflows" / "release.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("!contains(github.ref_name, '-rc.')", legacy_release)
-
-
-class ReleaseDryRunSummaryTest(unittest.TestCase):
+class ReleaseSummaryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -296,7 +188,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         for target in sorted(summary.evidence.TARGETS):
             candidate = (
                 self.verified
-                / ("release-dry-run-verified-%s-%s" % (self.commit, target))
+                / ("release-verified-%s-%s" % (self.commit, target))
                 / "candidate"
             )
             candidate.mkdir(parents=True)
@@ -455,6 +347,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
     def workflow_metadata(self):
         run_id = 123456
         run_url = "https://github.com/yersonargotev/tracky/actions/runs/%s" % run_id
+        workflow_sha = "d" * 40
         started = datetime(2026, 7, 25, tzinfo=timezone.utc)
         names = [
             "Bind the release identity and target matrix",
@@ -480,7 +373,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
                 {
                     "id": 9000 + index,
                     "run_id": run_id,
-                    "head_sha": self.commit,
+                    "head_sha": workflow_sha,
                     "name": name,
                     "status": "completed",
                     "conclusion": "success",
@@ -509,21 +402,21 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
                 }
             )
         required_artifacts = [
-            "release-dry-run-identity-%s" % self.commit,
-            "release-dry-run-quality-evidence-%s" % self.commit,
+            "release-identity-%s" % self.commit,
+            "release-quality-evidence-%s" % self.commit,
             *[
-                "release-dry-run-built-%s-%s" % (self.commit, target)
+                "release-built-%s-%s" % (self.commit, target)
                 for target in sorted(summary.evidence.TARGETS)
             ],
             *[
-                "release-dry-run-verified-%s-%s" % (self.commit, target)
+                "release-verified-%s-%s" % (self.commit, target)
                 for target in sorted(summary.evidence.TARGETS)
             ],
             *[
-                "release-dry-run-current-browser-%s-%s" % (self.commit, lane)
+                "release-current-browser-%s-%s" % (self.commit, lane)
                 for lane in sorted(summary.browser_contract.CURRENT_LANES)
             ],
-            "release-dry-run-current-browser-evidence-%s" % self.commit,
+            "release-current-browser-evidence-%s" % self.commit,
         ]
         artifacts = []
         for index, name in enumerate(required_artifacts, 1):
@@ -536,14 +429,14 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
                     "expired": False,
                     "url": "https://api.github.com/repos/yersonargotev/tracky/actions/artifacts/%s"
                     % (8000 + index),
-                    "workflow_run": {"id": run_id, "head_sha": self.commit},
+                    "workflow_run": {"id": run_id, "head_sha": workflow_sha},
                 }
             )
         return (
             {
                 "id": run_id,
                 "run_attempt": 1,
-                "head_sha": self.commit,
+                "head_sha": workflow_sha,
                 "html_url": run_url,
                 "status": "in_progress",
                 "conclusion": None,
@@ -571,7 +464,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
 
     def test_assembles_both_exact_native_bundles_deterministically(self):
         value = self.assemble()
-        self.assertEqual(value["mode"], "dry-run")
+        self.assertEqual(value["mode"], "release")
         self.assertFalse(value["published"])
         self.assertNotIn("approval", value)
         self.assertNotIn("responsible_maintainer", value)
@@ -579,6 +472,8 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         self.assertNotIn("approved_by", serialized)
         self.assertNotIn("responsible_maintainer", serialized)
         self.assertEqual(value["workflow"]["run_id"], 123456)
+        self.assertEqual(value["workflow"]["workflow_sha"], "d" * 40)
+        self.assertNotEqual(value["workflow"]["workflow_sha"], value["source_sha"])
         self.assertTrue(value["jobs"])
         self.assertTrue(value["gates"])
         self.assertTrue(value["commands"])
@@ -630,7 +525,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
     def test_rejects_missing_or_substituted_native_bundles(self):
         target = sorted(summary.evidence.TARGETS)[0]
         directory = self.verified / (
-            "release-dry-run-verified-%s-%s" % (self.commit, target)
+            "release-verified-%s-%s" % (self.commit, target)
         )
         archive = directory / "candidate" / ("tracky-%s.tar.xz" % target)
         archive.write_bytes(b"substituted")
@@ -670,7 +565,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
                 lambda: self.workflow_artifacts["artifacts"][0]["workflow_run"].update(
                     head_sha="f" * 40
                 ),
-                "artifact.*SHA|identity",
+                "artifact.*commit",
             ),
             (
                 lambda: self.workflow_artifacts["artifacts"][0].update(
@@ -700,7 +595,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
             self.assemble()
         duplicate.rename(self.root / "ignored-browser.json")
 
-        verified_name = "release-dry-run-verified-%s-%s" % (
+        verified_name = "release-verified-%s-%s" % (
             self.commit,
             sorted(summary.evidence.TARGETS)[0],
         )
@@ -717,7 +612,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         target = sorted(summary.evidence.TARGETS)[0]
         semantic = (
             self.verified
-            / ("release-dry-run-verified-%s-%s" % (self.commit, target))
+            / ("release-verified-%s-%s" % (self.commit, target))
             / "candidate"
             / "semantic-manifest.json"
         )
@@ -755,7 +650,7 @@ class ReleaseDryRunSummaryTest(unittest.TestCase):
         target = sorted(summary.evidence.TARGETS)[0]
         path = (
             self.verified
-            / ("release-dry-run-verified-%s-%s" % (self.commit, target))
+            / ("release-verified-%s-%s" % (self.commit, target))
             / "native-runtime-evidence.json"
         )
         value = json.loads(path.read_text(encoding="utf-8"))
