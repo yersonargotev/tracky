@@ -28,6 +28,7 @@ GATES = (
     "lifecycle",
     "automated-accessibility",
 )
+WEBDRIVER_SESSION_TIMEOUT_SECONDS = 60
 
 
 def gate(result, name):
@@ -107,7 +108,8 @@ class Driver:
             elif browser_binary:
                 raise RuntimeError("--browser-binary is not supported by safaridriver")
             created = http_json("POST", self.base + "/session",
-                                {"capabilities": {"alwaysMatch": always}})
+                                {"capabilities": {"alwaysMatch": always}},
+                                timeout=WEBDRIVER_SESSION_TIMEOUT_SECONDS)
             value = created.get("value", created)
             self.session = value.get("sessionId") or created.get("sessionId")
             if not self.session:

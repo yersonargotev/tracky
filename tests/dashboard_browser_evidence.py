@@ -172,6 +172,9 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
         self.assertIn("setInterval", driver.script)
         self.assertIn("done(false)", driver.script)
 
+    def test_webdriver_session_allows_a_cold_browser_start(self):
+        self.assertGreaterEqual(harness.WEBDRIVER_SESSION_TIMEOUT_SECONDS, 60)
+
     def test_responsive_probe_ignores_hidden_buttons(self):
         class Driver:
             def script(self, script):
