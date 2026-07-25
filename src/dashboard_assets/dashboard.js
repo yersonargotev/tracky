@@ -261,6 +261,9 @@
     meta.append(pending);
     parent.append(meta);
     const scroll = element("div", undefined, "table-scroll");
+    scroll.tabIndex = 0;
+    scroll.setAttribute("role", "region");
+    scroll.setAttribute("aria-label", "Investment positions; horizontally scrollable when needed");
     const table = element("table");
     table.className = "positions";
     table.append(element("caption", "Exact quantity, cost, valuation, freshness, and reconciliation"));

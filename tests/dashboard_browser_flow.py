@@ -284,6 +284,10 @@ def main():
               if (!await noJsPage.getByText("2026-01-01", { exact: false }).first().isVisible()) fail("JavaScript-disabled SSR omitted period");
               if (!await noJsPage.getByText("stale", { exact: false }).first().isVisible()) fail("JavaScript-disabled SSR omitted freshness");
               if (!await noJsPage.getByRole("table").first().isVisible()) fail("JavaScript-disabled SSR omitted exact table");
+              const noJsInvestmentScroll = noJsPage.locator('[data-region="investments"] > .table-scroll');
+              if (await noJsInvestmentScroll.getAttribute("tabindex") !== "0"
+                  || await noJsInvestmentScroll.getAttribute("role") !== "region"
+                  || !await noJsInvestmentScroll.getAttribute("aria-label")) fail("JavaScript-disabled SSR omitted the investment table keyboard-scroll contract");
               await noJsContext.close();
 
               await page.getByRole("button", { name: "USD", exact: true }).click();
@@ -392,6 +396,19 @@ def main():
               }
               if (!await page.locator('[data-region="categories"] ul.breakdown-list').count() || !await page.locator('[data-region="accounts"] ul.breakdown-list').count()) fail("refresh did not preserve breakdown presentation classes");
               await page.keyboard.press("Escape");
+              const investmentScroll = page.locator('[data-region="investments"] > .table-scroll');
+              if (await investmentScroll.getAttribute("tabindex") !== "0"
+                  || await investmentScroll.getAttribute("role") !== "region"
+                  || !await investmentScroll.getAttribute("aria-label")) {
+                fail("refresh dropped the investment table keyboard-scroll contract");
+              }
+              await page.setViewportSize({ width: 320, height: 800 });
+              const refreshedMobileAxe = await page.evaluate(async () => axe.run(document, {
+                runOnly: { type: "rule", values: ["scrollable-region-focusable"] },
+                resultTypes: ["violations"],
+              }));
+              if (refreshedMobileAxe.violations.length) fail(`refreshed mobile axe violations: ${refreshedMobileAxe.violations.map(item => item.id).join(", ")}`);
+              await page.setViewportSize({ width: 1280, height: 900 });
               const alerts = page.locator('[data-region="alerts"] [data-detail="alert"]');
               if (await alerts.count() < 2) fail("fixture must expose colliding alerts for stable identity coverage");
               const chosenAlert = alerts.nth(1);

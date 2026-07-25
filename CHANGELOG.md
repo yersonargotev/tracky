@@ -9,6 +9,8 @@
   consistent section labels across progressive HTML, filters, and refreshes.
 - Preserve valid heading references and navigation behavior in filter-empty and
   valid-empty states while retaining the exact read-only finance contract.
+- Keep horizontally scrollable investment details keyboard-accessible in both
+  progressive HTML and refreshed dashboard states.
 
 ## 0.2.2
 
