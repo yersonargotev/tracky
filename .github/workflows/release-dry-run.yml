@@ -24,6 +24,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/release-dry-run.yml
+      - .github/workflows/homebrew.yml
       - .github/actions/dashboard-browser-lane/action.yml
       - Cargo.lock
       - Cargo.toml
@@ -34,6 +35,7 @@ on:
       - scripts/release_dry_run_summary.py
       - scripts/release_identity.py
       - scripts/release_command_evidence.py
+      - scripts/release_homebrew.py
       - scripts/release_prerelease.py
       - scripts/release_quality_evidence.py
       - src/dashboard.rs
@@ -43,6 +45,7 @@ on:
       - tests/dashboard_browser_evidence.py
       - tests/release_dry_run.py
       - tests/release_command_evidence.py
+      - tests/release_homebrew.py
       - tests/release_prerelease.py
       - tests/release_quality_evidence.py
 
@@ -553,3 +556,16 @@ jobs:
           path: release-prerelease-publication.json
           if-no-files-found: error
           retention-days: 14
+
+  publish-homebrew:
+    name: Validate and publish Homebrew after release hosting
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.prerelease_tag != '' }}
+    needs: [identity, publish-prerelease]
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      tag: ${{ inputs.prerelease_tag }}
+      source_sha: ${{ needs.identity.outputs.source_sha }}
+      package_version: ${{ needs.identity.outputs.package_version }}

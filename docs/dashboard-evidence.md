@@ -142,12 +142,14 @@ identity. Both files retain `mode: dry-run` and `published: false` because they
 describe the completed pre-publication gates.
 
 For a controlled rehearsal, dispatch the same workflow with the optional
-`prerelease_tag` set to `v<package-version>-rc.<positive integer>`. Only after
-the final evidence job passes, the publication job downloads the same verified
-native bundles and evidence from that workflow run, revalidates their exact
-identity, archive bytes, checksums, semantic manifests, and gate outcomes, then
-creates the tag at the accepted SHA and hosts a GitHub prerelease. It never
-invokes Cargo Dist or rebuilds an archive.
+`prerelease_tag` set to `v<package-version>-rc.<positive integer>`. Tracky's
+protected lightweight tag must first be created by an authorized maintainer at
+the exact accepted SHA. Only after the final evidence job passes, the
+publication job downloads the same verified native bundles and evidence from
+that workflow run, revalidates their exact identity, archive bytes, checksums,
+semantic manifests, and gate outcomes, verifies or creates the tag where
+repository policy permits, then hosts a GitHub prerelease. It never invokes
+Cargo Dist or rebuilds an archive.
 
 Publication is retry-safe within the retained workflow run: an existing tag is
 accepted only at the original SHA; matching uploaded assets are preserved,
@@ -158,6 +160,26 @@ tag, identity, and GitHub asset IDs, sizes, and digests. Controlled `-rc.` tags
 are ignored by the legacy Cargo Dist tag workflow so they cannot start a second
 fresh build. Provenance attestation remains disabled until repository
 eligibility and verification support are explicitly confirmed.
+
+After release hosting, the reusable **Validate and publish Homebrew from a
+hosted release** workflow re-downloads the durable GitHub Release assets rather
+than any native build output. It validates the published release target,
+complete dry-run identity and gates, archive bytes, Cargo Dist checksum files,
+and API digests, then generates `Formula/tracky.rb` with the exact hosted URLs
+and archive SHA-256 values. A rehearsal formula uses the full tag version, such
+as `0.2.3-rc.1`, while its non-interactive test asserts the committed binary
+version, such as `tracky 0.2.3`.
+
+macOS ARM and Linux x86-64 jobs have no tap credential. Both must pass
+fail-closed `brew style`, strict online audit, local formula installation,
+`brew test`, installed-version, and help-smoke checks before the final job can
+run. Only that final job targets the `homebrew` environment and reads
+`HOMEBREW_TAP_TOKEN`; the environment has no required reviewer. Immediately
+before an optimistic, lease-protected tap push it re-downloads the release,
+regenerates the formula, and compares the retained preparation evidence. An
+identical tap formula is a no-op. The same workflow can be dispatched manually
+with an exact tag, full source SHA, and package version to recover a tap failure
+from the hosted assets without rebuilding or replacing the release.
 
 ## Release manifest
 

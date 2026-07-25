@@ -78,6 +78,7 @@ jobs:
           python3 -m unittest tests/dashboard_candidate_manifest.py
           python3 -m unittest tests/dashboard_candidate_runtime.py
           python3 -m unittest tests/release_command_evidence.py
+          python3 -m unittest tests/release_homebrew.py
           python3 -m unittest tests/release_prerelease.py
           python3 -m unittest tests/release_quality_evidence.py
           python3 -m unittest tests/release_dry_run.py
