@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       accepted_sha:
-        description: Exact lowercase 40-character candidate commit SHA
+        description: Exact lowercase 40-character source commit SHA
         required: true
         type: string
   pull_request:
     branches: [main]
     paths:
-      - .github/workflows/dashboard-release-browsers.yml
-      - .github/workflows/release-dry-run.yml
+      - .github/workflows/dashboard-browser-compatibility.yml
+      - .github/workflows/release.yml
       - .github/actions/dashboard-browser-lane/action.yml
       - Cargo.lock
       - Cargo.toml
@@ -36,8 +36,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-candidate:
-    name: Package candidate (${{ matrix.target }})
+  build-package:
+    name: Package browser test input (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -75,12 +75,12 @@ jobs:
           echo 'b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5  cargo-dist-installer.sh' \
             | shasum -a 256 --check
           sh cargo-dist-installer.sh
-      - name: Build the packaged candidate
+      - name: Build the packaged browser test input
         run: dist build --artifacts=local --target=${{ matrix.target }} --output-format=json
-      - name: Retain the packaged candidate for browser lanes
+      - name: Retain the packaged browser input
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: dashboard-browser-candidate-${{ env.ACCEPTED_SHA }}-${{ matrix.target }}
+          name: dashboard-browser-package-${{ env.ACCEPTED_SHA }}-${{ matrix.target }}
           path: |
             target/distrib/tracky-${{ matrix.target }}.tar.xz
             target/distrib/tracky-${{ matrix.target }}.tar.xz.sha256
@@ -89,7 +89,7 @@ jobs:
 
   browser-lane:
     name: Browser lane (${{ matrix.lane }})
-    needs: build-candidate
+    needs: build-package
     strategy:
       fail-fast: false
       matrix:
@@ -139,17 +139,17 @@ jobs:
       - name: Verify the checked-out commit
         shell: bash
         run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
-      - name: Download the packaged candidate
+      - name: Download the packaged browser input
         uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
         with:
-          name: dashboard-browser-candidate-${{ env.ACCEPTED_SHA }}-${{ matrix.target }}
-          path: candidate
-      - name: Extract the packaged candidate
+          name: dashboard-browser-package-${{ env.ACCEPTED_SHA }}-${{ matrix.target }}
+          path: package
+      - name: Extract the packaged browser input
         shell: bash
         run: |
-          (cd candidate && shasum -a 256 --check "tracky-${{ matrix.target }}.tar.xz.sha256")
-          tar -xJf "candidate/tracky-${{ matrix.target }}.tar.xz" -C candidate
-          test -x "candidate/tracky-${{ matrix.target }}/tracky"
+          (cd package && shasum -a 256 --check "tracky-${{ matrix.target }}.tar.xz.sha256")
+          tar -xJf "package/tracky-${{ matrix.target }}.tar.xz" -C package
+          test -x "package/tracky-${{ matrix.target }}/tracky"
       - name: Bind the raw lockfile digest
         id: lockfile
         shell: bash
@@ -158,7 +158,7 @@ jobs:
         uses: ./.github/actions/dashboard-browser-lane
         with:
           artifact-name: dashboard-browser-lane-${{ env.ACCEPTED_SHA }}-${{ matrix.lane }}
-          binary: candidate/tracky-${{ matrix.target }}/tracky
+          binary: package/tracky-${{ matrix.target }}/tracky
           browser: ${{ matrix.browser }}
           commit: ${{ env.ACCEPTED_SHA }}
           lane: ${{ matrix.lane }}

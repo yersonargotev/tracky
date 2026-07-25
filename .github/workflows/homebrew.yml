@@ -2,6 +2,13 @@ name: Validate and publish Homebrew from a hosted release
 
 on:
   workflow_call:
+    outputs:
+      action:
+        description: Whether the tap formula was pushed or already current
+        value: ${{ jobs.publish.outputs.action }}
+      tap_commit:
+        description: Exact resulting homebrew-tap commit
+        value: ${{ jobs.publish.outputs.tap_commit }}
     inputs:
       tag:
         required: true
@@ -15,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Exact controlled prerelease tag
+        description: Exact hosted release tag
         required: true
         type: string
       source_sha:
@@ -168,6 +175,9 @@ jobs:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-22.04
     environment: homebrew
+    outputs:
+      action: ${{ steps.reconcile.outputs.action }}
+      tap_commit: ${{ steps.reconcile.outputs.expected_head }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -227,9 +237,11 @@ jobs:
             action=push
             expected_head=$(git -C tap rev-parse HEAD)
           fi
-          echo "action=$action" >> "$GITHUB_OUTPUT"
-          echo "observed_head=$observed_head" >> "$GITHUB_OUTPUT"
-          echo "expected_head=$expected_head" >> "$GITHUB_OUTPUT"
+          {
+            echo "action=$action"
+            echo "observed_head=$observed_head"
+            echo "expected_head=$expected_head"
+          } >> "$GITHUB_OUTPUT"
       - name: Push the formula with an optimistic lease
         if: ${{ steps.reconcile.outputs.action == 'push' }}
         env:

@@ -1,4 +1,4 @@
 interface:
   display_name: "Release Tracky"
-  short_description: "Cut and verify an evidence-bound Tracky release"
+  short_description: "Verify Tracky's merged-version release pipeline"
   default_prompt: "Use $release-tracky to publish the next Tracky release safely."

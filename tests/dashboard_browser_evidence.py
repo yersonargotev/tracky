@@ -123,7 +123,7 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
             collector.assemble(self.root, self.commit, self.lockfile)
 
     def test_release_workflow_declares_matrix_retention_and_exact_sha_binding(self):
-        workflow = (ROOT / ".github" / "workflows" / "dashboard-release-browsers.yml").read_text(encoding="utf-8")
+        workflow = (ROOT / ".github" / "workflows" / "dashboard-browser-compatibility.yml").read_text(encoding="utf-8")
         for lane in collector.LANES:
             self.assertIn("lane: " + lane, workflow)
         self.assertIn("workflow_dispatch:", workflow)

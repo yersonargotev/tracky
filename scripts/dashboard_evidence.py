@@ -16,8 +16,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / "evidence" / "dashboard"
 BASELINE = EVIDENCE / "baseline.json"
-TEMPLATE = EVIDENCE / "dashboard-verification.template.json"
-SCHEMA = EVIDENCE / "dashboard-verification.schema.json"
 INVENTORY = EVIDENCE / "dependency-inventory.json"
 NOTICES_FILE = ROOT / "THIRD-PARTY-NOTICES"
 ASSETS = ROOT / "src" / "dashboard_assets"
@@ -47,20 +45,6 @@ REQUIRED_RELEASE_GATES = {
     "performance-and-resources",
     "archive-and-installers",
 }
-REQUIRED_RELEASE_BROWSERS = {
-    "safari-minimum", "safari-latest", "firefox-esr-minimum",
-    "firefox-latest", "chromium-minimum", "chromium-latest",
-}
-RETAINED_EVIDENCE_URL = re.compile(
-    r"^https://github\.com/yersonargotev/tracky/actions/runs/[1-9]\d*"
-    r"(?:/job/[1-9]\d*)?(?:[?#].*)?$"
-)
-BROWSER_MINIMUMS = {
-    "safari-minimum": (26, 0),
-    "firefox-esr-minimum": (153,),
-    "chromium-minimum": (150,),
-}
-REQUIRED_MEASUREMENT_GROUPS = {"latency", "resources", "sizes"}
 REQUIRED_ARCHIVE_FILES = {"tracky", "README.md", "LICENSE", "THIRD-PARTY-NOTICES"}
 LATENCY_LIMITS_MS = {
     "readiness_p95_ms": 500,
@@ -95,63 +79,6 @@ def numeric(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def version_tuple(value):
-    match = re.search(r"\d+(?:\.\d+)*", value)
-    require(match is not None, "browser version must contain a numeric version")
-    return tuple(int(part) for part in match.group().split("."))
-
-
-def validate_release_measurements(measurements, artifacts):
-    require(set(measurements) == REQUIRED_MEASUREMENT_GROUPS, "release measurements are incomplete")
-    latency = measurements["latency"]
-    resources = measurements["resources"]
-    require(set(latency) == TARGETS, "latency measurements must cover every target")
-    require(set(resources) == TARGETS, "resource measurements must cover every target")
-    for target in TARGETS:
-        target_latency = latency[target]
-        require(
-            set(target_latency) == set(LATENCY_LIMITS_MS) | {"warmups", "runs"},
-            "latency metrics are incomplete for %s" % target,
-        )
-        require(
-            numeric(target_latency["warmups"])
-            and numeric(target_latency["runs"])
-            and target_latency["warmups"] >= 5
-            and target_latency["runs"] >= 30,
-            "latency sample count is incomplete for %s" % target,
-        )
-        for name, limit in LATENCY_LIMITS_MS.items():
-            require(numeric(target_latency[name]) and 0 <= target_latency[name] <= limit, "%s exceeds its release budget for %s" % (name, target))
-
-        target_resources = resources[target]
-        expected_resources = set(RESOURCE_LIMITS) | {
-            "cycles", "descriptor_growth", "memory_growth_bytes", "memory_growth_percent",
-        }
-        require(set(target_resources) == expected_resources, "resource metrics are incomplete for %s" % target)
-        for name, limit in RESOURCE_LIMITS.items():
-            require(numeric(target_resources[name]) and 0 <= target_resources[name] <= limit, "%s exceeds its release budget for %s" % (name, target))
-        require(numeric(target_resources["cycles"]) and target_resources["cycles"] >= 100, "resource cycle count is incomplete for %s" % target)
-        require(numeric(target_resources["descriptor_growth"]) and target_resources["descriptor_growth"] <= 0, "descriptor growth detected for %s" % target)
-        require(
-            (numeric(target_resources["memory_growth_bytes"]) and target_resources["memory_growth_bytes"] <= 8 * 1024 * 1024)
-            or (numeric(target_resources["memory_growth_percent"]) and target_resources["memory_growth_percent"] <= 5),
-            "memory growth exceeds its release budget for %s" % target,
-        )
-
-    sizes = measurements["sizes"]
-    baseline = read_json(BASELINE)
-    validate_baseline(baseline)
-    compare_measurements(sizes, baseline)
-    recorded_sizes = {item["target"]: item for item in sizes["targets"]}
-    for artifact in artifacts:
-        measured = recorded_sizes[artifact["target"]]
-        require(
-            artifact["bytes"] == measured["archive_bytes"]
-            and artifact["sha256"] == measured["archive_sha256"],
-            "artifact and size evidence differ for %s" % artifact["target"],
-        )
-
-
 def validate_baseline(value):
     require(value.get("kind") == "dashboard-free-cargo-dist-baseline", "invalid baseline kind")
     require(len(value.get("commit", "")) == 40, "baseline commit must be a full SHA")
@@ -169,98 +96,6 @@ def validate_baseline(value):
             require(len(item.get(field, "")) == HASH_LENGTH, "%s invalid for %s" % (field, item.get("target")))
         require(item.get("archive_contents") == ["LICENSE", "README.md", "tracky"], "unexpected baseline archive contents")
     require(value.get("reproduce"), "baseline reproduction commands are required")
-
-
-def validate_manifest(
-    value,
-    release=False,
-    expected_commit=None,
-    expected_lockfile_sha256=None,
-):
-    required = {
-        "schema_version", "commit", "lockfile_sha256", "tools", "targets", "browsers",
-        "artifacts", "commands", "measurements", "results", "responsible_maintainer", "approval",
-    }
-    require(set(value) == required, "manifest fields do not match the schema")
-    require(value["schema_version"] == 1, "unsupported manifest schema")
-    require(len(value["commit"]) == 40 and all(c in "0123456789abcdef" for c in value["commit"]), "manifest commit must be a full SHA")
-    require(len(value["lockfile_sha256"]) == HASH_LENGTH and all(c in "0123456789abcdef" for c in value["lockfile_sha256"]), "invalid manifest lockfile hash")
-    require(
-        isinstance(value["targets"], list)
-        and len(value["targets"]) == len(TARGETS)
-        and set(value["targets"]) == TARGETS,
-        "manifest must name every supported target exactly once",
-    )
-    require(isinstance(value["tools"], dict) and value["tools"] and all(isinstance(name, str) and isinstance(version, str) and name and version for name, version in value["tools"].items()), "manifest tool versions are required")
-    require(isinstance(value["browsers"], dict) and all(isinstance(name, str) and isinstance(version, str) and name and version for name, version in value["browsers"].items()), "invalid browser versions")
-    require(isinstance(value["commands"], list) and value["commands"] and all(isinstance(command, str) and command for command in value["commands"]), "manifest commands are required")
-    require(isinstance(value["measurements"], dict), "manifest measurements must be an object")
-    require(isinstance(value["results"], list) and value["results"], "manifest results are required")
-    require(isinstance(value["responsible_maintainer"], str) and value["responsible_maintainer"], "responsible maintainer is required")
-    require(set(value["approval"]) == {"approved", "approved_by"} and isinstance(value["approval"]["approved"], bool), "invalid approval fields")
-    for artifact in value["artifacts"]:
-        require(set(artifact) == {"target", "name", "sha256", "bytes"}, "invalid artifact fields")
-        require(artifact["target"] in TARGETS, "artifact has unknown target")
-        require(isinstance(artifact["name"], str) and artifact["name"], "artifact name is required")
-        require(isinstance(artifact["sha256"], str) and len(artifact["sha256"]) == HASH_LENGTH and all(c in "0123456789abcdef" for c in artifact["sha256"]), "invalid artifact hash")
-        require(isinstance(artifact["bytes"], int) and not isinstance(artifact["bytes"], bool) and artifact["bytes"] >= 0, "invalid artifact size")
-    for result in value["results"]:
-        require(set(result) == {"gate", "status", "evidence"}, "invalid result fields")
-        require(result["status"] in {"pass", "fail", "not_run"}, "invalid result status")
-        require(bool(result["gate"] and result["evidence"]), "result gate and evidence are required")
-    if release:
-        require(expected_commit is not None, "release validation requires the accepted commit")
-        require(
-            value["commit"] == expected_commit,
-            "release evidence does not match the accepted commit",
-        )
-        require(
-            expected_lockfile_sha256 is not None,
-            "release validation requires the accepted lockfile",
-        )
-        require(
-            value["lockfile_sha256"] == expected_lockfile_sha256,
-            "release evidence does not match the accepted lockfile",
-        )
-        require(set(value["browsers"]) == REQUIRED_RELEASE_BROWSERS, "release browser versions are incomplete")
-        for name, minimum in BROWSER_MINIMUMS.items():
-            require(version_tuple(value["browsers"][name]) >= minimum, "%s is below the supported minimum" % name)
-        require(version_tuple(value["browsers"]["safari-latest"]) >= BROWSER_MINIMUMS["safari-minimum"], "latest Safari evidence is invalid")
-        require(version_tuple(value["browsers"]["firefox-latest"]) >= BROWSER_MINIMUMS["firefox-esr-minimum"], "latest Firefox evidence is invalid")
-        require(version_tuple(value["browsers"]["chromium-latest"]) >= BROWSER_MINIMUMS["chromium-minimum"], "latest Chromium evidence is invalid")
-        require(len(value["artifacts"]) == len(TARGETS) and {item["target"] for item in value["artifacts"]} == TARGETS, "release artifacts must cover every target exactly once")
-        require(
-            all(
-                item["name"] == "tracky-%s.tar.xz" % item["target"]
-                for item in value["artifacts"]
-            ),
-            "release artifacts must use the exact Cargo Dist archive names",
-        )
-        require(len(value["results"]) == len(REQUIRED_RELEASE_GATES) and {item["gate"] for item in value["results"]} == REQUIRED_RELEASE_GATES, "release result matrix is incomplete")
-        require(all(item["status"] == "pass" for item in value["results"]), "release evidence contains an incomplete or failed gate")
-        require(
-            all(RETAINED_EVIDENCE_URL.fullmatch(item["evidence"]) for item in value["results"]),
-            "release results must link retained Tracky Actions evidence",
-        )
-        validate_release_measurements(value["measurements"], value["artifacts"])
-        require(value["approval"].get("approved") is True, "release evidence is not approved")
-        require(bool(value["approval"].get("approved_by")), "release approval identity is required")
-        require(value["responsible_maintainer"] != "unassigned", "responsible maintainer identity is required")
-
-
-def validate_schema_contract(schema):
-    properties = schema["properties"]
-    require(set(schema["required"]) == {
-        "schema_version", "commit", "lockfile_sha256", "tools", "targets", "browsers",
-        "artifacts", "commands", "measurements", "results", "responsible_maintainer", "approval",
-    }, "JSON Schema top-level fields drifted from the CI validator")
-    require(set(properties["targets"]["items"]["enum"]) == TARGETS, "JSON Schema targets drifted from the CI validator")
-    require(set(properties["browsers"]["properties"]) == REQUIRED_RELEASE_BROWSERS, "JSON Schema browsers drifted from the CI validator")
-    require(set(properties["measurements"]["properties"]) == REQUIRED_MEASUREMENT_GROUPS, "JSON Schema measurements drifted from the CI validator")
-    require(set(schema["$defs"]["artifact"]["required"]) == {"target", "name", "sha256", "bytes"}, "JSON Schema artifact fields drifted from the CI validator")
-    require(set(schema["$defs"]["artifact"]["properties"]["target"]["enum"]) == TARGETS, "JSON Schema artifact targets drifted from the CI validator")
-    require(schema["$defs"]["artifact"]["properties"]["name"].get("pattern"), "JSON Schema artifact names must be constrained")
-    require(set(schema["$defs"]["result"]["properties"]["status"]["enum"]) == {"pass", "fail", "not_run"}, "JSON Schema result statuses drifted from the CI validator")
 
 
 def dependency_inventory():
@@ -671,37 +506,9 @@ def verify_packaged_size_measurement(measured, inspected):
     ):
         require(
             measured[field] == inspected[field],
-            "%s differs from the packaged artifact for %s" % (field, inspected["target"]),
+            "%s differs from the packaged artifact for %s"
+            % (field, inspected["target"]),
         )
-
-
-def verify_manifest_artifacts(value, artifacts):
-    validate_manifest(value)
-    validate_release_measurements(value["measurements"], value["artifacts"])
-    recorded_sizes = {
-        item["target"]: item for item in value["measurements"]["sizes"]["targets"]
-    }
-    for recorded in value["artifacts"]:
-        archive = artifacts / recorded["name"]
-        require(archive.is_file(), "manifest artifact is missing: %s" % recorded["name"])
-        require(archive.stat().st_size == recorded["bytes"], "manifest artifact size mismatch: %s" % recorded["name"])
-        require(hash_file(archive) == recorded["sha256"], "manifest artifact hash mismatch: %s" % recorded["name"])
-        verify_dist_checksum(archive)
-        inspected = inspect_release_archive(archive, recorded["target"])
-        measured = recorded_sizes[recorded["target"]]
-        verify_packaged_size_measurement(measured, inspected)
-
-    sizes = value["measurements"]["sizes"]
-    asset_bytes = sum(
-        path.stat().st_size
-        for path in ASSETS.rglob("*")
-        if path.is_file() and path.suffix in {".html", ".css", ".js"}
-    )
-    require(sizes["asset_bytes"] == asset_bytes, "asset bytes differ from the accepted source")
-    require(
-        sizes["resolved_package_count"] == len(read_json(INVENTORY)["packages"]) + 1,
-        "resolved package count differs from the accepted inventory",
-    )
 
 
 def measure(artifacts, assets):
@@ -718,41 +525,9 @@ def measure(artifacts, assets):
     return {"schema_version": 1, "resolved_package_count": len(packages) + 1, "asset_bytes": asset_bytes, "targets": targets}
 
 
-def render_manifest(value):
-    lines = [
-        "# Dashboard verification", "",
-        "- Commit: `%s`" % value["commit"],
-        "- Lockfile: `%s`" % value["lockfile_sha256"],
-        "- Maintainer: %s" % value["responsible_maintainer"],
-        "- Approved: %s" % ("yes" if value["approval"]["approved"] else "no"),
-        "", "## Tools", "",
-    ]
-    lines.extend("- %s: `%s`" % (name, version) for name, version in sorted(value["tools"].items()))
-    lines.extend(["", "## Targets", ""] + ["- `%s`" % target for target in value["targets"]])
-    lines.extend(["", "## Browsers", ""])
-    lines.extend("- %s: `%s`" % (name, version) for name, version in sorted(value["browsers"].items()))
-    if not value["browsers"]:
-        lines.append("- Not recorded in this implementation slice.")
-    lines.extend(["", "## Artifacts", ""])
-    lines.extend(
-        "- `%s` / `%s`: %s bytes, `%s`" % (artifact["target"], artifact["name"], artifact["bytes"], artifact["sha256"])
-        for artifact in value["artifacts"]
-    )
-    if not value["artifacts"]:
-        lines.append("- Not recorded in this implementation slice.")
-    lines.extend(["", "## Measurements", "", "```json", canonical_json(value["measurements"]).rstrip(), "```"])
-    lines.extend(["", "## Results", ""])
-    for result in value["results"]:
-        lines.append("- **%s** — `%s`: %s" % (result["gate"], result["status"], result["evidence"]))
-    lines.extend(["", "## Commands", ""] + ["- `%s`" % command for command in value["commands"]])
-    return "\n".join(lines) + "\n"
-
-
 def check_all():
     baseline = read_json(BASELINE)
     validate_baseline(baseline)
-    validate_schema_contract(read_json(SCHEMA))
-    validate_manifest(read_json(TEMPLATE))
     write_or_check(INVENTORY, dependency_inventory(), True)
     require(NOTICES_FILE.exists() and "THIRD-PARTY NOTICES" in NOTICES_FILE.read_text(encoding="utf-8"), "THIRD-PARTY-NOTICES is missing")
     compare_static(ASSETS, baseline)
@@ -773,23 +548,12 @@ def main(argv=None):
     sub.add_parser("check")
     inventory = sub.add_parser("inventory")
     inventory.add_argument("--check", action="store_true")
-    validate = sub.add_parser("validate")
-    validate.add_argument("manifest", type=Path)
-    validate.add_argument("--release", action="store_true")
-    validate.add_argument("--commit")
-    validate.add_argument("--lockfile-sha256")
-    render = sub.add_parser("render")
-    render.add_argument("manifest", type=Path)
-    render.add_argument("--output", type=Path, required=True)
     compare = sub.add_parser("compare")
     compare.add_argument("--current", type=Path, required=True)
     measurement = sub.add_parser("measure")
     measurement.add_argument("--artifacts", type=Path, required=True)
     measurement.add_argument("--assets", type=Path, default=ASSETS)
     measurement.add_argument("--output", type=Path, required=True)
-    verify_artifacts = sub.add_parser("verify-artifacts")
-    verify_artifacts.add_argument("manifest", type=Path)
-    verify_artifacts.add_argument("--artifacts", type=Path, required=True)
     semantic = sub.add_parser("semantic-manifest")
     semantic.add_argument("--archive", type=Path, required=True)
     semantic.add_argument("--target", choices=sorted(TARGETS), required=True)
@@ -812,25 +576,12 @@ def main(argv=None):
         check_all()
     elif args.command == "inventory":
         write_or_check(INVENTORY, dependency_inventory(), args.check)
-    elif args.command == "validate":
-        validate_manifest(
-            read_json(args.manifest),
-            args.release,
-            expected_commit=args.commit,
-            expected_lockfile_sha256=args.lockfile_sha256,
-        )
-    elif args.command == "render":
-        value = read_json(args.manifest)
-        validate_manifest(value)
-        args.output.write_text(render_manifest(value), encoding="utf-8")
     elif args.command == "compare":
         baseline = read_json(BASELINE)
         validate_baseline(baseline)
         compare_measurements(read_json(args.current), baseline)
     elif args.command == "measure":
         args.output.write_text(canonical_json(measure(args.artifacts, args.assets)), encoding="utf-8")
-    elif args.command == "verify-artifacts":
-        verify_manifest_artifacts(read_json(args.manifest), args.artifacts)
     elif args.command == "semantic-manifest":
         validate_cargo_dist_manifest(
             read_json(args.cargo_dist_manifest),
