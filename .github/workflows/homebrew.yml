@@ -139,6 +139,7 @@ jobs:
           exec > >(tee homebrew-validation.log) 2>&1
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+            export HOMEBREW_NO_SANDBOX_LINUX=1
           fi
           brew update
           tap="tracky/rehearsal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
