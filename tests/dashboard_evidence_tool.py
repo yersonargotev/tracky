@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "dashboard_evidence.py"
 SPEC = importlib.util.spec_from_file_location("dashboard_evidence", SCRIPT)
@@ -196,6 +197,18 @@ class DashboardEvidenceToolTest(unittest.TestCase):
             self.assertEqual(measured["archive_contents"], sorted(tool.REQUIRED_ARCHIVE_FILES))
             tool.verify_dist_checksum(archive)
             tool.verify_packaged_size_measurement(measured, measured)
+
+            with tarfile.open(archive, "r:xz") as cargo_dist_bundle:
+                for member in cargo_dist_bundle.getmembers():
+                    if member.isfile():
+                        member.mode |= 0o100000
+                with mock.patch.object(
+                    tool.tarfile, "open", return_value=cargo_dist_bundle
+                ):
+                    tool.inspect_release_archive(
+                        archive, target, expected_root=source
+                    )
+
             placeholder = dict(measured)
             placeholder["executable_bytes"] = 1
             with self.assertRaisesRegex(ValueError, "executable_bytes"):
@@ -222,12 +235,17 @@ class DashboardEvidenceToolTest(unittest.TestCase):
             second.parent.mkdir()
             self.write_archive(first, source, target, mtime=1, reverse=False)
             self.write_archive(second, source, target, mtime=2, reverse=True)
+            dist_manifest = root / "dist-manifest.json"
+            self.write_entries_json(
+                dist_manifest,
+                self.cargo_dist_manifest(target, "0.2.3"),
+            )
 
             arguments = {
                 "target": target,
                 "source_sha": "a" * 40,
                 "lockfile_sha256": "b" * 64,
-                "cargo_dist_manifest_sha256": "c" * 64,
+                "cargo_dist_manifest_sha256": tool.hash_file(dist_manifest),
                 "package_version": "0.2.3",
                 "tools": {
                     "rust": "rustc 1.90.0",
@@ -259,8 +277,6 @@ class DashboardEvidenceToolTest(unittest.TestCase):
             )
 
             output = root / "semantic.json"
-            dist_manifest = root / "dist-manifest.json"
-            dist_manifest.write_text('{"artifacts":[]}\n', encoding="utf-8")
             original_probe = tool.packaged_version
             tool.packaged_version = lambda _: "tracky 0.2.3"
             try:
@@ -281,6 +297,7 @@ class DashboardEvidenceToolTest(unittest.TestCase):
                 tool.main([
                     "validate-semantic", str(output),
                     "--archive", str(first),
+                    "--cargo-dist-manifest", str(dist_manifest),
                     "--source-root", str(source),
                 ])
             finally:
@@ -295,13 +312,18 @@ class DashboardEvidenceToolTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             source = self.make_package_source(root)
+            dist_manifest = root / "dist-manifest.json"
+            self.write_entries_json(
+                dist_manifest,
+                self.cargo_dist_manifest(target, "0.2.3"),
+            )
 
             def manifest(archive, **overrides):
                 arguments = {
                     "target": target,
                     "source_sha": "a" * 40,
                     "lockfile_sha256": "b" * 64,
-                    "cargo_dist_manifest_sha256": "c" * 64,
+                    "cargo_dist_manifest_sha256": tool.hash_file(dist_manifest),
                     "package_version": "0.2.3",
                     "tools": {
                         "rust": "rustc 1.90.0",
@@ -369,6 +391,27 @@ class DashboardEvidenceToolTest(unittest.TestCase):
                 tool.verify_semantic_archive_manifest(
                     accepted,
                     changed,
+                    dist_manifest,
+                    expected_root=source,
+                    version_probe=lambda _: "tracky 0.2.3",
+                )
+
+            portable = self.cargo_dist_manifest(target, "0.2.3")
+            tool.validate_cargo_dist_manifest(portable, target, "0.2.3")
+            portable["artifacts"][valid.name]["assets"][0]["path"] = "/runner/work/tracky"
+            with self.assertRaisesRegex(ValueError, "local artifact path"):
+                tool.validate_cargo_dist_manifest(portable, target, "0.2.3")
+            portable = self.cargo_dist_manifest(target, "0.2.3")
+            portable["releases"].append(dict(portable["releases"][0]))
+            with self.assertRaisesRegex(ValueError, "exactly one release"):
+                tool.validate_cargo_dist_manifest(portable, target, "0.2.3")
+
+            dist_manifest.write_text('{"artifacts":["changed"]}\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "Cargo Dist manifest checksum"):
+                tool.verify_semantic_archive_manifest(
+                    accepted,
+                    valid,
+                    dist_manifest,
                     expected_root=source,
                     version_probe=lambda _: "tracky 0.2.3",
                 )
@@ -388,6 +431,37 @@ class DashboardEvidenceToolTest(unittest.TestCase):
             path.write_bytes(content)
             path.chmod(0o755 if name == "tracky" else 0o644)
         return source
+
+    @staticmethod
+    def cargo_dist_manifest(target, version):
+        archive = "tracky-%s.tar.xz" % target
+        checksum = archive + ".sha256"
+        return {
+            "dist_version": "0.32.0",
+            "releases": [{
+                "app_name": "tracky",
+                "app_version": version,
+                "artifacts": [archive, checksum],
+            }],
+            "artifacts": {
+                archive: {
+                    "name": archive,
+                    "kind": "executable-zip",
+                    "target_triples": [target],
+                    "checksum": checksum,
+                    "assets": [{"name": "tracky", "path": "tracky"}],
+                },
+                checksum: {
+                    "name": checksum,
+                    "kind": "checksum",
+                    "target_triples": [target],
+                },
+            },
+        }
+
+    @staticmethod
+    def write_entries_json(path, value):
+        path.write_text(json.dumps(value), encoding="utf-8")
 
     @staticmethod
     def tar_entries(source, target):

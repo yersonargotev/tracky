@@ -1,0 +1,309 @@
+name: Validate unified release dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      accepted_sha:
+        description: Exact lowercase 40-character source commit SHA
+        required: true
+        type: string
+      package_version:
+        description: Exact Cargo package version at the accepted commit
+        required: true
+        type: string
+      lockfile_sha256:
+        description: Exact lowercase SHA-256 of Cargo.lock at the accepted commit
+        required: true
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release-dry-run.yml
+      - Cargo.lock
+      - Cargo.toml
+      - scripts/dashboard_candidate_runtime.py
+      - scripts/dashboard_evidence.py
+      - scripts/release_dry_run_summary.py
+      - scripts/release_identity.py
+      - tests/release_dry_run.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-dry-run
+  cancel-in-progress: false
+
+jobs:
+  identity:
+    name: Bind the release identity and target matrix
+    runs-on: ubuntu-22.04
+    outputs:
+      source_sha: ${{ steps.values.outputs.source_sha }}
+      package_version: ${{ steps.values.outputs.package_version }}
+      lockfile_sha256: ${{ steps.values.outputs.lockfile_sha256 }}
+      matrix: ${{ steps.values.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.accepted_sha || github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Validate dispatched identity
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          ACCEPTED_SHA: ${{ inputs.accepted_sha }}
+          LOCKFILE_SHA256: ${{ inputs.lockfile_sha256 }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          python3 scripts/release_identity.py \
+            --accepted-sha "$ACCEPTED_SHA" \
+            --package-version "$PACKAGE_VERSION" \
+            --lockfile-sha256 "$LOCKFILE_SHA256" \
+            --output release-identity.json
+      - name: Record pull-request identity
+        if: ${{ github.event_name == 'pull_request' }}
+        run: python3 scripts/release_identity.py --derive --output release-identity.json
+      - name: Expose the immutable identity and supported targets
+        id: values
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          value = json.load(open("release-identity.json", encoding="utf-8"))
+          matrix = {
+              "include": [
+                  {"runner": "macos-14", "target": "aarch64-apple-darwin"},
+                  {"runner": "ubuntu-22.04", "target": "x86_64-unknown-linux-gnu"},
+              ]
+          }
+          print("source_sha=" + value["source_sha"])
+          print("package_version=" + value["package_version"])
+          print("lockfile_sha256=" + value["lockfile_sha256"])
+          print("matrix=" + json.dumps(matrix, separators=(",", ":")))
+          PY
+      - name: Retain the accepted identity
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-dry-run-identity-${{ steps.values.outputs.source_sha }}
+          path: release-identity.json
+          if-no-files-found: error
+          retention-days: 14
+
+  quality:
+    name: Preserved release quality gates
+    needs: identity
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Install frozen Rust with Clippy and rustfmt
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.93.0
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run all-target tests
+        run: cargo test --locked --all-targets
+      - name: Run strict Clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Enforce dependency and license policy
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          command: check
+          arguments: --all-features --locked
+          command-arguments: advisories bans licenses sources
+      - name: Validate release evidence contracts
+        run: |
+          python3 -m unittest tests/dashboard_evidence_tool.py
+          python3 -m unittest tests/dashboard_browser_evidence.py
+          python3 -m unittest tests/dashboard_candidate_manifest.py
+          python3 -m unittest tests/dashboard_candidate_runtime.py
+          python3 -m unittest tests/release_dry_run.py
+          python3 scripts/dashboard_evidence.py check
+          python3 scripts/dashboard_evidence.py inventory --check
+
+  build-native:
+    name: Build once (${{ matrix.target }})
+    needs: identity
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.identity.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Download the accepted identity
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-identity-${{ needs.identity.outputs.source_sha }}
+      - name: Install frozen Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install Cargo Dist 0.32.0
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -LsSf \
+            --output cargo-dist-installer.sh \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh
+          echo 'b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5  cargo-dist-installer.sh' \
+            | shasum -a 256 --check
+          sh cargo-dist-installer.sh
+      - name: Build this native archive exactly once
+        run: dist build --artifacts=local --target=${{ matrix.target }}
+      - name: Generate the path-free Cargo Dist host manifest
+        run: |
+          dist manifest --artifacts=local --no-local-paths \
+            --target=${{ matrix.target }} --output-format=json \
+            > dist-manifest.json
+      - name: Verify the Cargo Dist transport checksum
+        run: |
+          cd target/distrib
+          shasum -a 256 --check "tracky-${{ matrix.target }}.tar.xz.sha256"
+      - name: Generate the semantic package manifest
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+          LOCKFILE_SHA256: ${{ needs.identity.outputs.lockfile_sha256 }}
+          PACKAGE_VERSION: ${{ needs.identity.outputs.package_version }}
+        run: |
+          python3 scripts/dashboard_evidence.py semantic-manifest \
+            --archive "target/distrib/tracky-${{ matrix.target }}.tar.xz" \
+            --target "${{ matrix.target }}" \
+            --source-sha "$ACCEPTED_SHA" \
+            --lockfile-sha256 "$LOCKFILE_SHA256" \
+            --cargo-dist-manifest dist-manifest.json \
+            --package-version "$PACKAGE_VERSION" \
+            --rust-version "$(rustc --version)" \
+            --cargo-version "$(cargo --version)" \
+            --cargo-dist-version "$(dist --version)" \
+            --output semantic-manifest.json
+      - name: Assemble the immutable native bundle
+        run: |
+          mkdir release-bundle
+          cp release-identity.json dist-manifest.json semantic-manifest.json release-bundle/
+          cp "target/distrib/tracky-${{ matrix.target }}.tar.xz" release-bundle/
+          cp "target/distrib/tracky-${{ matrix.target }}.tar.xz.sha256" release-bundle/
+      - name: Retain publication-ready native inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-dry-run-built-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
+          path: release-bundle/
+          if-no-files-found: error
+          retention-days: 14
+
+  package-runtime:
+    name: Reuse and test (${{ matrix.target }})
+    needs: [identity, build-native]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.identity.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Download the accepted identity
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-identity-${{ needs.identity.outputs.source_sha }}
+          path: expected
+      - name: Install frozen Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Download the exact built artifact
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-built-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
+          path: candidate
+      - name: Fail on identity or transport substitution
+        run: |
+          cmp expected/release-identity.json candidate/release-identity.json
+          (
+            cd candidate
+            shasum -a 256 --check "tracky-${{ matrix.target }}.tar.xz.sha256"
+          )
+          python3 scripts/dashboard_evidence.py validate-semantic \
+            candidate/semantic-manifest.json \
+            --archive "candidate/tracky-${{ matrix.target }}.tar.xz" \
+            --cargo-dist-manifest candidate/dist-manifest.json
+      - name: Extract the validated native package
+        run: |
+          mkdir extracted
+          tar -xJf "candidate/tracky-${{ matrix.target }}.tar.xz" -C extracted
+          test -x "extracted/tracky-${{ matrix.target }}/tracky"
+      - name: Exercise the packaged CLI
+        env:
+          TRACKY_TEST_BINARY: ${{ github.workspace }}/extracted/tracky-${{ matrix.target }}/tracky
+        run: cargo test --locked --test dashboard_cli
+      - name: Exercise packaged runtime and resources
+        run: |
+          python3 scripts/dashboard_candidate_runtime.py \
+            --binary "extracted/tracky-${{ matrix.target }}/tracky" \
+            --target "${{ matrix.target }}" \
+            --output runtime-evidence.json
+      - name: Retain the verified publication-ready bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-dry-run-verified-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
+          path: |
+            candidate/release-identity.json
+            candidate/dist-manifest.json
+            candidate/semantic-manifest.json
+            candidate/tracky-${{ matrix.target }}.tar.xz
+            candidate/tracky-${{ matrix.target }}.tar.xz.sha256
+            runtime-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  summarize:
+    name: Prove the complete non-publishing dry run
+    needs: [identity, quality, package-runtime]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          persist-credentials: false
+      - name: Download the accepted identity
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-identity-${{ needs.identity.outputs.source_sha }}
+      - name: Download both verified native bundles
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          pattern: release-dry-run-verified-${{ needs.identity.outputs.source_sha }}-*
+          path: verified
+      - name: Assemble the exact artifact summary
+        run: |
+          python3 scripts/release_dry_run_summary.py \
+            --verified-root verified \
+            --identity release-identity.json \
+            --output release-dry-run-summary.json
+      - name: Retain the dry-run summary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-dry-run-summary-${{ needs.identity.outputs.source_sha }}
+          path: release-dry-run-summary.json
+          if-no-files-found: error
+          retention-days: 14
