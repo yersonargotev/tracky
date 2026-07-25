@@ -387,6 +387,10 @@ def main():
               if (!await page.getByRole("status").getByText("Dashboard refreshed", { exact: false }).isVisible()) fail("refresh success was not announced");
               if (page.url() !== initialUrl || await page.evaluate(() => history.length) !== initialHistoryLength) fail("refresh changed URL or history");
               if (await page.evaluate(() => localStorage.length || sessionStorage.length || document.cookie.length)) fail("refresh persisted browser state");
+              for (const region of ["summary", "monthly", "categories", "accounts", "investments"]) {
+                if (!await page.locator(`[data-region="${region}"] [data-minor]`).count()) fail(`refresh omitted exact minor-unit metadata in ${region}`);
+              }
+              if (!await page.locator('[data-region="categories"] ul.breakdown-list').count() || !await page.locator('[data-region="accounts"] ul.breakdown-list').count()) fail("refresh did not preserve breakdown presentation classes");
               await page.keyboard.press("Escape");
               const alerts = page.locator('[data-region="alerts"] [data-detail="alert"]');
               if (await alerts.count() < 2) fail("fixture must expose colliding alerts for stable identity coverage");
@@ -432,10 +436,13 @@ def main():
               await page.getByRole("status").getByText("Dashboard refreshed", {{ exact: false }}).waitFor();
               const result = await page.evaluate(async () => axe.run(document, {{ resultTypes: ["violations"] }}));
               if (result.violations.length) fail(`axe violations: ${{result.violations.map(item => item.id).join(", ")}}`);
+              await page.keyboard.press("Escape");
+              await page.getByRole("dialog", {{ name: "Read-only canonical drawer" }}).waitFor({{ state: "hidden" }});
               await page.setViewportSize({{ width: 320, height: 800 }});
               const layout = await page.evaluate(() => ({{ width: innerWidth, scroll: document.documentElement.scrollWidth }}));
               if (layout.scroll > layout.width) fail(`horizontal overflow at 320px: ${{JSON.stringify(layout)}}`);
-              const targets = await page.locator('button:visible').evaluateAll(nodes => nodes.filter(node => {{ const box = node.getBoundingClientRect(); return box.width < 24 || box.height < 24; }}).map(node => node.textContent.trim()));
+              await page.getByRole("button", {{ name: "Filters" }}).click();
+              const targets = await page.locator('button:visible, input:visible, select:visible').evaluateAll(nodes => nodes.filter(node => {{ const box = node.getBoundingClientRect(); return box.width < 24 || box.height < 24; }}).map(node => node.getAttribute("name") || node.textContent.trim()));
               if (targets.length) fail(`undersized pointer targets: ${{targets}}`);
               await page.emulateMedia({{ reducedMotion: "reduce" }});
               const reduced = await page.locator("button").first().evaluate(node => getComputedStyle(node).transitionDuration);
@@ -452,11 +459,15 @@ def main():
             dashboard.stop()
 
         empty_database = root / "empty-ledger.sqlite"
-        response(
+        empty_account = response(
             binary, env, "accounts", "register", "--db", str(empty_database),
             "--institution", "Empty Bank", "--label", "Empty account",
             "--account-type", "checking", "--currency", "COP",
-        )
+        )["account"]["id"]
+        empty_source = response(
+            binary, env, "income-sources", "create", "--db", str(empty_database),
+            "--name", "Empty-ledger salary",
+        )["income_source"]["id"]
         empty_dashboard = DashboardProcess(
             binary, env, empty_database, "2026-01-01", "2026-07-31"
         )
@@ -475,6 +486,41 @@ def main():
               return "dashboard-valid-empty-ok";
             }}'''
             run_script(empty_session, empty_flow, "dashboard-valid-empty-ok", env, root)
+
+            response(
+                binary, env, "transactions", "add-income", "--db", str(empty_database),
+                "--account-id", empty_account, "--posted-date", "2026-07-25",
+                "--description", "First synthetic income", "--amount-minor", "123400",
+                "--currency", "COP", "--income-source-id", empty_source,
+                "--income-kind", "salary",
+            )
+            empty_refresh_flow = r'''async page => {
+              const fail = message => { throw new Error(message); };
+              await page.getByRole("button", { name: "Refresh", exact: true }).click();
+              const currency = page.getByRole("button", { name: "COP", exact: true });
+              await currency.waitFor();
+              await page.getByRole("button", { name: "Filters" }).click();
+              await page.locator('[name="account"]').check();
+              await currency.click();
+              await page.getByRole("heading", { name: "Cash flow at a glance" }).waitFor();
+              const nav = page.getByRole("navigation", { name: "Dashboard sections" });
+              if (!await nav.isVisible()) fail("empty-to-populated refresh did not reveal section navigation");
+              const links = await nav.locator("a").evaluateAll(nodes => nodes.map(node => node.getAttribute("href")));
+              if (!links.includes("#alerts-heading")) fail("section navigation omitted alerts");
+              const missing = await page.evaluate(hrefs => hrefs.filter(href => !document.querySelector(href)), links);
+              if (missing.length) fail(`section navigation has missing targets: ${missing}`);
+              for (const region of ["summary", "monthly", "investments"]) {
+                if (!await page.locator(`[data-region="${region}"] [data-minor]`).count()) fail(`refresh omitted exact minor-unit metadata in ${region}`);
+              }
+              return "dashboard-empty-to-populated-refresh-ok";
+            }'''
+            run_script(
+                empty_session,
+                empty_refresh_flow,
+                "dashboard-empty-to-populated-refresh-ok",
+                env,
+                root,
+            )
         finally:
             close_session(empty_session, env, root)
             empty_dashboard.stop()

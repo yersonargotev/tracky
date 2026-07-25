@@ -7,23 +7,35 @@ pub(crate) fn render(snapshot: &DashboardResponse) -> String {
     render_header(&mut html, snapshot);
     html.push_str("<main id=\"ledger\">");
     render_currency(&mut html, snapshot);
+    render_section_nav(&mut html, snapshot.filters.currency.is_none());
     render_filters(&mut html, snapshot);
 
     if let Some(currency) = snapshot.filters.currency.as_deref() {
         render_summary(&mut html, &snapshot.summary, currency);
         render_monthly(&mut html, snapshot, currency);
+        html.push_str("<div class=\"insight-grid\">");
         render_categories(&mut html, snapshot, currency);
         render_accounts(&mut html, snapshot, currency);
+        html.push_str("</div>");
         render_alerts(&mut html, snapshot);
         render_investments(&mut html, snapshot);
     } else {
-        html.push_str("<section class=\"empty-state\" data-region=\"summary\"><p class=\"eyebrow\">Valid empty ledger</p><h2>No currency activity</h2><p>Add canonical activity with the Tracky CLI, then reopen the dashboard.</p></section><div data-region=\"monthly\"></div><div data-region=\"categories\"></div><div data-region=\"accounts\"></div><div data-region=\"alerts\"></div><div data-region=\"investments\"></div>");
+        html.push_str("<section class=\"empty-state\" data-region=\"summary\" aria-labelledby=\"summary-heading\"><p class=\"eyebrow\">Valid empty ledger</p><h2 id=\"summary-heading\">No currency activity</h2><p>Add canonical activity with the Tracky CLI, then reopen the dashboard.</p></section><div data-region=\"monthly\"></div><div data-region=\"categories\"></div><div data-region=\"accounts\"></div><div data-region=\"alerts\"></div><div data-region=\"investments\"></div>");
     }
 
     html.push_str("<p class=\"immutable-note\">This view is read-only. Use the Tracky CLI to review or correct canonical data.</p></main>");
     html.push_str("<div class=\"drawer-scrim\" data-action=\"close-drawer\" hidden></div><dialog class=\"drawer\" data-drawer aria-label=\"Read-only canonical drawer\"><div class=\"drawer-actions\"><button type=\"button\" data-action=\"refresh\">Refresh</button><button class=\"drawer-close\" type=\"button\" data-action=\"close-drawer\" aria-label=\"Close canonical drawer\">Close</button></div><div data-drawer-content><p class=\"eyebrow\">Canonical detail</p><h2>Read-only rows</h2></div></dialog>");
     html.push_str("<noscript><p class=\"noscript\">JavaScript is optional. Exact tables, periods, currencies, freshness, and alerts remain available above; filters and the canonical drawer require enhancement.</p></noscript><script src=\"app.js\"></script></body></html>");
     html
+}
+
+fn render_section_nav(html: &mut String, hidden: bool) {
+    write!(
+        html,
+        "<nav class=\"section-nav\" aria-label=\"Dashboard sections\"{}><a href=\"#summary-heading\">Overview</a><a href=\"#monthly-heading\">Cash flow</a><a href=\"#categories-heading\">Spending</a><a href=\"#accounts-heading\">Accounts</a><a href=\"#alerts-heading\">Alerts</a><a href=\"#investments-heading\">Investments</a></nav>",
+        if hidden { " hidden" } else { "" }
+    )
+    .expect("writing to a String cannot fail");
 }
 
 fn render_header(html: &mut String, snapshot: &DashboardResponse) {
@@ -47,7 +59,7 @@ fn render_header(html: &mut String, snapshot: &DashboardResponse) {
     );
     write!(
         html,
-        "<header class=\"masthead\"><div data-region=\"scope\"><p class=\"eyebrow\">Local analytical ledger · read-only</p><h1>Monthly ledger</h1><p class=\"scope\"><time>{}</time> through <time>{}</time> · Accounts: {} · Expense categories: {} · read {}</p></div><div class=\"masthead-actions\"><div class=\"refresh-status\" data-refresh-status role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Snapshot ready.</div><button type=\"button\" data-action=\"refresh\">Refresh</button><button type=\"button\" data-action=\"toggle-filters\" aria-expanded=\"false\">Filters</button></div></header>",
+        "<header class=\"masthead\"><div class=\"brand-line\"><strong>TRACKY</strong><span>Private money view</span></div><div data-region=\"scope\"><p class=\"eyebrow\">Personal treasury · local and read-only</p><h1>Monthly ledger</h1><p class=\"scope\"><span><small>Period</small><time>{}</time> — <time>{}</time></span><span><small>Accounts</small>{}</span><span><small>Expense categories</small>{}</span><span><small>Snapshot</small>{}</span></p></div><div class=\"masthead-actions\"><div class=\"refresh-status\" data-refresh-status role=\"status\" aria-live=\"polite\" aria-atomic=\"true\">Snapshot ready.</div><button type=\"button\" data-action=\"refresh\">Refresh</button><button type=\"button\" data-action=\"toggle-filters\" aria-expanded=\"false\">Filters</button></div></header>",
         escape(&snapshot.filters.start_date),
         escape(&snapshot.filters.end_date),
         escape(&accounts),
@@ -77,7 +89,7 @@ fn scope_names<'a>(
 }
 
 fn render_currency(html: &mut String, snapshot: &DashboardResponse) {
-    html.push_str("<nav class=\"currency-rail\" data-region=\"currency\" aria-label=\"Currency selector\"><span>Native-currency ledger</span><div>");
+    html.push_str("<nav class=\"currency-rail\" data-region=\"currency\" aria-label=\"Currency selector\"><span><small>Viewing</small>Native-currency ledger</span><div>");
     for currency in &snapshot.dimensions.currencies {
         let selected = snapshot.filters.currency.as_deref() == Some(currency.as_str());
         write!(
@@ -118,7 +130,7 @@ fn checked_attr(checked: bool) -> &'static str {
 }
 
 fn render_summary(html: &mut String, measures: &Measures, currency: &str) {
-    html.push_str("<section data-region=\"summary\" aria-labelledby=\"summary-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Opening position</p><h2 id=\"summary-heading\">Four measures, one currency</h2></div><ul class=\"summary-grid\">");
+    html.push_str("<section data-region=\"summary\" aria-labelledby=\"summary-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Current scope</p><h2 id=\"summary-heading\">Cash flow at a glance</h2><p>What came in, what went out, and what remained available.</p></div><ul class=\"summary-grid\">");
     summary_item(
         html,
         "Income",
@@ -166,7 +178,7 @@ fn summary_item(
 }
 
 fn render_monthly(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
-    html.push_str("<section data-region=\"monthly\" aria-labelledby=\"monthly-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Flow over time</p><h2 id=\"monthly-heading\">Monthly activity</h2><p id=\"trend-description\" class=\"visually-hidden\">Each month shows exact income and consumption expense amounts. The exact table follows the chart.</p></div><div class=\"trend\" role=\"group\" aria-label=\"Monthly income and consumption expense trend\" aria-describedby=\"trend-description\">");
+    html.push_str("<section data-region=\"monthly\" aria-labelledby=\"monthly-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Flow over time</p><h2 id=\"monthly-heading\">Monthly activity</h2><p>Income and consumption, month by month.</p></div><p id=\"trend-description\" class=\"visually-hidden\">Each month shows exact income and consumption expense amounts. The exact table follows the chart.</p><div class=\"trend\" role=\"group\" aria-label=\"Monthly income and consumption expense trend\" aria-describedby=\"trend-description\">");
     for month in &snapshot.monthly {
         write!(html, "<button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-month=\"{}\"><span>{}</span><span class=\"trend-income\">Income <b data-minor=\"{}\">{}</b></span><span class=\"trend-expense\">Expense <b data-minor=\"{}\">{}</b></span></button>", escape(&month.month), escape(&month.month), escape(&month.measures.income_minor), escape(&format_money(&month.measures.income_minor, currency)), escape(&month.measures.consumption_expense_minor), escape(&format_money(&month.measures.consumption_expense_minor, currency))).expect("writing to a String cannot fail");
     }
@@ -195,7 +207,7 @@ fn amount_cell(value: &str, currency: &str) -> String {
 }
 
 fn render_categories(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
-    html.push_str("<section data-region=\"categories\" aria-labelledby=\"categories-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Consumption map</p><h2 id=\"categories-heading\">Expense categories</h2></div><ul class=\"breakdown-list\">");
+    html.push_str("<section data-region=\"categories\" aria-labelledby=\"categories-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Consumption map</p><h2 id=\"categories-heading\">Expense categories</h2><p>Where spending accumulated in the selected scope.</p></div><ul class=\"breakdown-list\">");
     for category in &snapshot.categories {
         write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"consumption_expense\" data-category=\"{}\"><span>{}</span><strong data-minor=\"{}\">{}</strong></button></li>", escape(&category.category_id), escape(&category.category_name), escape(&category.amount_minor), escape(&format_money(&category.amount_minor, currency))).expect("writing to a String cannot fail");
     }
@@ -208,7 +220,7 @@ fn render_categories(html: &mut String, snapshot: &DashboardResponse, currency: 
 }
 
 fn render_accounts(html: &mut String, snapshot: &DashboardResponse, currency: &str) {
-    html.push_str("<section data-region=\"accounts\" aria-labelledby=\"accounts-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Source activity</p><h2 id=\"accounts-heading\">Accounts</h2></div><ul class=\"breakdown-list\">");
+    html.push_str("<section data-region=\"accounts\" aria-labelledby=\"accounts-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Source activity</p><h2 id=\"accounts-heading\">Accounts</h2><p>Net movement by account.</p></div><ul class=\"breakdown-list\">");
     for account in &snapshot.accounts {
         write!(html, "<li><button type=\"button\" data-action=\"open-drawer\" data-metric=\"activity\" data-account=\"{}\"><span>{}<small>{} canonical rows</small></span><strong data-minor=\"{}\">{}</strong></button></li>", escape(&account.account_id), escape(&account.account_name), account.row_count, escape(&account.measures.net_cash_flow_minor), escape(&format_money(&account.measures.net_cash_flow_minor, currency))).expect("writing to a String cannot fail");
     }
@@ -221,7 +233,7 @@ fn render_accounts(html: &mut String, snapshot: &DashboardResponse, currency: &s
 }
 
 fn render_alerts(html: &mut String, snapshot: &DashboardResponse) {
-    html.push_str("<section data-region=\"alerts\" aria-labelledby=\"alerts-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Context, not command</p><h2 id=\"alerts-heading\">Freshness and reconciliation alerts</h2></div><ul class=\"alert-list\">");
+    html.push_str("<section data-region=\"alerts\" aria-labelledby=\"alerts-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">Context, not command</p><h2 id=\"alerts-heading\">Freshness and reconciliation alerts</h2><p>Freshness and reconciliation signals that need attention.</p></div><ul class=\"alert-list\">");
     for (index, alert) in snapshot.alerts.iter().enumerate() {
         let position_index = snapshot
             .investments
@@ -303,7 +315,7 @@ fn render_investments(html: &mut String, snapshot: &DashboardResponse) {
         .as_deref()
         .map(|currency| format_money(&snapshot.investments.pending_allocation_minor, currency))
         .unwrap_or_else(|| snapshot.investments.pending_allocation_minor.clone());
-    write!(html, "<section data-region=\"investments\" aria-labelledby=\"investments-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">As-of closing state</p><h2 id=\"investments-heading\">Investment positions</h2><p class=\"meta\">State: {} · Pending allocation: <span data-minor=\"{}\">{}</span></p></div><div class=\"table-scroll\"><table class=\"positions\"><caption>Exact quantity, cost, valuation, freshness, and reconciliation</caption><thead><tr><th scope=\"col\">Position</th><th scope=\"col\">Quantity</th><th scope=\"col\">Historical cost</th><th scope=\"col\">Observed value</th><th scope=\"col\">Effective date</th><th scope=\"col\">Freshness</th><th scope=\"col\">Reconciliation</th></tr></thead><tbody>", escape(snapshot.investments.state), escape(&snapshot.investments.pending_allocation_minor), escape(&pending_allocation)).expect("writing to a String cannot fail");
+    write!(html, "<section data-region=\"investments\" aria-labelledby=\"investments-heading\"><div class=\"section-heading\"><p class=\"eyebrow\">As-of closing state</p><h2 id=\"investments-heading\">Investment positions</h2><p>Positions remain separate from consumption expense.</p></div><p class=\"meta\">State: {} · Pending allocation: <span data-minor=\"{}\">{}</span></p><div class=\"table-scroll\"><table class=\"positions\"><caption>Exact quantity, cost, valuation, freshness, and reconciliation</caption><thead><tr><th scope=\"col\">Position</th><th scope=\"col\">Quantity</th><th scope=\"col\">Historical cost</th><th scope=\"col\">Observed value</th><th scope=\"col\">Effective date</th><th scope=\"col\">Freshness</th><th scope=\"col\">Reconciliation</th></tr></thead><tbody>", escape(snapshot.investments.state), escape(&snapshot.investments.pending_allocation_minor), escape(&pending_allocation)).expect("writing to a String cannot fail");
     for (index, position) in snapshot.investments.closing_positions.iter().enumerate() {
         let instrument_name = position.instrument_id.as_ref().and_then(|id| {
             snapshot
