@@ -125,6 +125,11 @@ class FakeClient:
     def release(self, _tag):
         return self._release
 
+    def release_by_id(self, release_id):
+        if release_id != self._release["id"]:
+            raise AssertionError("wrong release")
+        return self._release
+
     def create_release(self, tag, sha):
         self._release = {
             "id": 9,
@@ -592,12 +597,13 @@ class ReleasePublishTest(unittest.TestCase):
 
         def runner(argv, binary=False):
             calls.append(argv)
-            if argv[2].endswith("/releases?per_page=100"):
-                return 0, json.dumps([[release]]), ""
+            if argv[2].endswith("/releases"):
+                return 0, json.dumps(release), ""
             return 0, "{}", ""
 
         client = publication.Gh("o/r", runner=runner)
         self.assertEqual(client.create_release(self.fixture.tag, self.fixture.sha), release)
+        self.assertEqual(len(calls), 1)
         create = calls[0]
         self.assertIn("draft=true", create)
         self.assertIn("prerelease=false", create)

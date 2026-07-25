@@ -278,8 +278,17 @@ class Gh:
         require(len(matches) <= 1, "release tag is duplicated")
         return matches[0] if matches else None
 
+    def release_by_id(self, release_id):
+        require(
+            isinstance(release_id, int) and release_id > 0,
+            "release ID is invalid",
+        )
+        return self.api_json(
+            "repos/{}/releases/{}".format(self.repository, release_id)
+        )
+
     def create_release(self, tag, source_sha):
-        self.api_json(
+        release = self.api_json(
             "repos/{}/releases".format(self.repository),
             "-f", "tag_name=" + tag,
             "-f", "target_commitish=" + source_sha,
@@ -288,7 +297,8 @@ class Gh:
             "-F", "draft=true",
             "-F", "prerelease=false",
         )
-        return self.release(tag)
+        require(isinstance(release, dict), "release creation response is invalid")
+        return release
 
     def download_asset(self, asset_id):
         return self.command(["gh", "api", "repos/{}/releases/assets/{}".format(self.repository, asset_id),
@@ -366,7 +376,7 @@ def publish(client, tag, source_sha, assets):
         client.delete_asset(remote["id"])
     for asset in missing:
         client.upload(release, asset)
-    complete = client.release(tag)
+    complete = client.release_by_id(release["id"])
     reconcile_release(complete, source_sha, tag, client.repository)
     require(not reconcile_assets(complete.get("assets", []), assets), "release asset upload is incomplete")
     by_name = {item["name"]: item for item in complete["assets"]}
@@ -376,7 +386,7 @@ def publish(client, tag, source_sha, assets):
                 "downloaded release asset bytes differ: %s" % asset.name)
     if complete["draft"]:
         client.publish_release(complete["id"])
-        complete = client.release(tag)
+        complete = client.release_by_id(complete["id"])
         reconcile_release(complete, source_sha, tag, client.repository)
         require(complete["draft"] is False, "release remained a draft after publication")
     return complete
