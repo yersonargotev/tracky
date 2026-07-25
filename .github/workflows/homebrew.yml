@@ -1,0 +1,271 @@
+name: Validate and publish Homebrew from a hosted release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      source_sha:
+        required: true
+        type: string
+      package_version:
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact controlled prerelease tag
+        required: true
+        type: string
+      source_sha:
+        description: Exact accepted source SHA
+        required: true
+        type: string
+      package_version:
+        description: Exact committed Tracky package version
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: homebrew-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Bind the formula to the hosted release
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the accepted source on the trusted default branch
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
+          git merge-base --is-ancestor "$SOURCE_SHA" "$WORKFLOW_SHA"
+      - name: Download the published release and its durable assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p release-assets Formula
+          gh api "repos/$REPOSITORY/releases/tags/$TAG" > release.json
+          gh release download "$TAG" --repo "$REPOSITORY" --dir release-assets
+      - name: Generate the exact formula and preparation evidence
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/release_homebrew.py \
+            --release release.json \
+            --assets-root release-assets \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --package-version "$PACKAGE_VERSION" \
+            --formula Formula/tracky.rb \
+            --evidence homebrew-preparation.json
+      - name: Retain the formula, release assets, and preparation evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-prepared-${{ inputs.source_sha }}-${{ inputs.tag }}
+          path: |
+            Formula/tracky.rb
+            homebrew-preparation.json
+            release.json
+            release-assets
+          if-no-files-found: error
+          retention-days: 14
+
+  validate:
+    name: Validate Homebrew (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-14
+          - platform: linux-x86_64
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the exact prepared formula
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: homebrew-prepared-${{ inputs.source_sha }}-${{ inputs.tag }}
+          path: prepared
+      - name: Revalidate the formula and release bindings
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/release_homebrew.py \
+            --release prepared/release.json \
+            --assets-root prepared/release-assets \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --package-version "$PACKAGE_VERSION" \
+            --formula prepared/Formula/tracky.rb \
+            --evidence prepared/homebrew-preparation.json \
+            --verify
+      - name: Fail closed on style, audit, install, version, and smoke checks
+        env:
+          HOMEBREW_NO_ANALYTICS: "1"
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          set -o pipefail
+          exec > >(tee homebrew-validation.log) 2>&1
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+          fi
+          brew update
+          tap="tracky/rehearsal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PLATFORM}"
+          brew tap-new "$tap"
+          tap_root=$(brew --repository "$tap")
+          cp prepared/Formula/tracky.rb "$tap_root/Formula/tracky.rb"
+          brew style "$tap/tracky"
+          brew audit --strict --online "$tap/tracky"
+          brew install --formula "$tap/tracky"
+          brew test "$tap/tracky"
+          test "$(tracky --version)" = "tracky $PACKAGE_VERSION"
+          tracky --help >/dev/null
+      - name: Retain successful platform validation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-validation-${{ inputs.source_sha }}-${{ matrix.platform }}
+          path: homebrew-validation.log
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish the exact validated formula
+    needs: [prepare, validate]
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-22.04
+    environment: homebrew
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download the exact prepared formula
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: homebrew-prepared-${{ inputs.source_sha }}-${{ inputs.tag }}
+          path: prepared
+      - name: Re-download and revalidate the hosted release before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p current-release-assets current/Formula
+          gh api "repos/$REPOSITORY/releases/tags/$TAG" > current-release.json
+          gh release download "$TAG" --repo "$REPOSITORY" --dir current-release-assets
+          python3 scripts/release_homebrew.py \
+            --release current-release.json \
+            --assets-root current-release-assets \
+            --repository "$REPOSITORY" \
+            --tag "$TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --package-version "$PACKAGE_VERSION" \
+            --formula current/Formula/tracky.rb \
+            --evidence current/homebrew-preparation.json
+          cmp prepared/Formula/tracky.rb current/Formula/tracky.rb
+          cmp prepared/homebrew-preparation.json current/homebrew-preparation.json
+      - name: Reconcile the tap without retaining credentials
+        id: reconcile
+        env:
+          FORMULA_VERSION: ${{ inputs.tag }}
+        run: |
+          git clone --depth 1 https://github.com/yersonargotev/homebrew-tap.git tap
+          observed_head=$(git -C tap rev-parse HEAD)
+          mkdir -p tap/Formula
+          action=$(python3 scripts/release_homebrew.py \
+            --reconcile-existing tap/Formula/tracky.rb \
+            --reconcile-desired prepared/Formula/tracky.rb)
+          if test "$action" = noop; then
+            expected_head=$observed_head
+          else
+            cp prepared/Formula/tracky.rb tap/Formula/tracky.rb
+            git -C tap config user.name "tracky release bot"
+            git -C tap config user.email "actions@users.noreply.github.com"
+            git -C tap add Formula/tracky.rb
+            status=$(git -C tap status --short)
+            case "$status" in
+              "M  Formula/tracky.rb"|"A  Formula/tracky.rb") ;;
+              *) echo "tap contains changes outside Formula/tracky.rb" >&2; exit 1 ;;
+            esac
+            git -C tap commit -m "tracky ${FORMULA_VERSION#v}"
+            action=push
+            expected_head=$(git -C tap rev-parse HEAD)
+          fi
+          echo "action=$action" >> "$GITHUB_OUTPUT"
+          echo "observed_head=$observed_head" >> "$GITHUB_OUTPUT"
+          echo "expected_head=$expected_head" >> "$GITHUB_OUTPUT"
+      - name: Push the formula with an optimistic lease
+        if: ${{ steps.reconcile.outputs.action == 'push' }}
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          OBSERVED_HEAD: ${{ steps.reconcile.outputs.observed_head }}
+        run: |
+          basic=$(printf 'x-access-token:%s' "$TAP_TOKEN" | base64 | tr -d '\n')
+          GIT_CONFIG_COUNT=1 \
+          GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $basic" \
+            git -C tap push \
+              --force-with-lease="refs/heads/main:$OBSERVED_HEAD" \
+              origin HEAD:main
+      - name: Retain the exact tap commit
+        env:
+          EXPECTED_HEAD: ${{ steps.reconcile.outputs.expected_head }}
+          RECONCILE_ACTION: ${{ steps.reconcile.outputs.action }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          actual_head=$(git ls-remote https://github.com/yersonargotev/homebrew-tap.git \
+            refs/heads/main | cut -f1)
+          test "$actual_head" = "$EXPECTED_HEAD"
+          jq -n \
+            --arg repository "$REPOSITORY" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg tag "$TAG" \
+            --arg tap_commit "$actual_head" \
+            --arg action "$RECONCILE_ACTION" \
+            --slurpfile preparation prepared/homebrew-preparation.json \
+            '{schema_version: 1, repository: $repository, source_sha: $source_sha,
+              tag: $tag, tap_repository: "yersonargotev/homebrew-tap",
+              tap_commit: $tap_commit, action: $action,
+              preparation: $preparation[0]}' > homebrew-publication.json
+      - name: Retain Homebrew publication evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-publication-${{ inputs.source_sha }}-${{ inputs.tag }}
+          path: homebrew-publication.json
+          if-no-files-found: error
+          retention-days: 14

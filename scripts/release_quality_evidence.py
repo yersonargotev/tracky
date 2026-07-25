@@ -50,6 +50,7 @@ COMMANDS = [
             "tests/dashboard_candidate_manifest.py",
             "tests/dashboard_candidate_runtime.py",
             "tests/release_command_evidence.py",
+            "tests/release_homebrew.py",
             "tests/release_prerelease.py",
             "tests/release_quality_evidence.py",
             "tests/release_dry_run.py",
