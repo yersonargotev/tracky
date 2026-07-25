@@ -1,0 +1,83 @@
+name: Exercise a packaged dashboard browser lane
+description: Run one fail-closed browser lane and retain its exact-identity result
+
+inputs:
+  artifact-name:
+    required: true
+  binary:
+    required: true
+  browser:
+    required: true
+  commit:
+    required: true
+  lane:
+    required: true
+  lockfile-sha256:
+    required: true
+  minimum-version:
+    required: true
+  retention-days:
+    required: true
+  version:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Initialize fail-closed raw lane output
+      shell: bash
+      run: |
+        mkdir -p browser-results
+        python3 scripts/dashboard_browser_evidence.py \
+          --initialize \
+          --lane "${{ inputs.lane }}" \
+          --browser "${{ inputs.browser }}" \
+          --commit "${{ inputs.commit }}" \
+          --lockfile-sha256 "${{ inputs.lockfile-sha256 }}" \
+          --output "browser-results/${{ inputs.lane }}.json"
+    - name: Install Firefox for this lane
+      if: ${{ inputs.browser == 'firefox' }}
+      id: firefox
+      uses: browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795 # v1.7.2
+      with:
+        firefox-version: ${{ inputs.version }}
+    - name: Install Chromium and its driver for this lane
+      if: ${{ inputs.browser == 'chromium' }}
+      id: chrome
+      uses: browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd # v2.1.2
+      with:
+        chrome-version: ${{ inputs.version }}
+        install-chromedriver: true
+    - name: Enable Safari WebDriver
+      if: ${{ inputs.browser == 'safari' }}
+      shell: bash
+      run: sudo safaridriver --enable
+    - name: Install pinned automated-accessibility rules
+      shell: bash
+      run: npm install --global axe-core@4.10.3
+    - name: Exercise the real packaged browser lane
+      env:
+        BROWSER_BINARY: ${{ inputs.browser == 'firefox' && steps.firefox.outputs.firefox-path || inputs.browser == 'chromium' && steps.chrome.outputs.chrome-path || '' }}
+        DRIVER: ${{ inputs.browser == 'chromium' && steps.chrome.outputs.chromedriver-path || '' }}
+      shell: bash
+      run: |
+        arguments=(
+          --binary "${{ inputs.binary }}"
+          --browser "${{ inputs.browser }}"
+          --lane "${{ inputs.lane }}"
+          --minimum-version "${{ inputs.minimum-version }}"
+          --commit "${{ inputs.commit }}"
+          --lockfile-sha256 "${{ inputs.lockfile-sha256 }}"
+          --output "browser-results/${{ inputs.lane }}.json"
+        )
+        if [[ -n "$BROWSER_BINARY" ]]; then arguments+=(--browser-binary "$BROWSER_BINARY"); fi
+        if [[ -n "$DRIVER" ]]; then arguments+=(--driver "$DRIVER"); fi
+        python3 scripts/dashboard_release_browser.py "${arguments[@]}"
+    - name: Retain raw lane output
+      if: ${{ always() }}
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: browser-results/${{ inputs.lane }}.json
+        if-no-files-found: error
+        retention-days: ${{ inputs.retention-days }}

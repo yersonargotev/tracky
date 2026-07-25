@@ -115,11 +115,18 @@ identity, checksum, Cargo Dist manifest, or semantic-field substitution, then
 exercise the extracted CLI and packaged runtime. No downstream job invokes
 Cargo Dist.
 
-The final `release-dry-run-summary-<sha>` artifact is produced only after both
-quality and native runtime paths pass. It records `mode: dry-run` and
-`published: false`; this workflow has no tag, GitHub Release, deployment
-environment, Homebrew credential, or tap mutation capability. Browser reuse is
-added separately to this same artifact handoff before production cutover.
+The same run also gates on current Safari, Firefox, and Chromium. Each browser
+job downloads one of the retained native bundles, compares its release identity,
+revalidates its transport and semantic manifests, and exercises the extracted
+package without invoking Cargo or Cargo Dist. The canonical
+`release-dry-run-current-browser-evidence-<sha>` artifact binds all three lane
+results to the accepted source SHA and lockfile digest.
+
+The final `release-dry-run-summary-<sha>` artifact is produced only after
+quality, native runtime, and all three current-browser paths pass. It records the
+three browser versions, `mode: dry-run`, and `published: false`; this workflow
+has no tag, GitHub Release, deployment environment, Homebrew credential, or tap
+mutation capability.
 
 ## Release manifest
 
@@ -137,22 +144,30 @@ not require separate manual screen-reader attestations.
 
 ## Retained browser evidence
 
-After **Build dashboard release candidate** passes, dispatch **Test dashboard
-release browsers** with the same full commit SHA. The workflow builds the Cargo
-Dist packages for that commit and runs six independent lanes against the
-extracted packaged executable: minimum and current Safari, Firefox ESR and
+The unified release dry run makes current Safari, Firefox, and Chromium blocking
+release gates over the exact retained packages. Minimum-version duplication is
+kept outside the normal release path in **Test full dashboard browser
+compatibility**. That compatibility workflow runs all six minimum/current lanes
+every Monday, can be dispatched manually for an exact full SHA, and is also
+required automatically for pull requests that change dashboard rendering,
+assets, HTTP/browser harnesses, support metadata, or either browser workflow.
+This is the targeted path for requiring broader compatibility coverage on a
+dashboard-sensitive change.
+
+The compatibility workflow runs minimum and current Safari, Firefox ESR and
 current Firefox, and minimum and current Chromium. Safari uses the installed
 SafariDriver on GitHub's pinned/current macOS images; Firefox and Chromium are
 installed explicitly for their matrix lanes. Every lane records the browser and
 driver versions reported by WebDriver and rejects a version below the documented
 support floor.
 
-Each lane fails closed on the browser interaction flow, progressive rendering
-without JavaScript, loopback/security invariants, process lifecycle cleanup, and
-axe automated accessibility checks. Its raw JSON is retained for 90 days even
-when the lane fails. The final job accepts only six passing, non-duplicate lane
-results bound to the dispatched commit and its `Cargo.lock` SHA-256, then retains
-`browsers.json` together with all raw results as
+Each current and compatibility lane fails closed on the browser interaction
+flow, progressive rendering without JavaScript, loopback/security invariants,
+database and HTTP read-only behavior, process lifecycle cleanup, and axe
+automated accessibility checks. Compatibility raw JSON is retained for 90 days
+even when a lane fails. Its final job accepts only six passing, non-duplicate
+lane results bound to the resolved commit and its `Cargo.lock` SHA-256, then
+retains `browsers.json` together with all raw results as
 `dashboard-browser-evidence-<commit>`.
 
 Download `browsers.json` from that artifact and pass it unchanged as `--browsers`

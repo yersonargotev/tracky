@@ -20,6 +20,9 @@ HARNESS_SCRIPT = ROOT / "scripts" / "dashboard_release_browser.py"
 HARNESS_SPEC = importlib.util.spec_from_file_location("dashboard_release_browser", HARNESS_SCRIPT)
 harness = importlib.util.module_from_spec(HARNESS_SPEC)
 HARNESS_SPEC.loader.exec_module(harness)
+BROWSER_ACTION = (
+    ROOT / ".github" / "actions" / "dashboard-browser-lane" / "action.yml"
+)
 
 
 class DashboardBrowserEvidenceTest(unittest.TestCase):
@@ -65,6 +68,30 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
         self.assertEqual(set(value["browsers"]), set(collector.LANES))
         self.assertEqual(value["commands"], sorted(value["commands"]))
 
+    def test_assembles_only_the_three_current_release_lanes(self):
+        for lane in set(collector.LANES) - collector.CURRENT_LANES:
+            (self.root / (lane + ".json")).unlink()
+        value = collector.assemble(
+            self.root, self.commit, self.lockfile, profile="current"
+        )
+        self.assertEqual(set(value["browsers"]), collector.CURRENT_LANES)
+
+    def test_fail_closed_result_uses_the_harness_gate_contract(self):
+        value = collector.fail_closed_result(
+            "chromium-latest",
+            self.commit,
+            self.lockfile,
+            "chromium",
+        )
+        self.assertEqual(
+            [gate["gate"] for gate in value["gates"]],
+            list(harness.GATES),
+        )
+        self.assertEqual(value["gates"][0]["status"], "fail")
+        self.assertTrue(
+            all(gate["status"] == "not-run" for gate in value["gates"][1:])
+        )
+
     def test_rejects_missing_duplicate_and_unknown_lanes(self):
         (self.root / "safari-minimum.json").unlink()
         with self.assertRaisesRegex(ValueError, "exactly six"):
@@ -100,24 +127,37 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
         for lane in collector.LANES:
             self.assertIn("lane: " + lane, workflow)
         self.assertIn("workflow_dispatch:", workflow)
+        self.assertIn("schedule:", workflow)
+        self.assertIn("pull_request:", workflow)
         self.assertIn("accepted_sha", workflow)
         self.assertIn("Verify the checked-out commit", workflow)
         self.assertIn("retention-days: 90", workflow)
         self.assertIn("if-no-files-found: error", workflow)
         self.assertIn("dashboard-browser-evidence-", workflow)
-        self.assertIn("scripts/dashboard_release_browser.py", workflow)
         self.assertIn("scripts/dashboard_browser_evidence.py", workflow)
+        self.assertIn(
+            "uses: ./.github/actions/dashboard-browser-lane",
+            workflow,
+        )
         lane_job = workflow.split("  browser-lane:", 1)[1].split("\n  collect:", 1)[0]
-        self.assertLess(lane_job.index("Initialize fail-closed raw lane output"), lane_job.index("Download the packaged candidate"))
         self.assertIn("shasum -a 256 --check", lane_job)
+        self.assertIn("sha256=$(shasum -a 256 Cargo.lock", lane_job)
+        self.assertNotIn("hashFiles('Cargo.lock')", lane_job)
+        self.assertNotIn("setup-firefox@", lane_job)
+        self.assertNotIn("setup-chrome@", lane_job)
+        action = BROWSER_ACTION.read_text(encoding="utf-8")
+        self.assertIn("scripts/dashboard_release_browser.py", action)
+        self.assertIn("--initialize", action)
         self.assertIn(
             "browser-actions/setup-firefox@0bc507ddf224827e3b1af68e014d5e42ab93e795",
-            lane_job,
+            action,
         )
         self.assertIn(
             "browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd",
-            lane_job,
+            action,
         )
+        self.assertIn("read-only", collector.GATES)
+        self.assertIn("read-only", harness.GATES)
 
     def test_canonical_drawer_interaction_uses_an_async_open_state_probe(self):
         class Driver:
@@ -131,6 +171,9 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
         self.assertIn(".open", driver.script)
         self.assertIn("setInterval", driver.script)
         self.assertIn("done(false)", driver.script)
+
+    def test_webdriver_session_allows_a_cold_browser_start(self):
+        self.assertGreaterEqual(harness.WEBDRIVER_SESSION_TIMEOUT_SECONDS, 60)
 
     def test_responsive_probe_ignores_hidden_buttons(self):
         class Driver:
@@ -152,6 +195,29 @@ class DashboardBrowserEvidenceTest(unittest.TestCase):
             harness.has_progressive_content(
                 content.replace("COP\u00a0$7.000,00", "COP\u00a0$5.000,00")
             )
+        )
+
+    def test_database_snapshot_detects_logical_mutation(self):
+        database = self.root / "tracky.sqlite"
+        with harness.sqlite3.connect(database) as connection:
+            connection.execute("CREATE TABLE values_under_test (value TEXT)")
+            connection.execute("INSERT INTO values_under_test VALUES ('before')")
+        snapshot = harness.database_snapshot(database)
+        with harness.sqlite3.connect(database) as connection:
+            connection.execute("INSERT INTO values_under_test VALUES ('after')")
+        self.assertNotEqual(harness.database_snapshot(database), snapshot)
+
+    def test_read_only_baseline_precedes_dashboard_startup(self):
+        source = HARNESS_SCRIPT.read_text(encoding="utf-8")
+        self.assertLess(
+            source.index("startup_read_only_snapshot = database_snapshot(database)"),
+            source.index("dashboard, url = start_dashboard"),
+        )
+        self.assertLess(
+            source.index(
+                "database_snapshot(database) != startup_read_only_snapshot"
+            ),
+            source.index('"Externally added income"'),
         )
 
     def test_harness_writes_failed_raw_gate_and_returns_nonzero(self):

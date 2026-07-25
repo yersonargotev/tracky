@@ -19,12 +19,20 @@ on:
     branches: [main]
     paths:
       - .github/workflows/release-dry-run.yml
+      - .github/actions/dashboard-browser-lane/action.yml
       - Cargo.lock
       - Cargo.toml
       - scripts/dashboard_candidate_runtime.py
+      - scripts/dashboard_browser_evidence.py
       - scripts/dashboard_evidence.py
+      - scripts/dashboard_release_browser.py
       - scripts/release_dry_run_summary.py
       - scripts/release_identity.py
+      - src/dashboard.rs
+      - src/dashboard_assets/**
+      - src/dashboard_finance.rs
+      - src/dashboard_view.rs
+      - tests/dashboard_browser_evidence.py
       - tests/release_dry_run.py
 
 permissions:
@@ -276,9 +284,119 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  browser-current:
+    name: Current browser (${{ matrix.lane }})
+    needs: [identity, build-native]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: safari-latest
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            browser: safari
+            version: installed
+            minimum: '26.0'
+          - lane: firefox-latest
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            browser: firefox
+            version: latest
+            minimum: '153'
+          - lane: chromium-latest
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            browser: chromium
+            version: stable
+            minimum: '150'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          persist-credentials: false
+      - name: Verify the checked-out commit
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+        run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
+      - name: Download the accepted identity
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-identity-${{ needs.identity.outputs.source_sha }}
+          path: expected
+      - name: Download the retained native artifact
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-built-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
+          path: candidate
+      - name: Reject identity or artifact substitution
+        run: |
+          cmp expected/release-identity.json candidate/release-identity.json
+          (
+            cd candidate
+            shasum -a 256 --check "tracky-${{ matrix.target }}.tar.xz.sha256"
+          )
+          python3 scripts/dashboard_evidence.py validate-semantic \
+            candidate/semantic-manifest.json \
+            --archive "candidate/tracky-${{ matrix.target }}.tar.xz" \
+            --cargo-dist-manifest candidate/dist-manifest.json
+      - name: Extract the validated native package
+        run: |
+          mkdir extracted
+          tar -xJf "candidate/tracky-${{ matrix.target }}.tar.xz" -C extracted
+          test -x "extracted/tracky-${{ matrix.target }}/tracky"
+      - name: Exercise the retained package in the current browser
+        uses: ./.github/actions/dashboard-browser-lane
+        with:
+          artifact-name: release-dry-run-current-browser-${{ needs.identity.outputs.source_sha }}-${{ matrix.lane }}
+          binary: extracted/tracky-${{ matrix.target }}/tracky
+          browser: ${{ matrix.browser }}
+          commit: ${{ needs.identity.outputs.source_sha }}
+          lane: ${{ matrix.lane }}
+          lockfile-sha256: ${{ needs.identity.outputs.lockfile_sha256 }}
+          minimum-version: ${{ matrix.minimum }}
+          retention-days: 14
+          version: ${{ matrix.version }}
+
+  collect-current-browsers:
+    name: Bind current browser evidence
+    needs: [identity, browser-current]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.identity.outputs.source_sha }}
+          persist-credentials: false
+      - name: Download all current-browser results
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          pattern: release-dry-run-current-browser-${{ needs.identity.outputs.source_sha }}-*
+          path: browser-results
+          merge-multiple: true
+      - name: Assemble exact-identity current-browser evidence
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+          LOCKFILE_SHA256: ${{ needs.identity.outputs.lockfile_sha256 }}
+        run: |
+          python3 scripts/dashboard_browser_evidence.py \
+            --results-dir browser-results \
+            --commit "$ACCEPTED_SHA" \
+            --lockfile-sha256 "$LOCKFILE_SHA256" \
+            --profile current \
+            --output current-browser-evidence.json
+      - name: Retain canonical current-browser evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-dry-run-current-browser-evidence-${{ needs.identity.outputs.source_sha }}
+          path: |
+            current-browser-evidence.json
+            browser-results/*.json
+          if-no-files-found: error
+          retention-days: 14
+
   summarize:
     name: Prove the complete non-publishing dry run
-    needs: [identity, quality, package-runtime]
+    needs: [identity, quality, package-runtime, collect-current-browsers]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -294,11 +412,17 @@ jobs:
         with:
           pattern: release-dry-run-verified-${{ needs.identity.outputs.source_sha }}-*
           path: verified
+      - name: Download canonical current-browser evidence
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-current-browser-evidence-${{ needs.identity.outputs.source_sha }}
+          path: browser-evidence
       - name: Assemble the exact artifact summary
         run: |
           python3 scripts/release_dry_run_summary.py \
             --verified-root verified \
             --identity release-identity.json \
+            --browser-evidence browser-evidence/current-browser-evidence.json \
             --output release-dry-run-summary.json
       - name: Retain the dry-run summary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
