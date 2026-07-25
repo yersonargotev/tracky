@@ -106,14 +106,19 @@ contract run the same DAG automatically against their exact head commit.
 
 Rust formatting, all-target tests, strict Clippy, dependency policy, and the
 release-evidence contracts run in parallel with one native Cargo Dist build for
-each supported target. Each build retains a SHA- and target-bound bundle with
+each supported target. The quality job executes its shell checks from one
+canonical command catalog and retains `release-dry-run-quality-evidence-<sha>`
+only after those commands and the pinned dependency-policy action pass. Each
+build retains a SHA- and target-bound bundle with
 the archive, Cargo Dist checksum, Cargo Dist manifest, release identity, and
 semantic manifest. The retained Cargo Dist host manifest is regenerated with
 `--no-local-paths` and checked for the expected target archive, checksum, and
 release linkage. Native downstream jobs download those bundles, fail on any
 identity, checksum, Cargo Dist manifest, or semantic-field substitution, then
-exercise the extracted CLI and packaged runtime. No downstream job invokes
-Cargo Dist.
+exercise the extracted CLI and packaged runtime. Build and runtime jobs execute
+through a recording shell helper, so the exact successful command arrays are
+retained inside their native bundles instead of reconstructed by the final
+assembler. No downstream job invokes Cargo Dist.
 
 The same run also gates on current Safari, Firefox, and Chromium. Each browser
 job downloads one of the retained native bundles, compares its release identity,
@@ -122,11 +127,20 @@ package without invoking Cargo or Cargo Dist. The canonical
 `release-dry-run-current-browser-evidence-<sha>` artifact binds all three lane
 results to the accepted source SHA and lockfile digest.
 
-The final `release-dry-run-summary-<sha>` artifact is produced only after
-quality, native runtime, and all three current-browser paths pass. It records the
-three browser versions, `mode: dry-run`, and `published: false`; this workflow
-has no tag, GitHub Release, deployment environment, Homebrew credential, or tap
-mutation capability.
+The final `release-dry-run-evidence-<sha>` artifact is produced only after
+quality, native runtime, and all three current-browser paths pass. Its canonical
+JSON records the exact source/version/lock identity, tool and browser/driver
+versions, retained artifact IDs and digests, complete semantic manifests,
+runtime measurements, commands, objective gate outcomes, same-run job URLs, and
+job timings. The assembler fetches only the current run's GitHub job and artifact
+metadata, rejects missing or duplicate jobs/artifacts/browser lanes, stale
+identities, failed gates, substituted bytes, and placeholder values, then emits
+the same evidence as human-readable Markdown.
+
+This automated dry-run evidence requires no maintainer, approval, or
+`approved-by` identity. Both files retain `mode: dry-run` and
+`published: false`; this workflow has no tag, GitHub Release, deployment
+environment, Homebrew credential, or tap mutation capability.
 
 ## Release manifest
 
