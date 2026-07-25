@@ -425,6 +425,63 @@ def packaged_version(executable_content):
         return result.stdout.strip()
 
 
+def validate_cargo_dist_manifest(value, target, package_version):
+    require(value.get("dist_version") == "0.32.0", "Cargo Dist manifest version differs")
+    artifacts = value.get("artifacts")
+    require(isinstance(artifacts, dict), "Cargo Dist manifest artifacts are missing")
+    archive_name = "tracky-%s.tar.xz" % target
+    checksum_name = archive_name + ".sha256"
+    require(
+        set(artifacts) == {archive_name, checksum_name},
+        "Cargo Dist manifest artifacts are not target-bound",
+    )
+    archive = artifacts.get(archive_name)
+    checksum = artifacts.get(checksum_name)
+    require(isinstance(archive, dict), "Cargo Dist manifest archive is missing")
+    require(isinstance(checksum, dict), "Cargo Dist manifest checksum is missing")
+    require(
+        archive.get("name") == archive_name
+        and archive.get("kind") == "executable-zip"
+        and archive.get("target_triples") == [target]
+        and archive.get("checksum") == checksum_name,
+        "Cargo Dist manifest archive contract differs",
+    )
+    require(
+        checksum.get("name") == checksum_name
+        and checksum.get("kind") == "checksum"
+        and checksum.get("target_triples") == [target],
+        "Cargo Dist manifest checksum contract differs",
+    )
+    releases = value.get("releases")
+    require(
+        isinstance(releases, list) and len(releases) == 1,
+        "Cargo Dist manifest must contain exactly one release",
+    )
+    release = releases[0]
+    require(
+        release.get("app_name") == "tracky"
+        and release.get("app_version") == package_version
+        and set(release.get("artifacts", [])) == {archive_name, checksum_name},
+        "Cargo Dist manifest release linkage differs",
+    )
+
+    def reject_local_paths(item):
+        if isinstance(item, dict):
+            for key, nested in item.items():
+                if key == "path" and isinstance(nested, str):
+                    path = Path(nested)
+                    require(
+                        not path.is_absolute() and ".." not in path.parts,
+                        "Cargo Dist manifest contains a local artifact path",
+                    )
+                reject_local_paths(nested)
+        elif isinstance(item, list):
+            for nested in item:
+                reject_local_paths(nested)
+
+    reject_local_paths(value)
+
+
 def validate_semantic_provenance(
     source_sha,
     lockfile_sha256,
@@ -562,10 +619,15 @@ def semantic_archive_identity(value):
 def verify_semantic_archive_manifest(
     value,
     archive,
+    cargo_dist_manifest,
     expected_root=ROOT,
     version_probe=None,
 ):
     validate_semantic_archive_manifest(value)
+    require(
+        hash_file(cargo_dist_manifest) == value["cargo_dist_manifest_sha256"],
+        "Cargo Dist manifest checksum differs from the semantic manifest",
+    )
     measurement, files, executable_content = inspect_release_archive_contents(
         archive,
         value["target"],
@@ -742,6 +804,7 @@ def main(argv=None):
     validate_semantic = sub.add_parser("validate-semantic")
     validate_semantic.add_argument("manifest", type=Path)
     validate_semantic.add_argument("--archive", type=Path, required=True)
+    validate_semantic.add_argument("--cargo-dist-manifest", type=Path, required=True)
     validate_semantic.add_argument("--source-root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
     if args.command == "check":
@@ -768,6 +831,11 @@ def main(argv=None):
     elif args.command == "verify-artifacts":
         verify_manifest_artifacts(read_json(args.manifest), args.artifacts)
     elif args.command == "semantic-manifest":
+        validate_cargo_dist_manifest(
+            read_json(args.cargo_dist_manifest),
+            args.target,
+            args.package_version,
+        )
         manifest = semantic_archive_manifest(
             args.archive,
             args.target,
@@ -787,6 +855,7 @@ def main(argv=None):
         verify_semantic_archive_manifest(
             read_json(args.manifest),
             args.archive,
+            args.cargo_dist_manifest,
             expected_root=args.source_root,
         )
     return 0

@@ -80,7 +80,8 @@ python3 scripts/dashboard_evidence.py semantic-manifest \
   --cargo-dist-version "$(dist --version)" \
   --output "semantic-${TARGET}.json"
 python3 scripts/dashboard_evidence.py validate-semantic "semantic-${TARGET}.json" \
-  --archive "target/distrib/tracky-${TARGET}.tar.xz"
+  --archive "target/distrib/tracky-${TARGET}.tar.xz" \
+  --cargo-dist-manifest dist-manifest.json
 ```
 
 Generation fails unless the archive has one correctly named root, the exact
@@ -94,6 +95,31 @@ versions plus the Cargo Dist build-manifest digest. Validation reopens the
 downloaded archive and rechecks its exact transport checksum, every semantic
 file field, and the packaged version. Run both commands on the matching native
 target because version validation executes the packaged binary.
+
+## Unified non-publishing release dry run
+
+Dispatch **Validate unified release dry run** with a full source SHA, its exact
+Cargo package version, and the SHA-256 of its committed `Cargo.lock`. The
+workflow serializes dry runs, checks all three values after every checkout, and
+uses read-only repository permissions. Pull requests that change the dry-run
+contract run the same DAG automatically against their exact head commit.
+
+Rust formatting, all-target tests, strict Clippy, dependency policy, and the
+release-evidence contracts run in parallel with one native Cargo Dist build for
+each supported target. Each build retains a SHA- and target-bound bundle with
+the archive, Cargo Dist checksum, Cargo Dist manifest, release identity, and
+semantic manifest. The retained Cargo Dist host manifest is regenerated with
+`--no-local-paths` and checked for the expected target archive, checksum, and
+release linkage. Native downstream jobs download those bundles, fail on any
+identity, checksum, Cargo Dist manifest, or semantic-field substitution, then
+exercise the extracted CLI and packaged runtime. No downstream job invokes
+Cargo Dist.
+
+The final `release-dry-run-summary-<sha>` artifact is produced only after both
+quality and native runtime paths pass. It records `mode: dry-run` and
+`published: false`; this workflow has no tag, GitHub Release, deployment
+environment, Homebrew credential, or tap mutation capability. Browser reuse is
+added separately to this same artifact handoff before production cutover.
 
 ## Release manifest
 
