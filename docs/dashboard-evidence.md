@@ -137,10 +137,27 @@ metadata, rejects missing or duplicate jobs/artifacts/browser lanes, stale
 identities, failed gates, substituted bytes, and placeholder values, then emits
 the same evidence as human-readable Markdown.
 
-This automated dry-run evidence requires no maintainer, approval, or
-`approved-by` identity. Both files retain `mode: dry-run` and
-`published: false`; this workflow has no tag, GitHub Release, deployment
-environment, Homebrew credential, or tap mutation capability.
+This automated evidence requires no maintainer, approval, or `approved-by`
+identity. Both files retain `mode: dry-run` and `published: false` because they
+describe the completed pre-publication gates.
+
+For a controlled rehearsal, dispatch the same workflow with the optional
+`prerelease_tag` set to `v<package-version>-rc.<positive integer>`. Only after
+the final evidence job passes, the publication job downloads the same verified
+native bundles and evidence from that workflow run, revalidates their exact
+identity, archive bytes, checksums, semantic manifests, and gate outcomes, then
+creates the tag at the accepted SHA and hosts a GitHub prerelease. It never
+invokes Cargo Dist or rebuilds an archive.
+
+Publication is retry-safe within the retained workflow run: an existing tag is
+accepted only at the original SHA; matching uploaded assets are preserved,
+missing assets are uploaded, and any unexpected or byte-different asset fails
+closed. The job never clobbers assets. Its
+`release-prerelease-publication-<sha>` artifact records the final release URL,
+tag, identity, and GitHub asset IDs, sizes, and digests. Controlled `-rc.` tags
+are ignored by the legacy Cargo Dist tag workflow so they cannot start a second
+fresh build. Provenance attestation remains disabled until repository
+eligibility and verification support are explicitly confirmed.
 
 ## Release manifest
 

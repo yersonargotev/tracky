@@ -15,6 +15,11 @@ on:
         description: Exact lowercase SHA-256 of Cargo.lock at the accepted commit
         required: true
         type: string
+      prerelease_tag:
+        description: Optional controlled tag v<package-version>-rc.<positive integer>
+        required: false
+        default: ""
+        type: string
   pull_request:
     branches: [main]
     paths:
@@ -29,6 +34,7 @@ on:
       - scripts/release_dry_run_summary.py
       - scripts/release_identity.py
       - scripts/release_command_evidence.py
+      - scripts/release_prerelease.py
       - scripts/release_quality_evidence.py
       - src/dashboard.rs
       - src/dashboard_assets/**
@@ -37,6 +43,7 @@ on:
       - tests/dashboard_browser_evidence.py
       - tests/release_dry_run.py
       - tests/release_command_evidence.py
+      - tests/release_prerelease.py
       - tests/release_quality_evidence.py
 
 permissions:
@@ -492,5 +499,57 @@ jobs:
           path: |
             release-dry-run-evidence.json
             release-dry-run-evidence.md
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-prerelease:
+    name: Publish the tested controlled prerelease
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && inputs.prerelease_tag != '' }}
+    needs: [identity, summarize]
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require the accepted source on the trusted default branch
+        env:
+          ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
+          git merge-base --is-ancestor "$ACCEPTED_SHA" "$WORKFLOW_SHA"
+      - name: Download the tested native bundles
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          pattern: release-dry-run-verified-${{ needs.identity.outputs.source_sha }}-*
+          path: verified
+      - name: Download the successful automated evidence
+        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        with:
+          name: release-dry-run-evidence-${{ needs.identity.outputs.source_sha }}
+          path: evidence
+      - name: Publish or safely resume the exact retained prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE_TAG: ${{ inputs.prerelease_tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 scripts/release_prerelease.py \
+            --repository "$REPOSITORY" \
+            --tag "$PRERELEASE_TAG" \
+            --verified-root verified \
+            --evidence-json evidence/release-dry-run-evidence.json \
+            --evidence-markdown evidence/release-dry-run-evidence.md \
+            --output release-prerelease-publication.json
+      - name: Retain prerelease publication evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-prerelease-publication-${{ needs.identity.outputs.source_sha }}
+          path: release-prerelease-publication.json
           if-no-files-found: error
           retention-days: 14

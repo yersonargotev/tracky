@@ -121,9 +121,14 @@ class ReleaseIdentityTest(unittest.TestCase):
 
 
 class ReleaseDryRunWorkflowTest(unittest.TestCase):
-    def test_unified_dry_run_builds_each_native_target_once_and_never_publishes(self):
+    def test_unified_run_builds_each_native_target_once_and_publishes_only_after_gates(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        for required_input in ("accepted_sha:", "package_version:", "lockfile_sha256:"):
+        for required_input in (
+            "accepted_sha:",
+            "package_version:",
+            "lockfile_sha256:",
+            "prerelease_tag:",
+        ):
             self.assertIn(required_input, workflow)
         self.assertIn("pull_request:", workflow)
         self.assertIn("cancel-in-progress: false", workflow)
@@ -170,6 +175,26 @@ class ReleaseDryRunWorkflowTest(unittest.TestCase):
         self.assertIn("release-dry-run-evidence.md", workflow)
         self.assertIn("scripts/release_quality_evidence.py", workflow)
         self.assertIn("release-dry-run-quality-evidence-", workflow)
+        publish_job = workflow.split("\n  publish-prerelease:", 1)[1]
+        self.assertIn("needs: [identity, summarize]", publish_job)
+        self.assertIn("inputs.prerelease_tag != ''", publish_job)
+        self.assertIn("github.event.repository.default_branch", publish_job)
+        self.assertIn('ref: ${{ github.sha }}', publish_job)
+        self.assertIn(
+            'git merge-base --is-ancestor "$ACCEPTED_SHA" "$WORKFLOW_SHA"',
+            publish_job,
+        )
+        self.assertNotIn(
+            "ref: ${{ needs.identity.outputs.source_sha }}",
+            publish_job,
+        )
+        self.assertIn("contents: write", publish_job)
+        self.assertIn("scripts/release_prerelease.py", publish_job)
+        self.assertIn("release-dry-run-verified-", publish_job)
+        self.assertIn("release-dry-run-evidence-", publish_job)
+        self.assertIn("release-prerelease-publication-", publish_job)
+        self.assertNotIn("dist build", publish_job)
+        self.assertNotIn("--clobber", publish_job)
 
         self.assertIn("EmbarkStudios/cargo-deny-action@", workflow)
         quality_source = QUALITY_SCRIPT.read_text(encoding="utf-8")
@@ -192,11 +217,15 @@ class ReleaseDryRunWorkflowTest(unittest.TestCase):
         for forbidden in (
             "environment:",
             "HOMEBREW_TAP_TOKEN",
-            "gh release",
             "git push",
             "actions/create-release",
         ):
             self.assertNotIn(forbidden, workflow)
+
+        legacy_release = (
+            ROOT / ".github" / "workflows" / "release.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("!contains(github.ref_name, '-rc.')", legacy_release)
 
 
 class ReleaseDryRunSummaryTest(unittest.TestCase):
