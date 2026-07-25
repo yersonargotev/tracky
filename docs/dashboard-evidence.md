@@ -55,6 +55,46 @@ The comparison enforces the accepted limits independently: assets at most
 250 KiB; no more than 60 added resolved packages; and both the absolute and
 20-percent ceilings for every binary and archive. Omitting a target fails.
 
+## Semantic native-package manifest
+
+Native release archives have two separate integrity contracts:
+
+- `transport.archive_sha256` identifies the exact compressed archive retained,
+  tested, published to GitHub Releases, and referenced by Homebrew;
+- the remaining semantic identity describes the meaningful extracted package
+  and deliberately excludes tar ordering, timestamps, ownership metadata,
+  padding, xz framing, and compressed byte count.
+
+Generate a target-bound manifest on the native runner that built the archive:
+
+```sh
+python3 scripts/dashboard_evidence.py semantic-manifest \
+  --archive "target/distrib/tracky-${TARGET}.tar.xz" \
+  --target "$TARGET" \
+  --source-sha "$(git rev-parse HEAD)" \
+  --lockfile-sha256 "$(python3 -c 'import hashlib; print(hashlib.sha256(open("Cargo.lock", "rb").read()).hexdigest())')" \
+  --cargo-dist-manifest dist-manifest.json \
+  --package-version "$PACKAGE_VERSION" \
+  --rust-version "$(rustc --version)" \
+  --cargo-version "$(cargo --version)" \
+  --cargo-dist-version "$(dist --version)" \
+  --output "semantic-${TARGET}.json"
+python3 scripts/dashboard_evidence.py validate-semantic "semantic-${TARGET}.json" \
+  --archive "target/distrib/tracky-${TARGET}.tar.xz"
+```
+
+Generation fails unless the archive has one correctly named root, the exact
+release allowlist, safe regular-file paths, no links or special files, mode
+`0755` only for `tracky`, mode `0644` for the documentation files, the expected
+target architecture, source-controlled documentation bytes, and a packaged
+`tracky --version` matching the requested package version. The canonical JSON
+records sorted per-file uncompressed sizes and SHA-256 values together with the
+source SHA, lockfile digest, target, package version, and Rust/Cargo/Cargo Dist
+versions plus the Cargo Dist build-manifest digest. Validation reopens the
+downloaded archive and rechecks its exact transport checksum, every semantic
+file field, and the packaged version. Run both commands on the matching native
+target because version validation executes the packaged binary.
+
 ## Release manifest
 
 Before assembling release proof, dispatch **Build dashboard release candidate**

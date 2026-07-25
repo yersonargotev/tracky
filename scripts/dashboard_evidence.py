@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tarfile
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -331,7 +332,7 @@ def verify_executable_architecture(content, target):
         require(struct.unpack("<H", content[18:20])[0] == 62, "archive executable architecture does not match %s" % target)
 
 
-def inspect_release_archive(archive, target, expected_root=ROOT):
+def inspect_release_archive_contents(archive, target, expected_root=ROOT):
     require(target in TARGETS, "archive has unknown target")
     with tarfile.open(archive, "r:xz") as bundle:
         members = bundle.getmembers()
@@ -346,7 +347,13 @@ def inspect_release_archive(archive, target, expected_root=ROOT):
             "archive contains a non-file entry",
         )
         require(
-            all(".." not in Path(member.name).parts and not Path(member.name).is_absolute() for member in members),
+            all(
+                member.name
+                and "\\" not in member.name
+                and ".." not in Path(member.name).parts
+                and not Path(member.name).is_absolute()
+                for member in members
+            ),
             "archive contains an unsafe path",
         )
         expected_paths = {"%s/%s" % (archive_root, name) for name in REQUIRED_ARCHIVE_FILES}
@@ -359,29 +366,229 @@ def inspect_release_archive(archive, target, expected_root=ROOT):
             {member.name.rstrip("/") for member in members if member.isdir()} <= {archive_root},
             "archive directory layout differs from Cargo Dist",
         )
-        executable = next(member for member in files if member.name == "%s/tracky" % archive_root)
-        require(executable.mode & 0o111 != 0, "tracky is not executable in the archive")
-        extracted = bundle.extractfile(executable)
-        require(extracted is not None, "archive executable could not be read")
-        executable_content = extracted.read()
-        verify_executable_architecture(executable_content, target)
-        executable_sha256 = hashlib.sha256(executable_content).hexdigest()
-        for name in REQUIRED_ARCHIVE_FILES - {"tracky"}:
-            member = next(item for item in files if item.name == "%s/%s" % (archive_root, name))
+        file_records = []
+        executable = None
+        executable_content = None
+        for member in sorted(files, key=lambda item: item.name):
+            name = Path(member.name).name
+            expected_mode = 0o755 if name == "tracky" else 0o644
+            require(
+                member.mode == expected_mode,
+                "%s permissions must be %04o" % (name, expected_mode),
+            )
             packaged = bundle.extractfile(member)
             require(packaged is not None, "%s could not be read from archive" % name)
-            require(
-                packaged.read() == (expected_root / name).read_bytes(),
-                "%s in archive differs from the accepted source" % name,
-            )
-    return {
+            content = packaged.read()
+            if name == "tracky":
+                executable = member
+                executable_content = content
+                verify_executable_architecture(content, target)
+            else:
+                require(
+                    content == (expected_root / name).read_bytes(),
+                    "%s in archive differs from the accepted source" % name,
+                )
+            file_records.append({
+                "path": name,
+                "bytes": member.size,
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "mode": "%04o" % expected_mode,
+            })
+        require(executable is not None and executable_content is not None, "archive executable is missing")
+    measurement = {
         "target": target,
         "archive_bytes": archive.stat().st_size,
         "archive_sha256": hash_file(archive),
         "executable_bytes": executable.size,
-        "executable_sha256": executable_sha256,
+        "executable_sha256": hashlib.sha256(executable_content).hexdigest(),
         "archive_contents": sorted(Path(name).name for name in names),
     }
+    return measurement, file_records, executable_content
+
+
+def inspect_release_archive(archive, target, expected_root=ROOT):
+    measurement, _, _ = inspect_release_archive_contents(archive, target, expected_root)
+    return measurement
+
+
+def packaged_version(executable_content):
+    with tempfile.TemporaryDirectory() as raw:
+        executable = Path(raw) / "tracky"
+        executable.write_bytes(executable_content)
+        executable.chmod(0o755)
+        result = subprocess.run(
+            [str(executable), "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+
+
+def validate_semantic_provenance(
+    source_sha,
+    lockfile_sha256,
+    cargo_dist_manifest_sha256,
+    package_version,
+    tools,
+):
+    require(
+        re.fullmatch(r"[0-9a-f]{40}", source_sha) is not None,
+        "source SHA must be a full lowercase commit SHA",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", lockfile_sha256) is not None,
+        "lockfile digest must be lowercase SHA-256",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", cargo_dist_manifest_sha256) is not None,
+        "Cargo Dist manifest digest must be lowercase SHA-256",
+    )
+    require(
+        re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", package_version) is not None,
+        "package version must be SemVer",
+    )
+    require(
+        isinstance(tools, dict)
+        and set(tools) == {"rust", "cargo", "cargo-dist"}
+        and tools == dict(sorted(tools.items()))
+        and all(isinstance(value, str) and value for value in tools.values()),
+        "Rust, Cargo, and Cargo Dist versions are required in deterministic order",
+    )
+
+
+def semantic_archive_manifest(
+    archive,
+    target,
+    source_sha,
+    lockfile_sha256,
+    cargo_dist_manifest_sha256,
+    package_version,
+    tools,
+    expected_root=ROOT,
+    version_probe=None,
+):
+    tools = dict(sorted(tools.items()))
+    validate_semantic_provenance(
+        source_sha,
+        lockfile_sha256,
+        cargo_dist_manifest_sha256,
+        package_version,
+        tools,
+    )
+    measurement, files, executable_content = inspect_release_archive_contents(
+        archive, target, expected_root
+    )
+    reported_version = (version_probe or packaged_version)(executable_content)
+    require(
+        reported_version == "tracky %s" % package_version,
+        "packaged executable version differs from package version",
+    )
+    manifest = {
+        "schema_version": 1,
+        "source_sha": source_sha,
+        "lockfile_sha256": lockfile_sha256,
+        "cargo_dist_manifest_sha256": cargo_dist_manifest_sha256,
+        "target": target,
+        "package_version": package_version,
+        "tools": tools,
+        "files": sorted(files, key=lambda item: item["path"]),
+        "transport": {
+            "archive_name": archive.name,
+            "archive_bytes": measurement["archive_bytes"],
+            "archive_sha256": measurement["archive_sha256"],
+        },
+    }
+    validate_semantic_archive_manifest(manifest)
+    return manifest
+
+
+def validate_semantic_archive_manifest(value):
+    require(
+        set(value) == {
+            "schema_version", "source_sha", "lockfile_sha256", "target",
+            "cargo_dist_manifest_sha256", "package_version", "tools", "files",
+            "transport",
+        },
+        "semantic manifest fields do not match the schema",
+    )
+    require(value["schema_version"] == 1, "unsupported semantic manifest schema")
+    require(value["target"] in TARGETS, "semantic manifest has unknown target")
+    validate_semantic_provenance(
+        value["source_sha"],
+        value["lockfile_sha256"],
+        value["cargo_dist_manifest_sha256"],
+        value["package_version"],
+        value["tools"],
+    )
+    files = value["files"]
+    require(
+        [item.get("path") for item in files] == sorted(REQUIRED_ARCHIVE_FILES),
+        "semantic manifest files differ from the release allowlist",
+    )
+    for item in files:
+        require(
+            set(item) == {"path", "bytes", "sha256", "mode"},
+            "semantic manifest file fields are invalid",
+        )
+        require(isinstance(item["bytes"], int) and item["bytes"] >= 0, "semantic file size is invalid")
+        require(re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is not None, "semantic file hash is invalid")
+        expected_mode = "0755" if item["path"] == "tracky" else "0644"
+        require(item["mode"] == expected_mode, "semantic file permissions are invalid")
+    transport = value["transport"]
+    require(
+        set(transport) == {"archive_name", "archive_bytes", "archive_sha256"},
+        "semantic transport fields are invalid",
+    )
+    require(
+        transport["archive_name"] == "tracky-%s.tar.xz" % value["target"],
+        "semantic transport archive name is invalid",
+    )
+    require(
+        isinstance(transport["archive_bytes"], int) and transport["archive_bytes"] > 0,
+        "semantic transport archive size is invalid",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", transport["archive_sha256"]) is not None,
+        "semantic transport archive hash is invalid",
+    )
+
+
+def semantic_archive_identity(value):
+    validate_semantic_archive_manifest(value)
+    return {key: value[key] for key in sorted(value) if key != "transport"}
+
+
+def verify_semantic_archive_manifest(
+    value,
+    archive,
+    expected_root=ROOT,
+    version_probe=None,
+):
+    validate_semantic_archive_manifest(value)
+    measurement, files, executable_content = inspect_release_archive_contents(
+        archive,
+        value["target"],
+        expected_root,
+    )
+    require(files == value["files"], "archive files differ from the semantic manifest")
+    require(
+        archive.name == value["transport"]["archive_name"],
+        "archive name differs from the semantic manifest",
+    )
+    require(
+        measurement["archive_bytes"] == value["transport"]["archive_bytes"],
+        "archive size differs from the semantic manifest",
+    )
+    require(
+        measurement["archive_sha256"] == value["transport"]["archive_sha256"],
+        "archive checksum differs from the semantic manifest",
+    )
+    require(
+        (version_probe or packaged_version)(executable_content)
+        == "tracky %s" % value["package_version"],
+        "packaged executable version differs from package version",
+    )
 
 
 def verify_dist_checksum(archive):
@@ -520,6 +727,22 @@ def main(argv=None):
     verify_artifacts = sub.add_parser("verify-artifacts")
     verify_artifacts.add_argument("manifest", type=Path)
     verify_artifacts.add_argument("--artifacts", type=Path, required=True)
+    semantic = sub.add_parser("semantic-manifest")
+    semantic.add_argument("--archive", type=Path, required=True)
+    semantic.add_argument("--target", choices=sorted(TARGETS), required=True)
+    semantic.add_argument("--source-sha", required=True)
+    semantic.add_argument("--lockfile-sha256", required=True)
+    semantic.add_argument("--cargo-dist-manifest", type=Path, required=True)
+    semantic.add_argument("--package-version", required=True)
+    semantic.add_argument("--rust-version", required=True)
+    semantic.add_argument("--cargo-version", required=True)
+    semantic.add_argument("--cargo-dist-version", required=True)
+    semantic.add_argument("--source-root", type=Path, default=ROOT)
+    semantic.add_argument("--output", type=Path, required=True)
+    validate_semantic = sub.add_parser("validate-semantic")
+    validate_semantic.add_argument("manifest", type=Path)
+    validate_semantic.add_argument("--archive", type=Path, required=True)
+    validate_semantic.add_argument("--source-root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
     if args.command == "check":
         check_all()
@@ -544,6 +767,28 @@ def main(argv=None):
         args.output.write_text(canonical_json(measure(args.artifacts, args.assets)), encoding="utf-8")
     elif args.command == "verify-artifacts":
         verify_manifest_artifacts(read_json(args.manifest), args.artifacts)
+    elif args.command == "semantic-manifest":
+        manifest = semantic_archive_manifest(
+            args.archive,
+            args.target,
+            args.source_sha,
+            args.lockfile_sha256,
+            hash_file(args.cargo_dist_manifest),
+            args.package_version,
+            {
+                "rust": args.rust_version,
+                "cargo": args.cargo_version,
+                "cargo-dist": args.cargo_dist_version,
+            },
+            expected_root=args.source_root,
+        )
+        args.output.write_text(canonical_json(manifest), encoding="utf-8")
+    elif args.command == "validate-semantic":
+        verify_semantic_archive_manifest(
+            read_json(args.manifest),
+            args.archive,
+            expected_root=args.source_root,
+        )
     return 0
 
 
