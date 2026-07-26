@@ -47,7 +47,7 @@ jobs:
     name: Bind the formula to the hosted release
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -109,7 +109,7 @@ jobs:
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -179,7 +179,7 @@ jobs:
       action: ${{ steps.reconcile.outputs.action }}
       tap_commit: ${{ steps.reconcile.outputs.expected_head }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
