@@ -67,7 +67,7 @@ jobs:
       reason: ${{ steps.trigger.outputs.reason }}
       tag: ${{ steps.values.outputs.tag }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.accepted_sha || github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
@@ -125,7 +125,7 @@ jobs:
     if: needs.identity.outputs.run_dag == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
@@ -190,7 +190,7 @@ jobs:
       matrix: ${{ fromJSON(needs.identity.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
@@ -305,7 +305,7 @@ jobs:
       matrix: ${{ fromJSON(needs.identity.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
@@ -432,7 +432,7 @@ jobs:
             minimum: '150'
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
@@ -485,7 +485,7 @@ jobs:
     if: needs.identity.outputs.run_dag == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
@@ -522,7 +522,7 @@ jobs:
     if: needs.identity.outputs.run_dag == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
@@ -593,7 +593,7 @@ jobs:
     outputs:
       release_url: ${{ steps.publish.outputs.release_url }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -660,7 +660,7 @@ jobs:
       actions: read
       contents: read
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009ac4c25cc4861a3631e0b # v6
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v6
         with:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
