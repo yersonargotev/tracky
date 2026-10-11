@@ -112,7 +112,7 @@ jobs:
           print("matrix=" + json.dumps(matrix, separators=(",", ":")))
           PY
       - name: Retain the accepted identity
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-identity-${{ steps.values.outputs.source_sha }}
           path: release-identity.json
@@ -150,7 +150,7 @@ jobs:
             '{provider: "Swatinem/rust-cache", job: $job, exact_hit: ($exact_hit == "true")}' \
             > cache-state-quality.json
       - name: Retain the quality cache state
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-cache-state-${{ needs.identity.outputs.source_sha }}-quality
           path: cache-state-quality.json
@@ -172,7 +172,7 @@ jobs:
             --identity release-identity.json \
             --output quality-evidence.json
       - name: Retain successful quality evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-quality-evidence-${{ needs.identity.outputs.source_sha }}
           path: |
@@ -282,14 +282,14 @@ jobs:
               exact_hit: ($exact_hit == "true")}' \
             > release-bundle/build-cache-state.json
       - name: Retain the native-build cache state
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-cache-state-${{ needs.identity.outputs.source_sha }}-build-${{ matrix.target }}
           path: release-bundle/build-cache-state.json
           if-no-files-found: error
           retention-days: 14
       - name: Retain publication-ready native inputs
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-built-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
           path: release-bundle/
@@ -380,14 +380,14 @@ jobs:
               exact_hit: ($exact_hit == "true")}' \
             > runtime-cache-state.json
       - name: Retain the package-test cache state
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-cache-state-${{ needs.identity.outputs.source_sha }}-runtime-${{ matrix.target }}
           path: runtime-cache-state.json
           if-no-files-found: error
           retention-days: 14
       - name: Upload the verified publication-ready bundle
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-verified-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
           path: |
@@ -507,7 +507,7 @@ jobs:
             --profile current \
             --output current-browser-evidence.json
       - name: Retain canonical current-browser evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-current-browser-evidence-${{ needs.identity.outputs.source_sha }}
           path: |
@@ -573,7 +573,7 @@ jobs:
             --output release-evidence.json \
             --markdown-output release-evidence.md
       - name: Retain human-readable and machine-readable release evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-evidence-${{ needs.identity.outputs.source_sha }}
           path: |
@@ -631,7 +631,7 @@ jobs:
             --output release-publication.json
           echo "release_url=$(jq -r .release_url release-publication.json)" >> "$GITHUB_OUTPUT"
       - name: Retain release publication evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-publication-${{ needs.identity.outputs.source_sha }}
           path: release-publication.json

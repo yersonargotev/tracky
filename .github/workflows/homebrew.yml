@@ -85,7 +85,7 @@ jobs:
             --formula Formula/tracky.rb \
             --evidence homebrew-preparation.json
       - name: Retain the formula, release assets, and preparation evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: homebrew-prepared-${{ inputs.source_sha }}-${{ inputs.tag }}
           path: |
@@ -162,7 +162,7 @@ jobs:
           test "$(tracky --version)" = "tracky $PACKAGE_VERSION"
           tracky --help >/dev/null
       - name: Retain successful platform validation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: homebrew-validation-${{ inputs.source_sha }}-${{ matrix.platform }}
           path: homebrew-validation.log
@@ -278,7 +278,7 @@ jobs:
               tap_commit: $tap_commit, action: $action,
               preparation: $preparation[0]}' > homebrew-publication.json
       - name: Retain Homebrew publication evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: homebrew-publication-${{ inputs.source_sha }}-${{ inputs.tag }}
           path: homebrew-publication.json
