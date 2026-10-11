@@ -78,7 +78,7 @@ jobs:
       - name: Build the packaged browser test input
         run: dist build --artifacts=local --target=${{ matrix.target }} --output-format=json
       - name: Retain the packaged browser input
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dashboard-browser-package-${{ env.ACCEPTED_SHA }}-${{ matrix.target }}
           path: |
@@ -194,7 +194,7 @@ jobs:
             --lockfile-sha256 "$lockfile_sha256" \
             --output browsers.json
       - name: Retain canonical browser evidence and raw results
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: dashboard-browser-evidence-${{ env.ACCEPTED_SHA }}
           path: |
