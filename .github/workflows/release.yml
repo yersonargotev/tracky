@@ -157,7 +157,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Download the accepted identity
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-identity-${{ needs.identity.outputs.source_sha }}
       - name: Enforce dependency and license policy
@@ -199,7 +199,7 @@ jobs:
           ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
         run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
       - name: Download the accepted identity
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-identity-${{ needs.identity.outputs.source_sha }}
       - name: Install frozen Rust
@@ -314,7 +314,7 @@ jobs:
           ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
         run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
       - name: Download the accepted identity
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-identity-${{ needs.identity.outputs.source_sha }}
           path: expected
@@ -329,7 +329,7 @@ jobs:
           CACHE_HIT: ${{ steps.rust-cache.outputs.cache-hit }}
         run: echo "Rust cache exact hit — ${{ matrix.target }} test — ${CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
       - name: Download the exact built artifact
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-built-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
           path: candidate
@@ -441,12 +441,12 @@ jobs:
           ACCEPTED_SHA: ${{ needs.identity.outputs.source_sha }}
         run: test "$(git rev-parse HEAD)" = "$ACCEPTED_SHA"
       - name: Download the accepted identity
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-identity-${{ needs.identity.outputs.source_sha }}
           path: expected
       - name: Download the retained native artifact
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-built-${{ needs.identity.outputs.source_sha }}-${{ matrix.target }}
           path: candidate
@@ -490,7 +490,7 @@ jobs:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
       - name: Download all current-browser results
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-current-browser-${{ needs.identity.outputs.source_sha }}-*
           path: browser-results
@@ -527,21 +527,21 @@ jobs:
           ref: ${{ needs.identity.outputs.source_sha }}
           persist-credentials: false
       - name: Download the accepted identity
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-identity-${{ needs.identity.outputs.source_sha }}
       - name: Download successful quality evidence
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-quality-evidence-${{ needs.identity.outputs.source_sha }}
           path: quality-evidence
       - name: Download both verified native bundles
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-verified-${{ needs.identity.outputs.source_sha }}-*
           path: verified
       - name: Download canonical current-browser evidence
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-current-browser-evidence-${{ needs.identity.outputs.source_sha }}
           path: browser-evidence
@@ -606,12 +606,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
           git merge-base --is-ancestor "$ACCEPTED_SHA" "$WORKFLOW_SHA"
       - name: Download the tested native bundles
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-verified-${{ needs.identity.outputs.source_sha }}-*
           path: verified
       - name: Download the successful automated evidence
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: release-evidence-${{ needs.identity.outputs.source_sha }}
           path: evidence
@@ -679,7 +679,7 @@ jobs:
             > workflow-history.json
           gh api "repos/$GH_REPO/releases?per_page=100" > releases.json
       - name: Download retained cache states
-        uses: actions/download-artifact@484a0b528fb4d7bd804637ccb632e47a0e638317 # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: release-cache-state-*
           path: retained
